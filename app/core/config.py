@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     vk_secret_key: str = ""
     vk_group_id: str = ""
     vk_access_token: str = ""
-    vk_market_user_token: str = ""
     vk_api_version: str = "5.199"
 
     anthropic_api_key: str = ""
