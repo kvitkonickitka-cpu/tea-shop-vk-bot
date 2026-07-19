@@ -18,7 +18,7 @@ async def _get_group_numeric_id(client: httpx.AsyncClient) -> int:
         f"{VK_API_URL}/groups.getById",
         params={
             "group_id": settings.vk_group_id,
-            "access_token": settings.vk_access_token,
+            "access_token": settings.vk_market_user_token,
             "v": settings.vk_api_version,
         },
     )
@@ -41,7 +41,7 @@ async def fetch_market_items() -> list[dict]:
             params={
                 "owner_id": -group_id,
                 "count": 200,
-                "access_token": settings.vk_access_token,
+                "access_token": settings.vk_market_user_token,
                 "v": settings.vk_api_version,
             },
         )
