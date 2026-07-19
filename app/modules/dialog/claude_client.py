@@ -19,4 +19,7 @@ async def generate_reply(user_message: str) -> str:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
-    return response.content[0].text
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    raise ValueError("Claude response contained no text block")
