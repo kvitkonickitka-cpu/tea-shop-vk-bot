@@ -25,9 +25,9 @@ async def build_catalog_context() -> str:
             continue
 
         line = f"- {item['name']} ({item['price']} руб."
-        quantity = item.get("quantity")
-        if quantity is not None:
-            line += f", в наличии {quantity} шт."
+        package_sizes = item.get("package_sizes")
+        if package_sizes:
+            line += f", упаковки: {', '.join(package_sizes)}"
         line += f"): {item.get('description', '')}"
         lines.append(line)
 
