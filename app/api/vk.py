@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 
 from app.core.config import settings
 from app.modules.dialog import service
+from app.modules.orders import service as orders_service
 
 router = APIRouter(tags=["vk"])
 
@@ -25,5 +26,8 @@ async def vk_callback(request: Request, background_tasks: BackgroundTasks) -> Re
     if event_type == "message_new":
         message = body.get("object", {}).get("message", {})
         background_tasks.add_task(service.handle_message_new, message)
+    elif event_type == "market_order_new":
+        order_event = body.get("object", {})
+        background_tasks.add_task(orders_service.handle_new_order, order_event)
 
     return Response(content="ok", media_type="text/plain")

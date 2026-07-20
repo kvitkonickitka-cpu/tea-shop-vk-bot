@@ -7,14 +7,14 @@ logger = logging.getLogger(__name__)
 CATALOG_PATH = Path(__file__).parent / "catalog.json"
 
 
-def _load_catalog() -> list[dict]:
+def load_items() -> list[dict]:
     with CATALOG_PATH.open(encoding="utf-8") as f:
         return json.load(f)
 
 
 async def build_catalog_context() -> str:
     try:
-        items = _load_catalog()
+        items = load_items()
     except Exception:
         logger.exception("Failed to load catalog.json")
         return ""

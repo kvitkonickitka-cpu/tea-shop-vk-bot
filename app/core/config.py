@@ -16,5 +16,15 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
+    # Тестовый (sandbox) контур CDEK по умолчанию — для продакшена сменить
+    # на https://api.cdek.ru, когда появится боевой договор и ключи
+    cdek_api_base_url: str = "https://api.edu.cdek.ru"
+    cdek_client_id: str = ""
+    cdek_client_secret: str = ""
+    # Адрес, откуда забирают заказы (нужен для расчёта тарифа)
+    cdek_from_address: str = ""
+    # Заглушка веса заказа, пока нет точного веса по каждой упаковке
+    cdek_default_package_weight_grams: int = 200
+
 
 settings = Settings()

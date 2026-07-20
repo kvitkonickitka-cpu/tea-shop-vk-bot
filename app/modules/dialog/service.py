@@ -1,8 +1,8 @@
 import logging
 from typing import Any
 
-from app.modules.catalog import service as catalog_service
-from app.modules.dialog import claude_client, vk_client
+from app.modules.dialog import vk_client
+from app.modules.orders import conversation as orders_conversation
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,7 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         return
 
     try:
-        catalog_context = await catalog_service.build_catalog_context()
-        reply = await claude_client.generate_reply(text, catalog_context)
+        reply = await orders_conversation.handle_turn(peer_id, text)
     except Exception:
         logger.exception("Claude generation failed for peer_id=%s", peer_id)
         reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
