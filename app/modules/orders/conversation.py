@@ -75,6 +75,18 @@ TOOLS = [
 ]
 
 
+def _tools_for_stage(stage: str | None) -> list[dict]:
+    # Даём модели только тот инструмент, который реально уместен на текущем
+    # этапе — так она физически не может вызвать propose_order повторно,
+    # пока черновик ждёт выбора доставки или подтверждения.
+    by_name = {tool["name"]: tool for tool in TOOLS}
+    if stage == "awaiting_delivery":
+        return [by_name["set_delivery_method"]]
+    if stage == "awaiting_confirmation":
+        return [by_name["confirm_order"]]
+    return [by_name["propose_order"]]
+
+
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
     wanted_lower = wanted_name.strip().lower()
     for item in catalog:
@@ -159,7 +171,6 @@ async def _execute_confirm_order(peer_id: int) -> str:
         return "Нет черновика заказа, ожидающего подтверждения. Уточни у клиента, что он хочет заказать."
 
     draft.stage = "confirmed"
-    state.set_draft(peer_id, draft)
 
     try:
         await orders_repository.save_order(peer_id, draft)
@@ -167,6 +178,7 @@ async def _execute_confirm_order(peer_id: int) -> str:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
     payment_message = await payment_service.generate_payment_link(draft)
+    state.clear_draft(peer_id)
     return f"Заказ подтверждён. {payment_message}"
 
 
@@ -190,10 +202,12 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     system_prompt += f"\n\n{_ORDER_FLOW_PROMPT}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
 
+    tools = _tools_for_stage(draft.stage if draft else None)
+
     history = dialog_history.get_history(peer_id)
     messages: list[dict] = history + [{"role": "user", "content": user_text}]
 
-    response = await claude_client.converse(messages, system_prompt, TOOLS)
+    response = await claude_client.converse(messages, system_prompt, tools)
 
     if response.stop_reason != "tool_use":
         reply = claude_client.extract_text(response)
@@ -209,7 +223,7 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
         tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
     messages.append({"role": "user", "content": tool_results})
 
-    follow_up = await claude_client.converse(messages, system_prompt, TOOLS)
+    follow_up = await claude_client.converse(messages, system_prompt, tools)
     reply = claude_client.extract_text(follow_up)
     dialog_history.append_exchange(peer_id, user_text, reply)
     return reply
