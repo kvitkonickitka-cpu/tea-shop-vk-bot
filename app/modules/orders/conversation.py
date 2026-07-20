@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from app.modules.catalog import service as catalog_service
-from app.modules.dialog import claude_client
+from app.modules.dialog import claude_client, history as dialog_history
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import state
 from app.modules.orders.state import OrderDraft
@@ -184,12 +184,15 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     system_prompt += f"\n\n{_ORDER_FLOW_PROMPT}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
 
-    messages: list[dict] = [{"role": "user", "content": user_text}]
+    history = dialog_history.get_history(peer_id)
+    messages: list[dict] = history + [{"role": "user", "content": user_text}]
 
     response = await claude_client.converse(messages, system_prompt, TOOLS)
 
     if response.stop_reason != "tool_use":
-        return claude_client.extract_text(response)
+        reply = claude_client.extract_text(response)
+        dialog_history.append_exchange(peer_id, user_text, reply)
+        return reply
 
     tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
     messages.append({"role": "assistant", "content": response.content})
@@ -201,4 +204,6 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     messages.append({"role": "user", "content": tool_results})
 
     follow_up = await claude_client.converse(messages, system_prompt, TOOLS)
-    return claude_client.extract_text(follow_up)
+    reply = claude_client.extract_text(follow_up)
+    dialog_history.append_exchange(peer_id, user_text, reply)
+    return reply
