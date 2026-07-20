@@ -28,6 +28,11 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         return
 
     try:
+        await vk_client.set_typing(peer_id)
+    except Exception:
+        logger.warning("Failed to set typing indicator for peer_id=%s", peer_id, exc_info=True)
+
+    try:
         reply = await orders_conversation.handle_turn(peer_id, text)
     except Exception:
         logger.exception("Claude generation failed for peer_id=%s", peer_id)

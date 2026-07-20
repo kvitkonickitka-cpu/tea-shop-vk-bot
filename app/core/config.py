@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
+    # Railway автоматически прокидывает DATABASE_URL при подключении Postgres
+    database_url: str = ""
+
     # Тестовый (sandbox) контур CDEK по умолчанию — для продакшена сменить
     # на https://api.cdek.ru, когда появится боевой договор и ключи
     cdek_api_base_url: str = "https://api.edu.cdek.ru"

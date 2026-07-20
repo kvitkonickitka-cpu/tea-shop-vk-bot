@@ -7,6 +7,7 @@ from pathlib import Path
 from app.modules.catalog import service as catalog_service
 from app.modules.dialog import claude_client, history as dialog_history
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
+from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
 from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service
@@ -159,6 +160,11 @@ async def _execute_confirm_order(peer_id: int) -> str:
 
     draft.stage = "confirmed"
     state.set_draft(peer_id, draft)
+
+    try:
+        await orders_repository.save_order(peer_id, draft)
+    except Exception:
+        logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
     payment_message = await payment_service.generate_payment_link(draft)
     return f"Заказ подтверждён. {payment_message}"
