@@ -29,5 +29,9 @@ class Settings(BaseSettings):
     # Заглушка веса заказа, пока нет точного веса по каждой упаковке
     cdek_default_package_weight_grams: int = 200
 
+    # Telegram-бот для уведомлений менеджера об эскалациях из чата с клиентом
+    telegram_bot_token: str = ""
+    telegram_manager_chat_id: str = ""
+
 
 settings = Settings()

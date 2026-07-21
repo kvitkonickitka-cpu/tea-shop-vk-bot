@@ -4,8 +4,9 @@ import json
 import logging
 from pathlib import Path
 
+from app.core.config import settings
 from app.modules.catalog import service as catalog_service
-from app.modules.dialog import claude_client, history as dialog_history
+from app.modules.dialog import claude_client, history as dialog_history, telegram_client
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -72,19 +73,50 @@ TOOLS = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "escalate_to_manager",
+        "description": (
+            "Передать вопрос клиента живому менеджеру, когда не хватает "
+            "информации для точного ответа (например, нет данных в "
+            "ассортименте или клиент спрашивает то, что не входит в "
+            "компетенцию бота). Никогда не говори клиенту «напишите "
+            "менеджеру» — вместо этого вызови этот инструмент."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Коротко: что именно нужно уточнить у менеджера",
+                }
+            },
+            "required": ["reason"],
+        },
+    },
 ]
+
+
+def _numeric_group_id() -> str:
+    group_id = settings.vk_group_id
+    for prefix in ("club", "public"):
+        if group_id.startswith(prefix):
+            return group_id[len(prefix) :]
+    return group_id
 
 
 def _tools_for_stage(stage: str | None) -> list[dict]:
     # Даём модели только тот инструмент, который реально уместен на текущем
     # этапе — так она физически не может вызвать propose_order повторно,
-    # пока черновик ждёт выбора доставки или подтверждения.
+    # пока черновик ждёт выбора доставки или подтверждения. escalate_to_manager
+    # доступен всегда — эскалация может понадобиться на любом шаге диалога.
     by_name = {tool["name"]: tool for tool in TOOLS}
     if stage == "awaiting_delivery":
-        return [by_name["set_delivery_method"]]
-    if stage == "awaiting_confirmation":
-        return [by_name["confirm_order"]]
-    return [by_name["propose_order"]]
+        stage_tool = by_name["set_delivery_method"]
+    elif stage == "awaiting_confirmation":
+        stage_tool = by_name["confirm_order"]
+    else:
+        stage_tool = by_name["propose_order"]
+    return [stage_tool, by_name["escalate_to_manager"]]
 
 
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
@@ -182,6 +214,28 @@ async def _execute_confirm_order(peer_id: int) -> str:
     return f"Заказ подтверждён. {payment_message}"
 
 
+async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
+    reason = tool_input.get("reason", "")
+    dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
+    message = f"Нужна консультация менеджера\nВопрос клиента: {reason}\nДиалог: {dialog_link}"
+
+    try:
+        await telegram_client.send_message(message)
+    except Exception:
+        logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
+        return (
+            "Уведомить менеджера технически не удалось. Всё равно скажи клиенту, "
+            "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
+            "для обращения самого клиента."
+        )
+
+    return (
+        "Менеджер уведомлён в Telegram со ссылкой на этот диалог. Скажи клиенту, "
+        "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
+        "для обращения самого клиента, только что ты сам уточнишь и вернёшься."
+    )
+
+
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> str:
     if name == "propose_order":
         return await _execute_propose_order(peer_id, tool_input)
@@ -189,6 +243,8 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> str:
         return await _execute_set_delivery_method(peer_id, tool_input)
     if name == "confirm_order":
         return await _execute_confirm_order(peer_id)
+    if name == "escalate_to_manager":
+        return await _execute_escalate_to_manager(peer_id, tool_input)
     return f"Неизвестный инструмент: {name}"
 
 
