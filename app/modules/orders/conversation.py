@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
-from app.modules.dialog import claude_client, history as dialog_history, telegram_client
+from app.modules.dialog import claude_client, escalation_state, history as dialog_history, telegram_client
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -219,6 +219,14 @@ async def _execute_confirm_order(peer_id: int) -> str:
 
 
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
+    if await escalation_state.is_open(peer_id):
+        return (
+            "Эскалация по этому клиенту уже открыта и ждёт ответа менеджера — "
+            "повторное уведомление отправлять не нужно. Просто вежливо скажи "
+            "клиенту, что вопрос уже передан и ты ждёшь ответ — не упоминай "
+            "менеджера как адресата для обращения самого клиента."
+        )
+
     question = tool_input.get("question", "")
     reason = tool_input.get("reason", "")
     dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
@@ -234,6 +242,7 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
             "для обращения самого клиента."
         )
 
+    await escalation_state.mark_open(peer_id)
     return (
         "Менеджер уведомлён в Telegram со ссылкой на этот диалог. Скажи клиенту, "
         "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "

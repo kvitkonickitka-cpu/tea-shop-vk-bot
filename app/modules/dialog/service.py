@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from app.modules.dialog import vk_client
+from app.modules.dialog import escalation_state, vk_client
 from app.modules.orders import conversation as orders_conversation
 
 logger = logging.getLogger(__name__)
@@ -39,3 +39,18 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
 
     await vk_client.send_message(peer_id, reply)
+
+
+async def handle_message_reply(message: dict[str, Any]) -> None:
+    # message_reply прилетает и на сообщения, отправленные нашим ботом через
+    # API, и на те, что менеджер написал руками в приложении VK. Отличаем их
+    # по admin_author_id — он есть только у сообщений живого администратора.
+    admin_author_id = message.get("admin_author_id")
+    peer_id = message.get("peer_id")
+
+    logger.info("message_reply: peer_id=%s admin_author_id=%s", peer_id, admin_author_id)
+
+    if not admin_author_id or peer_id is None:
+        return
+
+    await escalation_state.mark_resolved(peer_id)
