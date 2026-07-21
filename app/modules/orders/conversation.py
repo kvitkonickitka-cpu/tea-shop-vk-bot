@@ -85,12 +85,16 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "Коротко: о чём именно спрашивает клиент",
+                },
                 "reason": {
                     "type": "string",
-                    "description": "Коротко: что именно нужно уточнить у менеджера",
-                }
+                    "description": "Почему бот не может ответить сам (например, каких данных не хватает)",
+                },
             },
-            "required": ["reason"],
+            "required": ["question", "reason"],
         },
     },
 ]
@@ -215,9 +219,10 @@ async def _execute_confirm_order(peer_id: int) -> str:
 
 
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
+    question = tool_input.get("question", "")
     reason = tool_input.get("reason", "")
     dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
-    message = f"Нужна консультация менеджера\nВопрос клиента: {reason}\nДиалог: {dialog_link}"
+    message = f"Вопрос клиента: {question}\n\nПочему эскалировано:\n{reason}\n\n{dialog_link}"
 
     try:
         await telegram_client.send_message(message)
