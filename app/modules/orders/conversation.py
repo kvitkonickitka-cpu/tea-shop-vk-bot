@@ -166,7 +166,7 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
 
     items_total = sum(i["price"] * i["quantity"] for i in resolved)
     draft = OrderDraft(items=resolved, items_total=items_total, stage="awaiting_delivery")
-    state.set_draft(peer_id, draft)
+    await state.set_draft(peer_id, draft)
 
     lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} руб." for i in resolved]
     result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} руб."
@@ -177,7 +177,7 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
 
 
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
-    draft = state.get_draft(peer_id)
+    draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_delivery":
         return "Нет черновика заказа, ожидающего выбора доставки. Уточни у клиента, что он хочет заказать."
 
@@ -191,7 +191,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
     draft.delivery_label = tariff["label"]
     draft.delivery_cost = tariff["price"]
     draft.stage = "awaiting_confirmation"
-    state.set_draft(peer_id, draft)
+    await state.set_draft(peer_id, draft)
 
     total = draft.items_total + draft.delivery_cost
     return (
@@ -202,7 +202,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
 
 
 async def _execute_confirm_order(peer_id: int) -> str:
-    draft = state.get_draft(peer_id)
+    draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
         return "Нет черновика заказа, ожидающего подтверждения. Уточни у клиента, что он хочет заказать."
 
@@ -214,7 +214,7 @@ async def _execute_confirm_order(peer_id: int) -> str:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
     payment_message = await payment_service.generate_payment_link(draft)
-    state.clear_draft(peer_id)
+    await state.clear_draft(peer_id)
     return f"Заказ подтверждён. {payment_message}"
 
 
@@ -255,7 +255,7 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> str:
 
 async def handle_turn(peer_id: int, user_text: str) -> str:
     catalog_context = await catalog_service.build_catalog_context()
-    draft = state.get_draft(peer_id)
+    draft = await state.get_draft(peer_id)
 
     system_prompt = _BASE_SYSTEM_PROMPT
     if catalog_context:
@@ -265,14 +265,14 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
 
     tools = _tools_for_stage(draft.stage if draft else None)
 
-    history = dialog_history.get_history(peer_id)
+    history = await dialog_history.get_history(peer_id)
     messages: list[dict] = history + [{"role": "user", "content": user_text}]
 
     response = await claude_client.converse(messages, system_prompt, tools)
 
     if response.stop_reason != "tool_use":
         reply = claude_client.extract_text(response)
-        dialog_history.append_exchange(peer_id, user_text, reply)
+        await dialog_history.append_exchange(peer_id, user_text, reply)
         return reply
 
     tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
@@ -286,5 +286,5 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
 
     follow_up = await claude_client.converse(messages, system_prompt, tools)
     reply = claude_client.extract_text(follow_up)
-    dialog_history.append_exchange(peer_id, user_text, reply)
+    await dialog_history.append_exchange(peer_id, user_text, reply)
     return reply

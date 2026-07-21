@@ -42,7 +42,8 @@ async def init_models() -> None:
         return
 
     # Модели должны быть импортированы до вызова, чтобы попасть в metadata.
-    from app.modules.orders import models  # noqa: F401
+    from app.modules.dialog import models as dialog_models  # noqa: F401
+    from app.modules.orders import models as orders_models  # noqa: F401
 
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
