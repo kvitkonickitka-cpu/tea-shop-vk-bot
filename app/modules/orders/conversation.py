@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 from pathlib import Path
@@ -227,10 +228,10 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
             "менеджера как адресата для обращения самого клиента."
         )
 
-    question = tool_input.get("question", "")
-    reason = tool_input.get("reason", "")
+    question = html.escape(tool_input.get("question", ""))
+    reason = html.escape(tool_input.get("reason", ""))
     dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
-    message = f"Вопрос клиента: {question}\n\nПочему эскалировано:\n{reason}\n\n{dialog_link}"
+    message = f"<b>Вопрос клиента</b>\n{question}\n\n<b>Почему эскалировано</b>\n{reason}\n\n{dialog_link}"
 
     try:
         await telegram_client.send_message(message)

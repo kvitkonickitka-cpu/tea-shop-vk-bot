@@ -10,6 +10,7 @@ async def send_message(text: str) -> None:
     payload = {
         "chat_id": settings.telegram_manager_chat_id,
         "text": text,
+        "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
     }
 
