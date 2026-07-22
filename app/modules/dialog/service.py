@@ -48,6 +48,10 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
     admin_author_id = message.get("admin_author_id")
     peer_id = message.get("peer_id")
 
+    # Подробный лог сырого объекта — пока не проверяли вживую точное имя
+    # поля admin_author_id, это нужно для быстрой диагностики при первом
+    # реальном тесте.
+    logger.info("message_reply raw object: %s", message)
     logger.info("message_reply: peer_id=%s admin_author_id=%s", peer_id, admin_author_id)
 
     if not admin_author_id or peer_id is None:
