@@ -7,7 +7,13 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
-from app.modules.dialog import claude_client, escalation_state, history as dialog_history, telegram_client
+from app.modules.dialog import (
+    claude_client,
+    escalation_log,
+    escalation_state,
+    history as dialog_history,
+    telegram_client,
+)
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -228,8 +234,10 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
             "менеджера как адресата для обращения самого клиента."
         )
 
-    question = html.escape(tool_input.get("question", ""))
-    reason = html.escape(tool_input.get("reason", ""))
+    question_raw = tool_input.get("question", "")
+    reason_raw = tool_input.get("reason", "")
+    question = html.escape(question_raw)
+    reason = html.escape(reason_raw)
     dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
     message = f"<b>Вопрос клиента</b>\n{question}\n\n<b>Почему эскалировано</b>\n{reason}\n\n{dialog_link}"
 
@@ -244,6 +252,12 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
         )
 
     await escalation_state.mark_open(peer_id)
+
+    try:
+        await escalation_log.record_escalation(peer_id, question_raw, reason_raw)
+    except Exception:
+        logger.exception("Failed to record escalation in database for peer_id=%s", peer_id)
+
     return (
         "Менеджер уведомлён в Telegram со ссылкой на этот диалог. Скажи клиенту, "
         "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "

@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from app.modules.dialog import escalation_state, vk_client
+from app.modules.dialog import escalation_log, escalation_state, vk_client
 from app.modules.orders import conversation as orders_conversation
 
 logger = logging.getLogger(__name__)
@@ -54,3 +54,4 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
         return
 
     await escalation_state.mark_resolved(peer_id)
+    await escalation_log.resolve_latest(peer_id, admin_author_id)
