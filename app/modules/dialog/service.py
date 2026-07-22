@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from app.modules.dialog import escalation_log, escalation_state, vk_client
+from app.modules.dialog import escalation_log, escalation_state, history as dialog_history, vk_client
 from app.modules.orders import conversation as orders_conversation
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,13 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
 
     if not admin_author_id or peer_id is None:
         return
+
+    # Записываем сам текст ответа менеджера в историю переписки — иначе
+    # Claude видит только своё старое обещание "уточню и вернусь" и не
+    # понимает, что вопрос уже реально закрыт содержательно.
+    manager_text = message.get("text", "")
+    if manager_text:
+        await dialog_history.append_message(peer_id, "assistant", manager_text)
 
     await escalation_state.mark_resolved(peer_id)
     await escalation_log.resolve_latest(peer_id, admin_author_id)

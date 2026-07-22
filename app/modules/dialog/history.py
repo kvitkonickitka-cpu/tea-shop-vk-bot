@@ -27,6 +27,28 @@ async def get_history(peer_id: int) -> list[dict]:
         return [{"role": row.role, "content": row.content} for row in rows]
 
 
+async def append_message(peer_id: int, role: str, content: str) -> None:
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        history = _fallback_histories.setdefault(peer_id, [])
+        history.append({"role": role, "content": content})
+        if len(history) > _MAX_HISTORY_MESSAGES:
+            del history[: len(history) - _MAX_HISTORY_MESSAGES]
+        return
+
+    async with session_factory() as session:
+        conversation = await session.get(Conversation, peer_id)
+        if conversation is None:
+            conversation = Conversation(peer_id=peer_id, message_count=1)
+            session.add(conversation)
+        else:
+            conversation.message_count += 1
+
+        session.add(ConversationMessage(peer_id=peer_id, role=role, content=content))
+        await session.commit()
+
+
 async def append_exchange(peer_id: int, user_text: str, assistant_text: str) -> None:
     try:
         session_factory = get_session_factory()
