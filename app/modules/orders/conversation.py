@@ -22,6 +22,9 @@ from app.modules.payment import service as payment_service
 
 logger = logging.getLogger(__name__)
 
+_ESCALATION_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "escalation_flow_prompt.md"
+_ESCALATION_FLOW_PROMPT = _ESCALATION_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
+
 _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "order_flow_prompt.md"
 _ORDER_FLOW_PROMPT = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -157,6 +160,20 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     return "\n".join(lines)
 
 
+async def _describe_escalation(peer_id: int) -> str:
+    if not await escalation_state.is_open(peer_id):
+        return ""
+
+    pending = await escalation_log.get_latest_open(peer_id)
+    if pending is None:
+        return "У клиента уже открыта эскалация к менеджеру, которая ждёт ответа."
+
+    return (
+        "У клиента уже открыта эскалация к менеджеру, которая ждёт ответа.\n"
+        f"Что было передано менеджеру: {pending.question} (причина: {pending.reason})"
+    )
+
+
 async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     catalog = catalog_service.load_items()
     resolved, unresolved = [], []
@@ -286,6 +303,10 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
     system_prompt += f"\n\n{_ORDER_FLOW_PROMPT}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
+
+    escalation_note = await _describe_escalation(peer_id)
+    if escalation_note:
+        system_prompt += f"\n\n{_ESCALATION_FLOW_PROMPT}\n\n{escalation_note}"
 
     tools = _tools_for_stage(draft.stage if draft else None)
 

@@ -1,9 +1,26 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import select
 
 from app.core.database import get_session_factory
 from app.modules.dialog.models import Escalation
+
+
+async def get_latest_open(peer_id: int) -> Optional[Escalation]:
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return None
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(Escalation)
+            .where(Escalation.peer_id == peer_id, Escalation.resolved_at.is_(None))
+            .order_by(Escalation.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
 
 async def record_escalation(peer_id: int, question: str, reason: str) -> None:
