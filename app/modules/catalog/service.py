@@ -29,6 +29,9 @@ async def build_catalog_context() -> str:
         if package_sizes:
             line += f", упаковки: {', '.join(package_sizes)}"
         line += f"): {item.get('description', '')}"
+        link = item.get("link")
+        if link:
+            line += f" Ссылка на товар (в т.ч. с фото): {link}"
         lines.append(line)
 
     return "\n".join(lines)
