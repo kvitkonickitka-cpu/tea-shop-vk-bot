@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
 from app.core.database import get_session_factory
-from app.modules.dialog.models import ConversationMessage
+from app.modules.dialog.models import Conversation, ConversationMessage
 
 _MAX_HISTORY_MESSAGES = 20
 
@@ -39,6 +39,13 @@ async def append_exchange(peer_id: int, user_text: str, assistant_text: str) -> 
         return
 
     async with session_factory() as session:
+        conversation = await session.get(Conversation, peer_id)
+        if conversation is None:
+            conversation = Conversation(peer_id=peer_id, message_count=2)
+            session.add(conversation)
+        else:
+            conversation.message_count += 2
+
         session.add_all(
             [
                 ConversationMessage(peer_id=peer_id, role="user", content=user_text),
