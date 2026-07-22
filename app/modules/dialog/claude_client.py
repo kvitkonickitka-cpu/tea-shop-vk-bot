@@ -20,7 +20,7 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
 
     response = await _client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=500,
+        max_tokens=1024,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
@@ -33,7 +33,7 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
 async def generate_order_notification(facts: str) -> str:
     response = await _client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=300,
+        max_tokens=600,
         system=_ORDER_NOTIFICATION_PROMPT,
         messages=[{"role": "user", "content": facts}],
     )
@@ -46,7 +46,7 @@ async def generate_order_notification(facts: str) -> str:
 async def converse(messages: list[dict], system_prompt: str, tools: list[dict]):
     return await _client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=500,
+        max_tokens=1024,
         system=system_prompt,
         tools=tools,
         messages=messages,
