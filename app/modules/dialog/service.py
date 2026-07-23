@@ -1,24 +1,43 @@
 import logging
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
+from app.core.database import get_session_factory
 from app.modules.dialog import escalation_log, escalation_state, history as dialog_history, vk_client
+from app.modules.dialog.models import ProcessedEvent
 from app.modules.orders import conversation as orders_conversation
 
 logger = logging.getLogger(__name__)
 
-# In-memory dedup only: resets on restart and won't work across multiple
-# server instances. Fine for a single-process MVP; move to Redis/DB later.
-_processed_event_ids: set[str] = set()
+# Резервное хранилище на случай, если DATABASE_URL не настроен — переживёт
+# только до перезапуска процесса (см. is_duplicate).
+_fallback_processed_event_ids: set[str] = set()
 _MAX_TRACKED_EVENTS = 10_000
 
 
-def is_duplicate(event_id: str) -> bool:
-    if event_id in _processed_event_ids:
-        return True
-    if len(_processed_event_ids) >= _MAX_TRACKED_EVENTS:
-        _processed_event_ids.clear()
-    _processed_event_ids.add(event_id)
-    return False
+async def is_duplicate(event_id: str) -> bool:
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        if event_id in _fallback_processed_event_ids:
+            return True
+        if len(_fallback_processed_event_ids) >= _MAX_TRACKED_EVENTS:
+            _fallback_processed_event_ids.clear()
+        _fallback_processed_event_ids.add(event_id)
+        return False
+
+    # Вставка event_id как первичный ключ в БД вместо in-memory set — VK
+    # ретраит недоставленные вебхуки, а при рестарте контейнера или
+    # масштабировании на второй инстанс in-memory set не ловит повтор.
+    async with session_factory() as session:
+        session.add(ProcessedEvent(event_id=event_id))
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            return True
+        return False
 
 
 async def handle_message_new(message: dict[str, Any]) -> None:

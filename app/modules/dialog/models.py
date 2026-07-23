@@ -41,6 +41,17 @@ class EscalationState(Base):
     )
 
 
+class ProcessedEvent(Base):
+    # Дедуп event_id из VK Callback API в БД, а не в памяти процесса — VK
+    # ретраит недоставленные вебхуки, и при рестарте контейнера или
+    # масштабировании на второй инстанс in-memory set не спасает от
+    # повторной обработки одного и того же события.
+    __tablename__ = "processed_events"
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Escalation(Base):
     # Лог каждого фактического обращения к менеджеру (не путать с
     # EscalationState — та хранит только текущий статус "открыта/закрыта"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import settings
@@ -114,6 +115,16 @@ TOOLS = [
         },
     },
 ]
+
+
+@dataclass
+class ToolExecution:
+    # tool_result идёт обратно в Claude, чтобы модель сформулировала ответ.
+    # client_reply — готовый ответ клиенту напрямую, без второго вызова
+    # модели; заполняется только теми тулами, где текст полностью
+    # детерминирован и не зависит от остального контекста реплики.
+    tool_result: str
+    client_reply: str | None = None
 
 
 def _numeric_group_id() -> str:
@@ -248,13 +259,16 @@ async def _execute_confirm_order(peer_id: int) -> str:
     return f"Заказ подтверждён. {payment_message}"
 
 
-async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
+async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
     if await escalation_state.is_open(peer_id):
-        return (
-            "Эскалация по этому клиенту уже открыта и ждёт ответа менеджера — "
-            "повторное уведомление отправлять не нужно. Просто вежливо скажи "
-            "клиенту, что вопрос уже передан и ты ждёшь ответ — не упоминай "
-            "менеджера как адресата для обращения самого клиента."
+        return ToolExecution(
+            tool_result=(
+                "Эскалация по этому клиенту уже открыта и ждёт ответа менеджера — "
+                "повторное уведомление отправлять не нужно. Просто вежливо скажи "
+                "клиенту, что вопрос уже передан и ты ждёшь ответ — не упоминай "
+                "менеджера как адресата для обращения самого клиента."
+            ),
+            client_reply="Напоминаю: этот вопрос уже передан менеджеру, он подключится в ближайшее время 🙏",
         )
 
     question_raw = tool_input.get("question", "")
@@ -268,10 +282,13 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
         await telegram_client.send_message(message)
     except Exception:
         logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
-        return (
-            "Уведомить менеджера технически не удалось. Всё равно скажи клиенту, "
-            "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
-            "для обращения самого клиента."
+        return ToolExecution(
+            tool_result=(
+                "Уведомить менеджера технически не удалось. Всё равно скажи клиенту, "
+                "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
+                "для обращения самого клиента."
+            ),
+            client_reply="Уточню это и вернусь с ответом 🙏",
         )
 
     await escalation_state.mark_open(peer_id)
@@ -281,23 +298,26 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> str:
     except Exception:
         logger.exception("Failed to record escalation in database for peer_id=%s", peer_id)
 
-    return (
-        "Менеджер уведомлён в Telegram со ссылкой на этот диалог. Скажи клиенту, "
-        "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
-        "для обращения самого клиента, только что ты сам уточнишь и вернёшься."
+    return ToolExecution(
+        tool_result=(
+            "Менеджер уведомлён в Telegram со ссылкой на этот диалог. Скажи клиенту, "
+            "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
+            "для обращения самого клиента, только что ты сам уточнишь и вернёшься."
+        ),
+        client_reply="Уточню это у менеджера и вернусь с ответом 🙏",
     )
 
 
-async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> str:
+async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
     if name == "propose_order":
-        return await _execute_propose_order(peer_id, tool_input)
+        return ToolExecution(await _execute_propose_order(peer_id, tool_input))
     if name == "set_delivery_method":
-        return await _execute_set_delivery_method(peer_id, tool_input)
+        return ToolExecution(await _execute_set_delivery_method(peer_id, tool_input))
     if name == "confirm_order":
-        return await _execute_confirm_order(peer_id)
+        return ToolExecution(await _execute_confirm_order(peer_id))
     if name == "escalate_to_manager":
         return await _execute_escalate_to_manager(peer_id, tool_input)
-    return f"Неизвестный инструмент: {name}"
+    return ToolExecution(f"Неизвестный инструмент: {name}")
 
 
 async def handle_turn(peer_id: int, user_text: str) -> str:
@@ -327,12 +347,25 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
         return reply
 
     tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
+    has_text_block = any(block.type == "text" for block in response.content)
     messages.append({"role": "assistant", "content": response.content})
 
-    tool_results = []
-    for block in tool_use_blocks:
-        result_text = await _execute_tool(peer_id, block.name, block.input)
-        tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
+    executions = [(block, await _execute_tool(peer_id, block.name, block.input)) for block in tool_use_blocks]
+
+    # Если единственное, что произошло за ход — вызов тула с полностью
+    # детерминированным ответом (сейчас так только у escalate_to_manager),
+    # и модель не добавила своего текста рядом с tool_use — можно отдать
+    # готовый текст клиенту напрямую и не делать второй, самый медленный
+    # запрос к Claude только ради пересказа того же самого своими словами.
+    if not has_text_block and len(executions) == 1 and executions[0][1].client_reply is not None:
+        reply = executions[0][1].client_reply
+        await dialog_history.append_exchange(peer_id, user_text, reply)
+        return reply
+
+    tool_results = [
+        {"type": "tool_result", "tool_use_id": block.id, "content": execution.tool_result}
+        for block, execution in executions
+    ]
     messages.append({"role": "user", "content": tool_results})
 
     follow_up = await claude_client.converse(messages, system_prompt, tools)

@@ -20,7 +20,7 @@ async def vk_callback(request: Request) -> Response:
         return Response(content=settings.vk_confirmation_token, media_type="text/plain")
 
     event_id = body.get("event_id", "")
-    if event_id and service.is_duplicate(event_id):
+    if event_id and await service.is_duplicate(event_id):
         return Response(content="ok", media_type="text/plain")
 
     # Обрабатываем синхронно, до ответа "ok" — на serverless-платформах
