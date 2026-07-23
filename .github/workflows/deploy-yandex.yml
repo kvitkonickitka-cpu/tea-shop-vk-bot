@@ -1,0 +1,49 @@
+name: Deploy to Yandex Cloud
+
+on:
+  push:
+    branches: [main]
+
+env:
+  IMAGE_NAME: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/tea-shop-vk-bot
+  YC_CONTAINER_NAME: tea-shop-vk-bot
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a -i /home/runner/yandex-cloud
+          echo "/home/runner/yandex-cloud/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate yc CLI
+        run: |
+          echo '${{ secrets.YC_SA_KEY }}' > sa-key.json
+          yc config set service-account-key sa-key.json
+          yc config set folder-id ${{ secrets.YC_FOLDER_ID }}
+
+      - name: Configure Docker for Yandex Container Registry
+        run: yc container registry configure-docker
+
+      - name: Build image
+        run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} -t ${{ env.IMAGE_NAME }}:latest .
+
+      - name: Push image
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.IMAGE_NAME }}:latest
+
+      - name: Deploy new revision to Serverless Container
+        run: |
+          yc serverless container revision deploy \
+            --container-name ${{ env.YC_CONTAINER_NAME }} \
+            --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 8 \
+            --execution-timeout 30s \
+            --service-account-id ${{ secrets.YC_SA_ID }} \
+            --environment "VK_CONFIRMATION_TOKEN=${{ secrets.VK_CONFIRMATION_TOKEN }},VK_SECRET_KEY=${{ secrets.VK_SECRET_KEY }},VK_GROUP_ID=${{ secrets.VK_GROUP_ID }},VK_ACCESS_TOKEN=${{ secrets.VK_ACCESS_TOKEN }},VK_API_VERSION=5.199,ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},ANTHROPIC_MODEL=claude-sonnet-5,DATABASE_URL=${{ secrets.DATABASE_URL }},CDEK_API_BASE_URL=https://api.edu.cdek.ru,CDEK_CLIENT_ID=${{ secrets.CDEK_CLIENT_ID }},CDEK_CLIENT_SECRET=${{ secrets.CDEK_CLIENT_SECRET }},CDEK_FROM_ADDRESS=${{ secrets.CDEK_FROM_ADDRESS }},CDEK_DEFAULT_PACKAGE_WEIGHT_GRAMS=200,TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }},TELEGRAM_MANAGER_CHAT_ID=${{ secrets.TELEGRAM_MANAGER_CHAT_ID }}"
