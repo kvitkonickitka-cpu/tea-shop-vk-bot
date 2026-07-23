@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
+    # Прокси перед api.anthropic.com — нужен, когда хостинг физически в РФ
+    # и Anthropic блокирует прямые запросы оттуда. Пусто = обращаться напрямую.
+    anthropic_base_url: str = ""
 
     # Railway автоматически прокидывает DATABASE_URL при подключении Postgres
     database_url: str = ""

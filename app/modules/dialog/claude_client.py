@@ -10,7 +10,10 @@ _BASE_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 _ORDER_NOTIFICATION_PROMPT_PATH = Path(__file__).parent / "prompts" / "order_notification_prompt.md"
 _ORDER_NOTIFICATION_PROMPT = _ORDER_NOTIFICATION_PROMPT_PATH.read_text(encoding="utf-8")
 
-_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+_client = AsyncAnthropic(
+    api_key=settings.anthropic_api_key,
+    base_url=settings.anthropic_base_url or None,
+)
 
 
 async def generate_reply(user_message: str, catalog_context: str = "") -> str:
