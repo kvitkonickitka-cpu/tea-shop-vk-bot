@@ -45,5 +45,6 @@ jobs:
             --memory 512MB \
             --concurrency 8 \
             --execution-timeout 60s \
+            --min-instances 1 \
             --service-account-id ${{ secrets.YC_SA_ID }} \
             --environment "VK_CONFIRMATION_TOKEN=${{ secrets.VK_CONFIRMATION_TOKEN }},VK_SECRET_KEY=${{ secrets.VK_SECRET_KEY }},VK_GROUP_ID=${{ secrets.VK_GROUP_ID }},VK_ACCESS_TOKEN=${{ secrets.VK_ACCESS_TOKEN }},VK_API_VERSION=5.199,ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},ANTHROPIC_MODEL=claude-sonnet-5,ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL }},DATABASE_URL=${{ secrets.DATABASE_URL }},CDEK_API_BASE_URL=https://api.edu.cdek.ru,CDEK_CLIENT_ID=${{ secrets.CDEK_CLIENT_ID }},CDEK_CLIENT_SECRET=${{ secrets.CDEK_CLIENT_SECRET }},CDEK_FROM_ADDRESS=${{ secrets.CDEK_FROM_ADDRESS }},CDEK_DEFAULT_PACKAGE_WEIGHT_GRAMS=200,TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }},TELEGRAM_MANAGER_CHAT_ID=${{ secrets.TELEGRAM_MANAGER_CHAT_ID }}"
