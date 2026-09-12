@@ -1,0 +1,9 @@
+[Unit]
+Description=Ежедневная резервная копия схемы finance в 06:30 по Москве
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 Europe/Moscow
+Persistent=true
+
+[Install]
+WantedBy=timers.target

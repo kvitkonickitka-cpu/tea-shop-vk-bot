@@ -1,0 +1,14 @@
+[Unit]
+Description=Резервная копия схемы finance
+
+[Service]
+Type=oneshot
+User=cashflow
+Group=cashflow
+Environment=CASHFLOW_ENV_FILE=/etc/cashflow/.env
+ExecStart=/opt/cashflow/deploy/backup.sh
+StandardOutput=append:/var/log/cashflow/backup.log
+StandardError=append:/var/log/cashflow/backup.log
+
+[Install]
+WantedBy=multi-user.target

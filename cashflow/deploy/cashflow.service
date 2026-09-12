@@ -1,0 +1,30 @@
+[Unit]
+Description=Синхронизация выписки Т-Бизнеса и классификация операций
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cashflow
+Group=cashflow
+WorkingDirectory=/opt/cashflow
+Environment=CASHFLOW_ENV_FILE=/etc/cashflow/.env
+ExecStart=/opt/cashflow/.venv/bin/python -m cashflow run-all
+TimeoutStartSec=1800
+
+# Скрипт ходит только в банк и в свою схему БД — всё остальное ему недоступно.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/cashflow /opt/cashflow/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=append:/var/log/cashflow/cashflow.log
+StandardError=append:/var/log/cashflow/cashflow.log
+
+[Install]
+WantedBy=multi-user.target

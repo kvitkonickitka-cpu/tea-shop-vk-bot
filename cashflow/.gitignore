@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Черновик правил: может содержать назначения платежей от физлиц
+data/suggested_rules.csv
+
+# Секреты только в /etc/cashflow/.env
+.env

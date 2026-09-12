@@ -1,0 +1,46 @@
+priority,field,match_type,value,direction,amount_min,amount_max,article_id,active,comment
+# Сравнение строк регистронезависимое. Срабатывает первое правило по возрастанию priority.
+# Правила с active=false выключены — включите после того как проверите на своих данных.
+# ИНН надёжнее названия: как узнаете ИНН контрагента, добавьте правило по counterparty_inn.
+10,purpose,contains,перевод собственных средств,,,,tech_internal_transfer,true,Перенос между своими счетами
+11,purpose,contains,между своими счетами,,,,tech_internal_transfer,true,
+12,purpose,contains,пополнение накопительного счета,,,,tech_internal_transfer,true,Копилка
+13,purpose,contains,размещение депозита,,,,tech_internal_transfer,true,
+20,purpose,contains,единый налоговый платеж,out,,,cfo_out_taxes,true,ЕНП одной статьёй без разбивки
+21,counterparty_name,contains,казначейство,out,,,cfo_out_taxes,true,
+22,purpose,contains,страховые взносы,out,,,cfo_out_taxes,true,
+30,purpose,contains,погашение кредита,out,,,tech_loan_payment,true,Разбивается на проценты и тело по графику
+31,purpose,contains,гашение кредита,out,,,tech_loan_payment,true,
+32,purpose,contains,по кредитному договору,out,,,tech_loan_payment,true,
+35,purpose,contains,выдача кредита,in,,,cff_loan_received,true,
+36,purpose,contains,зачисление кредита,in,,,cff_loan_received,true,
+40,counterparty_name,contains,юмани,in,,,cfo_in_yookassa,true,Выплаты ЮKassa приходят нетто
+41,counterparty_name,contains,юкасса,in,,,cfo_in_yookassa,true,
+42,purpose,contains,yookassa,in,,,cfo_in_yookassa,true,
+50,counterparty_name,contains,интернет решения,in,,,cfo_in_ozon,true,Юрлицо Ozon — проверьте на своей выписке
+51,counterparty_name,contains,озон,in,,,cfo_in_ozon,true,
+52,counterparty_name,contains,озон,out,,,cfo_out_ozon_services,true,Счета от Ozon за услуги
+60,counterparty_name,contains,сдэк,out,,,cfo_out_cdek,true,
+61,counterparty_name,contains,cdek,out,,,cfo_out_cdek,true,
+70,counterparty_name,contains,вконтакте,out,,,cfo_out_vk_ads,true,VK Ads
+71,purpose,contains,vk ads,out,,,cfo_out_vk_ads,true,
+72,purpose,contains,реклама вконтакте,out,,,cfo_out_vk_ads,true,
+80,counterparty_name,contains,црпт,out,,,cfo_out_marking,true,Честный знак
+81,purpose,contains,честный знак,out,,,cfo_out_marking,true,
+82,counterparty_name,contains,такском,out,,,cfo_out_marking,true,ЭДО — проверьте своего оператора
+83,counterparty_name,contains,контур,out,,,cfo_out_marking,true,ЭДО — проверьте своего оператора
+90,purpose,contains,комиссия банка,out,,,cfo_out_bank_fees,true,
+91,purpose,contains,комиссия за ведение счета,out,,,cfo_out_bank_fees,true,
+92,purpose,contains,абонентская плата,out,,,cfo_out_bank_fees,true,
+93,tbank_category,contains,commission,out,,,cfo_out_bank_fees,true,Категория банка — проверьте фактическое значение
+100,counterparty_name,contains,яндекс,out,,,cfo_out_services,true,Yandex Cloud
+101,counterparty_name,contains,anthropic,out,,,cfo_out_services,true,Claude API
+102,purpose,contains,подписка,out,,,cfo_out_services,true,
+110,purpose,contains,возврат покупателю,out,,,cfo_out_refunds,true,
+111,purpose,contains,возврат денежных средств,out,,,cfo_out_refunds,true,
+200,counterparty_name,contains,ЗАПОЛНИТЬ ФИО НИКИТЫ,out,,,cff_owner_draw_nikita,false,Включите и впишите ФИО как оно приходит в выписке
+201,counterparty_name,contains,ЗАПОЛНИТЬ ФИО ИЛЬИ,out,,,cff_owner_draw_ilya,false,Включите и впишите ФИО как оно приходит в выписке
+202,counterparty_name,contains,ЗАПОЛНИТЬ ФИО НИКИТЫ,in,,,cff_owner_contribution,false,Пополнение с личной карты
+203,counterparty_name,contains,ЗАПОЛНИТЬ ФИО ИЛЬИ,in,,,cff_owner_contribution,false,
+300,counterparty_name,contains,ЗАПОЛНИТЬ ОПТОВИКА ЧАЯ,out,,,cfo_out_goods,false,Впишите название или ИНН поставщика
+310,purpose,contains,упаковк,out,,,cfo_out_packaging,true,
