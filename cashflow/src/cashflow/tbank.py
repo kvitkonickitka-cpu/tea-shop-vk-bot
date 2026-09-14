@@ -189,8 +189,8 @@ def _extract_balances(body: Any, account_number: str, period_to: date) -> list[B
     source = body.get("balances") if isinstance(body.get("balances"), dict) else body
     result: list[Balance] = []
     mapping = {
-        "opening": ("openingBalance", "balanceOpening", "startBalance", "openingAmount"),
-        "closing": ("closingBalance", "balanceClosing", "endBalance", "closingAmount", "balance"),
+        "opening": ("balanceBegin", "openingBalance", "balanceOpening", "startBalance", "openingAmount"),
+        "closing": ("balanceEnd", "closingBalance", "balanceClosing", "endBalance", "closingAmount", "balance"),
     }
     for kind, names in mapping.items():
         value = _first(source, *names) if isinstance(source, dict) else None

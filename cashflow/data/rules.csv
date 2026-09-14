@@ -40,7 +40,8 @@ priority,field,match_type,value,direction,amount_min,amount_max,article_id,activ
 111,purpose,contains,возврат денежных средств,out,,,cfo_out_refunds,true,
 200,counterparty_name,contains,ЗАПОЛНИТЬ ФИО НИКИТЫ,out,,,cff_owner_draw_nikita,false,Включите и впишите ФИО как оно приходит в выписке
 201,counterparty_name,contains,ЗАПОЛНИТЬ ФИО ИЛЬИ,out,,,cff_owner_draw_ilya,false,Включите и впишите ФИО как оно приходит в выписке
-202,counterparty_name,contains,ЗАПОЛНИТЬ ФИО НИКИТЫ,in,,,cff_owner_contribution,false,Пополнение с личной карты
+202,counterparty_name,contains,КВИТКО НИКИТА АЛЕКСАНДРОВИЧ,in,,,cff_owner_contribution,true,Пополнение с личной карты
 203,counterparty_name,contains,ЗАПОЛНИТЬ ФИО ИЛЬИ,in,,,cff_owner_contribution,false,
 300,counterparty_name,contains,ЗАПОЛНИТЬ ОПТОВИКА ЧАЯ,out,,,cfo_out_goods,false,Впишите название или ИНН поставщика
 310,purpose,contains,упаковк,out,,,cfo_out_packaging,true,
+320,purpose,contains,выдаче кэп,out,,,cfo_out_other,true,Услуги по выдаче КЭП

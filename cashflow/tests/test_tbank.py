@@ -73,8 +73,11 @@ def test_pagination_follows_cursor_and_reads_balances_once():
         seen_params.append(dict(request.url.params))
         if "cursor" not in request.url.params:
             return httpx.Response(200, json={
-                "openingBalance": "10000.00",
-                "closingBalance": "12345.67",
+                "balances": {
+                    "balances": [{"date": "2025-03-01", "balanceBegin": 10000.00, "balanceEnd": 12345.67}],
+                    "balanceBegin": 10000.00,
+                    "balanceEnd": 12345.67,
+                },
                 "operations": [op_payload(operationId="a")],
                 "nextCursor": "page2",
             })
