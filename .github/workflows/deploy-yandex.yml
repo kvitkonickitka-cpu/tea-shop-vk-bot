@@ -7,12 +7,13 @@ on:
 env:
   IMAGE_NAME: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/tea-shop-vk-bot
   YC_CONTAINER_NAME: tea-shop-vk-bot
-  # Сеть и группа безопасности виртуалки с Postgres. Контейнер подключается
-  # к этой сети, чтобы ходить к базе по внутреннему адресу (10.129.0.4), а не
-  # по публичному: у serverless-контейнера нет постоянного исходящего адреса,
-  # и держать его в списке разрешённых префиксов вручную невозможно.
+  # Сеть виртуалки с Postgres. Контейнер подключается к ней, чтобы ходить к
+  # базе по внутреннему адресу (10.129.0.4), а не по публичному: у
+  # serverless-контейнера нет постоянного исходящего адреса, и держать его в
+  # списке разрешённых префиксов вручную невозможно. Группа безопасности
+  # отдельным флагом не задаётся — контейнер получает группу сети по
+  # умолчанию, а это и есть default-sg-enps8ig7g281pqd0l6je.
   YC_NETWORK_ID: enps8ig7g281pqd0l6je
-  YC_SECURITY_GROUP_ID: enphk14d802c0t0e6k98
 
 jobs:
   deploy:
@@ -54,5 +55,4 @@ jobs:
             --min-instances 1 \
             --service-account-id ${{ secrets.YC_SA_ID }} \
             --network-id ${{ env.YC_NETWORK_ID }} \
-            --security-group-ids ${{ env.YC_SECURITY_GROUP_ID }} \
             --environment "VK_CONFIRMATION_TOKEN=${{ secrets.VK_CONFIRMATION_TOKEN }},VK_SECRET_KEY=${{ secrets.VK_SECRET_KEY }},VK_GROUP_ID=${{ secrets.VK_GROUP_ID }},VK_ACCESS_TOKEN=${{ secrets.VK_ACCESS_TOKEN }},VK_API_VERSION=5.199,ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},ANTHROPIC_MODEL=claude-sonnet-5,ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL }},DATABASE_URL=${{ secrets.DATABASE_URL }},CDEK_API_BASE_URL=https://api.edu.cdek.ru,CDEK_CLIENT_ID=${{ secrets.CDEK_CLIENT_ID }},CDEK_CLIENT_SECRET=${{ secrets.CDEK_CLIENT_SECRET }},CDEK_FROM_ADDRESS=${{ secrets.CDEK_FROM_ADDRESS }},CDEK_DEFAULT_PACKAGE_WEIGHT_GRAMS=200,TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }},TELEGRAM_MANAGER_CHAT_ID=${{ secrets.TELEGRAM_MANAGER_CHAT_ID }}"
