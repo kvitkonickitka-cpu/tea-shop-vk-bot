@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +16,22 @@ logger = logging.getLogger(__name__)
 # только до перезапуска процесса (см. already_processed / mark_processed).
 _fallback_processed_event_ids: set[str] = set()
 _MAX_TRACKED_EVENTS = 10_000
+
+# Ссылки на фоновые задачи, чтобы сборщик мусора не убрал их на полпути.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _set_typing_quietly(peer_id: int) -> None:
+    try:
+        await vk_client.set_typing(peer_id)
+    except Exception:
+        logger.warning("Failed to set typing indicator for peer_id=%s", peer_id, exc_info=True)
 
 
 async def already_processed(event_id: str) -> bool:
@@ -65,10 +83,14 @@ async def handle_message_new(message: dict[str, Any]) -> None:
     if not text:
         return
 
-    try:
-        await vk_client.set_typing(peer_id)
-    except Exception:
-        logger.warning("Failed to set typing indicator for peer_id=%s", peer_id, exc_info=True)
+    started = time.monotonic()
+
+    # Индикатор «печатает» — украшение, ответ клиента от него не зависит.
+    # Раньше его ждали до генерации, и он съедал до двух секунд из тех
+    # примерно восьми, что VK отводит на ответ вебхуку: на эскалации этого
+    # хватало, чтобы не уложиться, VK рвал соединение и клиент не получал
+    # ничего. Пусть выполняется сам по себе, параллельно с Claude.
+    _fire_and_forget(_set_typing_quietly(peer_id))
 
     try:
         reply = await orders_conversation.handle_turn(peer_id, text)
@@ -76,7 +98,22 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         logger.exception("Claude generation failed for peer_id=%s", peer_id)
         reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
 
-    await vk_client.send_message(peer_id, reply)
+    generated = time.monotonic()
+    try:
+        await vk_client.send_message(peer_id, reply)
+    finally:
+        # Хронометраж по стадиям: VK разрывает соединение молча, и без этой
+        # строки из логов видно только общую длительность, а не то, что
+        # именно не успело. В finally — чтобы замер был и при неудачной
+        # отправке, то есть ровно тогда, когда он нужнее всего.
+        finished = time.monotonic()
+        logger.info(
+            "handle_message_new: peer_id=%s ответ=%.2fс отправка=%.2fс всего=%.2fс",
+            peer_id,
+            generated - started,
+            finished - generated,
+            finished - started,
+        )
 
 
 async def handle_message_reply(message: dict[str, Any]) -> None:
