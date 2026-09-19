@@ -84,34 +84,42 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         return
 
     started = time.monotonic()
-
-    # Индикатор «печатает» — украшение, ответ клиента от него не зависит.
-    # Раньше его ждали до генерации, и он съедал до двух секунд из тех
-    # примерно восьми, что VK отводит на ответ вебхуку: на эскалации этого
-    # хватало, чтобы не уложиться, VK рвал соединение и клиент не получал
-    # ничего. Пусть выполняется сам по себе, параллельно с Claude.
-    _fire_and_forget(_set_typing_quietly(peer_id))
+    # Докуда дошли к моменту, когда запись попадёт в лог. VK обрывает
+    # соединение молча, и без этого из логов видна только общая длительность,
+    # а не стадия, которая её съела.
+    stage = "генерация ответа"
+    generated: float | None = None
 
     try:
-        reply = await orders_conversation.handle_turn(peer_id, text)
-    except Exception:
-        logger.exception("Claude generation failed for peer_id=%s", peer_id)
-        reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
+        # Индикатор «печатает» — украшение, ответ клиента от него не зависит.
+        # Раньше его ждали до генерации, и он съедал до двух секунд из тех
+        # примерно восьми, что VK отводит на ответ вебхуку: на эскалации этого
+        # хватало, чтобы не уложиться, VK рвал соединение и клиент не получал
+        # ничего. Пусть выполняется сам по себе, параллельно с Claude.
+        _fire_and_forget(_set_typing_quietly(peer_id))
 
-    generated = time.monotonic()
-    try:
+        try:
+            reply = await orders_conversation.handle_turn(peer_id, text)
+        except Exception:
+            logger.exception("Claude generation failed for peer_id=%s", peer_id)
+            reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
+
+        generated = time.monotonic()
+        stage = "отправка в VK"
         await vk_client.send_message(peer_id, reply)
+        stage = "готово"
     finally:
-        # Хронометраж по стадиям: VK разрывает соединение молча, и без этой
-        # строки из логов видно только общую длительность, а не то, что
-        # именно не успело. В finally — чтобы замер был и при неудачной
-        # отправке, то есть ровно тогда, когда он нужнее всего.
+        # finally вокруг всего обработчика, а не только отправки: когда VK
+        # обрывает вебхук по таймауту, выполнение отменяется прямо посреди
+        # запроса к Claude, и замер, стоящий ниже по коду, до лога не доходит —
+        # то есть молчит ровно в том случае, ради которого он и нужен.
+        # CancelledError пройдёт через finally и заберёт запись с собой.
         finished = time.monotonic()
         logger.info(
-            "handle_message_new: peer_id=%s ответ=%.2fс отправка=%.2fс всего=%.2fс",
+            "handle_message_new: peer_id=%s стадия=%s генерация=%.2fс всего=%.2fс",
             peer_id,
-            generated - started,
-            finished - generated,
+            stage,
+            (generated if generated is not None else finished) - started,
             finished - started,
         )
 
