@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.background import fire_and_forget
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.dialog import (
@@ -259,6 +260,13 @@ async def _execute_confirm_order(peer_id: int) -> str:
     return f"Заказ подтверждён. {payment_message}"
 
 
+async def _notify_manager(peer_id: int, message: str) -> None:
+    try:
+        await telegram_client.send_message(message)
+    except Exception:
+        logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
+
+
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
     if await escalation_state.is_open(peer_id):
         return ToolExecution(
@@ -278,19 +286,8 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
     message = f"<b>Вопрос клиента</b>\n{question}\n\n<b>Почему эскалировано</b>\n{reason}\n\n{dialog_link}"
 
-    try:
-        await telegram_client.send_message(message)
-    except Exception:
-        logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
-        return ToolExecution(
-            tool_result=(
-                "Уведомить менеджера технически не удалось. Всё равно скажи клиенту, "
-                "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
-                "для обращения самого клиента."
-            ),
-            client_reply="Уточню это и вернусь с ответом 🙏",
-        )
-
+    # Сначала фиксируем эскалацию у себя — это быстро и надёжно, и именно
+    # эта запись, а не уведомление, остаётся следом того, что вопрос передан.
     await escalation_state.mark_open(peer_id)
 
     try:
@@ -298,11 +295,19 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     except Exception:
         logger.exception("Failed to record escalation in database for peer_id=%s", peer_id)
 
+    # Уведомление менеджеру уходит в фон. Раньше его ждали здесь же, а у
+    # запроса к Telegram таймаут 10 секунд — больше, чем VK отводит на весь
+    # вебхук. В логах это выглядело так: Claude уже ответил, а дальше запрос
+    # молча висел на Telegram, пока VK не разрывал соединение. В итоге ответа
+    # не получал ни клиент, ни менеджер — ждать было не только бесполезно, но
+    # и вредно.
+    fire_and_forget(_notify_manager(peer_id, message))
+
     return ToolExecution(
         tool_result=(
-            "Менеджер уведомлён в Telegram со ссылкой на этот диалог. Скажи клиенту, "
-            "что уточнишь и вернёшься с ответом — не упоминай менеджера как адресата "
-            "для обращения самого клиента, только что ты сам уточнишь и вернёшься."
+            "Вопрос зафиксирован и передан менеджеру. Скажи клиенту, что уточнишь "
+            "и вернёшься с ответом — не упоминай менеджера как адресата для "
+            "обращения самого клиента, только что ты сам уточнишь и вернёшься."
         ),
         client_reply="Уточню это у менеджера и вернусь с ответом 🙏",
     )

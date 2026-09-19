@@ -1,10 +1,10 @@
-import asyncio
 import logging
 import time
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from app.core.background import fire_and_forget
 from app.core.database import get_session_factory
 from app.modules.dialog import escalation_log, escalation_state, history as dialog_history, vk_client
 from app.modules.dialog.models import ProcessedEvent
@@ -16,16 +16,6 @@ logger = logging.getLogger(__name__)
 # только до перезапуска процесса (см. already_processed / mark_processed).
 _fallback_processed_event_ids: set[str] = set()
 _MAX_TRACKED_EVENTS = 10_000
-
-# Ссылки на фоновые задачи, чтобы сборщик мусора не убрал их на полпути.
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _fire_and_forget(coro) -> None:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
 
 async def _set_typing_quietly(peer_id: int) -> None:
     try:
@@ -96,7 +86,7 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         # примерно восьми, что VK отводит на ответ вебхуку: на эскалации этого
         # хватало, чтобы не уложиться, VK рвал соединение и клиент не получал
         # ничего. Пусть выполняется сам по себе, параллельно с Claude.
-        _fire_and_forget(_set_typing_quietly(peer_id))
+        fire_and_forget(_set_typing_quietly(peer_id))
 
         try:
             reply = await orders_conversation.handle_turn(peer_id, text)
