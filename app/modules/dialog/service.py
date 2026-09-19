@@ -11,33 +11,52 @@ from app.modules.orders import conversation as orders_conversation
 logger = logging.getLogger(__name__)
 
 # Резервное хранилище на случай, если DATABASE_URL не настроен — переживёт
-# только до перезапуска процесса (см. is_duplicate).
+# только до перезапуска процесса (см. already_processed / mark_processed).
 _fallback_processed_event_ids: set[str] = set()
 _MAX_TRACKED_EVENTS = 10_000
 
 
-async def is_duplicate(event_id: str) -> bool:
+async def already_processed(event_id: str) -> bool:
+    # Отметки хранятся в БД, а не в памяти процесса: VK ретраит недоставленные
+    # вебхуки, а при рестарте контейнера или масштабировании на второй инстанс
+    # in-memory set повтор не ловит.
     try:
         session_factory = get_session_factory()
     except RuntimeError:
-        if event_id in _fallback_processed_event_ids:
-            return True
+        return event_id in _fallback_processed_event_ids
+
+    async with session_factory() as session:
+        return await session.get(ProcessedEvent, event_id) is not None
+
+
+async def mark_processed(event_id: str) -> None:
+    """Отмечает событие обработанным — ПОСЛЕ того, как ответ клиенту отправлен.
+
+    Раньше отметка ставилась в начале обработки. Если запрос не доживал до
+    конца — VK закрывает соединение по своему таймауту, контейнер уходит на
+    перезапуск, — отметка всё равно оставалась в базе, и повторную доставку
+    от VK опознавало как дубликат и молча выбрасывало. Клиент не получал
+    ничего, в логах не оставалось ни строчки.
+
+    Обратная сторона размена: если контейнер умрёт между отправкой ответа и
+    этой отметкой, VK повторит доставку и клиент получит ответ дважды. Дубль
+    заметен и не страшен, потерянное сообщение незаметно и потому хуже.
+    """
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
         if len(_fallback_processed_event_ids) >= _MAX_TRACKED_EVENTS:
             _fallback_processed_event_ids.clear()
         _fallback_processed_event_ids.add(event_id)
-        return False
+        return
 
-    # Вставка event_id как первичный ключ в БД вместо in-memory set — VK
-    # ретраит недоставленные вебхуки, а при рестарте контейнера или
-    # масштабировании на второй инстанс in-memory set не ловит повтор.
     async with session_factory() as session:
         session.add(ProcessedEvent(event_id=event_id))
         try:
             await session.commit()
         except IntegrityError:
+            # Параллельная доставка того же события успела отметиться первой.
             await session.rollback()
-            return True
-        return False
 
 
 async def handle_message_new(message: dict[str, Any]) -> None:

@@ -20,7 +20,7 @@ async def vk_callback(request: Request) -> Response:
         return Response(content=settings.vk_confirmation_token, media_type="text/plain")
 
     event_id = body.get("event_id", "")
-    if event_id and await service.is_duplicate(event_id):
+    if event_id and await service.already_processed(event_id):
         return Response(content="ok", media_type="text/plain")
 
     # Обрабатываем синхронно, до ответа "ok" — на serverless-платформах
@@ -39,5 +39,12 @@ async def vk_callback(request: Request) -> Response:
     elif event_type == "market_order_new":
         order_event = body.get("object", {})
         await orders_service.handle_new_order(order_event)
+
+    # Отмечаем событие обработанным только здесь, когда ответ клиенту уже ушёл.
+    # Если обработка не дошла досюда — упала с ошибкой или её оборвал VK по
+    # таймауту, — отметки не будет, и повторная доставка отработает заново,
+    # а не потеряется как дубликат.
+    if event_id:
+        await service.mark_processed(event_id)
 
     return Response(content="ok", media_type="text/plain")
