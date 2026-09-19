@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.background import fire_and_forget
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.dialog import (
@@ -295,13 +294,15 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     except Exception:
         logger.exception("Failed to record escalation in database for peer_id=%s", peer_id)
 
-    # Уведомление менеджеру уходит в фон. Раньше его ждали здесь же, а у
-    # запроса к Telegram таймаут 10 секунд — больше, чем VK отводит на весь
-    # вебхук. В логах это выглядело так: Claude уже ответил, а дальше запрос
-    # молча висел на Telegram, пока VK не разрывал соединение. В итоге ответа
-    # не получал ни клиент, ни менеджер — ждать было не только бесполезно, но
-    # и вредно.
-    fire_and_forget(_notify_manager(peer_id, message))
+    # Уведомление менеджеру ждём здесь же, но недолго: таймаут у клиента
+    # Telegram теперь 2 секунды, а не 10, и весь бюджет VK он больше съесть
+    # не может.
+    #
+    # Отправляли это в фон — не сработало: на serverless инстанс засыпает
+    # сразу после ответа, и задача умирала, не дойдя до сети. В логах не
+    # оставалось ни успеха, ни ошибки. Ограниченный по времени вызов в общем
+    # пути хуже по задержке, но он хотя бы случается и оставляет след.
+    await _notify_manager(peer_id, message)
 
     return ToolExecution(
         tool_result=(

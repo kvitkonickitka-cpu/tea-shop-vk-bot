@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # Telegram-бот для уведомлений менеджера об эскалациях из чата с клиентом
     telegram_bot_token: str = ""
     telegram_manager_chat_id: str = ""
+    # Прокси перед api.telegram.org — как и у Anthropic, нужен потому, что из
+    # российского дата-центра Telegram недоступен: проверено с виртуалки,
+    # соединение просто висит до таймаута. Пусто = обращаться напрямую.
+    telegram_api_base_url: str = ""
 
 
 settings = Settings()
