@@ -3,6 +3,10 @@ name: Deploy to Yandex Cloud
 on:
   push:
     branches: [main]
+  # Ручной запуск из вкладки Actions: нужен, чтобы перевыкатить ревизию после
+  # правок вне репозитория — смены секрета, роли сервисного аккаунта, правила
+  # в группе безопасности, — не засоряя историю пустыми коммитами.
+  workflow_dispatch:
 
 env:
   IMAGE_NAME: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/tea-shop-vk-bot
