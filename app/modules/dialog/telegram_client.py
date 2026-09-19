@@ -23,9 +23,17 @@ async def send_message(text: str, chat_id: str | None = None) -> None:
         "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
     }
+    # Секрет нужен только когда идём через свой прокси (не напрямую в Telegram) —
+    # без него прокси стал бы открытым релеем: им мог бы пользоваться кто угодно
+    # со своим токеном, а не только наш бот.
+    headers = (
+        {"X-Proxy-Secret": settings.telegram_proxy_secret}
+        if settings.telegram_api_base_url and settings.telegram_proxy_secret
+        else {}
+    )
 
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-        response = await client.post(url, json=payload)
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         if not data.get("ok"):
