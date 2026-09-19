@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # российского дата-центра Telegram недоступен: проверено с виртуалки,
     # соединение просто висит до таймаута. Пусто = обращаться напрямую.
     telegram_api_base_url: str = ""
+    # Секрет в заголовке X-Proxy-Secret, которым прокси отличает наши запросы
+    # от чужих — без него /tg/* был бы открытым релеем в Telegram для всех.
+    # Используется только вместе с telegram_api_base_url.
+    telegram_proxy_secret: str = ""
 
 
 settings = Settings()
