@@ -11,11 +11,14 @@ TELEGRAM_API_URL = "https://api.telegram.org"
 _TIMEOUT_SECONDS = 2
 
 
-async def send_message(text: str) -> None:
+async def send_message(text: str, chat_id: str | None = None) -> None:
+    # По умолчанию — чат менеджера, куда идут эскалации. Отдельным адресатом
+    # пользуются мини-отчёты по завершённым диалогам: им нужен свой чат, чтобы
+    # не тонуть в срочных сообщениях и не топить их.
     base_url = settings.telegram_api_base_url or TELEGRAM_API_URL
     url = f"{base_url}/bot{settings.telegram_bot_token}/sendMessage"
     payload = {
-        "chat_id": settings.telegram_manager_chat_id,
+        "chat_id": chat_id or settings.telegram_manager_chat_id,
         "text": text,
         "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},

@@ -12,6 +12,7 @@ from app.modules.dialog import (
     claude_client,
     escalation_log,
     escalation_state,
+    vk_client,
     history as dialog_history,
     telegram_client,
 )
@@ -127,14 +128,6 @@ class ToolExecution:
     client_reply: str | None = None
 
 
-def _numeric_group_id() -> str:
-    group_id = settings.vk_group_id
-    for prefix in ("club", "public"):
-        if group_id.startswith(prefix):
-            return group_id[len(prefix) :]
-    return group_id
-
-
 def _tools_for_stage(stage: str | None) -> list[dict]:
     # Даём модели только тот инструмент, который реально уместен на текущем
     # этапе — так она физически не может вызвать propose_order повторно,
@@ -181,13 +174,16 @@ async def _describe_escalation(peer_id: int) -> str:
     if not await escalation_state.is_open(peer_id):
         return ""
 
+    # Формулировки намеренно без слова «эскалация» и прочих внутренних
+    # терминов: модель охотно пересказывает их клиенту дословно, и он читает
+    # в ответе «эскалация уже открыта», не понимая, о чём речь.
     pending = await escalation_log.get_latest_open(peer_id)
     if pending is None:
-        return "У клиента уже открыта эскалация к менеджеру, которая ждёт ответа."
+        return "Вопрос клиента уже передан менеджеру и ждёт его ответа."
 
     return (
-        "У клиента уже открыта эскалация к менеджеру, которая ждёт ответа.\n"
-        f"Что было передано менеджеру: {pending.question} (причина: {pending.reason})"
+        "Вопрос клиента уже передан менеджеру и ждёт его ответа.\n"
+        f"Что передано: {pending.question} (почему: {pending.reason})"
     )
 
 
@@ -270,19 +266,19 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     if await escalation_state.is_open(peer_id):
         return ToolExecution(
             tool_result=(
-                "Эскалация по этому клиенту уже открыта и ждёт ответа менеджера — "
-                "повторное уведомление отправлять не нужно. Просто вежливо скажи "
-                "клиенту, что вопрос уже передан и ты ждёшь ответ — не упоминай "
-                "менеджера как адресата для обращения самого клиента."
+                "Вопрос этого клиента уже передан менеджеру и ждёт ответа — "
+                "уведомлять менеджера второй раз не нужно. Коротко подтверди "
+                "клиенту, что менеджер подключится, и не повторяй это в "
+                "следующих ответах, если он сам не спросит."
             ),
-            client_reply="Напоминаю: этот вопрос уже передан менеджеру, он подключится в ближайшее время 🙏",
+            client_reply="Менеджер уже знает про этот вопрос и подключится, как только освободится 🙏",
         )
 
     question_raw = tool_input.get("question", "")
     reason_raw = tool_input.get("reason", "")
     question = html.escape(question_raw)
     reason = html.escape(reason_raw)
-    dialog_link = f"https://vk.com/gim{_numeric_group_id()}?sel={peer_id}"
+    dialog_link = vk_client.dialog_link(peer_id)
     message = f"<b>Вопрос клиента</b>\n{question}\n\n<b>Почему эскалировано</b>\n{reason}\n\n{dialog_link}"
 
     # Сначала фиксируем эскалацию у себя — это быстро и надёжно, и именно

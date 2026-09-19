@@ -7,6 +7,16 @@ from app.core.config import settings
 VK_API_URL = "https://api.vk.com/method"
 
 
+def dialog_link(peer_id: int) -> str:
+    """Ссылка на переписку с клиентом в интерфейсе сообщества."""
+    group_id = settings.vk_group_id
+    for prefix in ("club", "public"):
+        if group_id.startswith(prefix):
+            group_id = group_id[len(prefix) :]
+            break
+    return f"https://vk.com/gim{group_id}?sel={peer_id}"
+
+
 async def set_typing(peer_id: int) -> None:
     params = {
         "access_token": settings.vk_access_token,

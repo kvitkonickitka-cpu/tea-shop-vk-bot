@@ -65,3 +65,14 @@ class Escalation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by_admin_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+
+class DialogReport(Base):
+    # Когда по диалогу последний раз уходил мини-отчёт в Telegram. Отдельная
+    # таблица, а не колонка в conversations, потому что миграций в проекте нет:
+    # create_all создаёт недостающие таблицы, но не добавляет колонки в
+    # существующие, и новое поле в conversations просто не появилось бы.
+    __tablename__ = "dialog_reports"
+
+    peer_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

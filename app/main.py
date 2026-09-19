@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.internal import router as internal_router
 from app.api.vk import router as vk_router
 from app.core import diagnostics
 from app.core.config import settings
@@ -13,6 +14,7 @@ logging.basicConfig(level=logging.INFO)
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
 app.include_router(health_router)
+app.include_router(internal_router)
 app.include_router(vk_router)
 
 
