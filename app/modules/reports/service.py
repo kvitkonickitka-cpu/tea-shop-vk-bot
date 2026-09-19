@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.dialog import claude_client, telegram_client, vk_client
+from app.modules.dialog import claude_client, history as dialog_history, telegram_client, vk_client
 from app.modules.dialog.models import (
     Conversation,
     ConversationMessage,
@@ -25,6 +25,16 @@ _MAX_MESSAGES = 200
 _MAX_MESSAGE_CHARS = 1000
 
 _ROLE_LABELS = {"user": "клиент", "assistant": "бот"}
+
+
+def _speaker(message) -> str:
+    # В базе у бота и у менеджера одна и та же роль assistant — различает их
+    # только пометка автора. Без неё выжимка приписывала боту слова живого
+    # человека: «бот раз за разом сообщал о закрытии вопроса», хотя это писал
+    # менеджер руками.
+    if message.role == "assistant" and message.author == dialog_history.AUTHOR_MANAGER:
+        return "менеджер"
+    return _ROLE_LABELS.get(message.role, message.role)
 
 
 async def send_pending_reports() -> dict:
@@ -135,9 +145,8 @@ async def _report_one(session_factory, conversation: Conversation, reported_at: 
 def _build_transcript(conversation, messages, orders, escalations) -> str:
     lines = [f"Переписка с клиентом, сообщений: {len(messages)}", "", "--- переписка ---"]
     for message in messages:
-        role = _ROLE_LABELS.get(message.role, message.role)
         text = message.content[:_MAX_MESSAGE_CHARS]
-        lines.append(f"{role}: {text}")
+        lines.append(f"{_speaker(message)}: {text}")
 
     lines += ["", "--- что произошло по делу ---"]
     if orders:

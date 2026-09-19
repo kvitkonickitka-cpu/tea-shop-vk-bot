@@ -28,6 +28,13 @@ class ConversationMessage(Base):
     peer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.peer_id"), index=True)
     role: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(String)
+    # Кто написал реплику с ролью assistant: сам бот или живой менеджер,
+    # зашедший в диалог руками. В API Claude ролей всего две, и без этой
+    # пометки ответы менеджера неотличимы от собственных слов бота — он
+    # приписывал себе чужие реплики, и это же попадало в отчёты.
+    # NULL означает «бот»: так читаются все строки, записанные до появления
+    # колонки.
+    author: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

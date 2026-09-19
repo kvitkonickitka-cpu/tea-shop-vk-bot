@@ -52,6 +52,25 @@ def is_available() -> bool:
     return _session_factory is not None
 
 
+# Бедняцкие миграции: create_all создаёт недостающие таблицы, но не добавляет
+# колонки в уже существующие, а Alembic в проекте нет. Операции идемпотентны и
+# стоят поиск по системному каталогу, так что переживают запуск на каждом
+# холодном старте. Если появится третья такая строчка — пора заводить Alembic.
+_MISSING_COLUMNS = (
+    "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS author VARCHAR",
+)
+
+
+async def _add_missing_columns(conn) -> None:
+    for statement in _MISSING_COLUMNS:
+        try:
+            await conn.exec_driver_sql(statement)
+        except Exception:
+            # Не роняем старт и не уводим бота в резервный режим из-за этого:
+            # без колонки он работает, просто хуже различает автора реплик.
+            logger.exception("Не удалось выполнить миграцию: %s", statement)
+
+
 async def init_models() -> None:
     global _engine, _session_factory
 
@@ -66,6 +85,7 @@ async def init_models() -> None:
     try:
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await _add_missing_columns(conn)
     except Exception:
         # Недоступная база раньше роняла старт целиком: uvicorn завершался,
         # контейнер уходил в цикл перезапусков и переставал отвечать вообще

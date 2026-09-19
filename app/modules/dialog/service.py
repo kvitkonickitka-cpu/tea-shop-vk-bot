@@ -135,7 +135,9 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
     # понимает, что вопрос уже реально закрыт содержательно.
     manager_text = message.get("text", "")
     if manager_text:
-        await dialog_history.append_message(peer_id, "assistant", manager_text)
+        await dialog_history.append_message(
+            peer_id, "assistant", manager_text, author=dialog_history.AUTHOR_MANAGER
+        )
 
     await escalation_state.mark_resolved(peer_id)
     await escalation_log.resolve_latest(peer_id, admin_author_id)
