@@ -347,17 +347,24 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
         return reply
 
     tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
-    has_text_block = any(block.type == "text" for block in response.content)
     messages.append({"role": "assistant", "content": response.content})
 
     executions = [(block, await _execute_tool(peer_id, block.name, block.input)) for block in tool_use_blocks]
 
-    # Если единственное, что произошло за ход — вызов тула с полностью
-    # детерминированным ответом (сейчас так только у escalate_to_manager),
-    # и модель не добавила своего текста рядом с tool_use — можно отдать
-    # готовый текст клиенту напрямую и не делать второй, самый медленный
-    # запрос к Claude только ради пересказа того же самого своими словами.
-    if not has_text_block and len(executions) == 1 and executions[0][1].client_reply is not None:
+    # Если за ход выполнился ровно один инструмент и ответ клиенту у него
+    # детерминированный (сейчас так только у escalate_to_manager), отдаём этот
+    # текст напрямую. Второй запрос к Claude нужен лишь чтобы пересказать то же
+    # самое своими словами, а стоит он несколько секунд — из-за него путь
+    # эскалации не укладывался в таймаут вебхука VK: тот рвал соединение
+    # (в логах ERROR Code 499), ответ клиенту отправить уже не успевали, и
+    # человек не получал ничего.
+    #
+    # Раньше здесь дополнительно требовалось, чтобы модель не написала своего
+    # текста рядом с вызовом инструмента, — и на первой эскалации это условие
+    # обычно не выполнялось, так что короткий путь не срабатывал именно там,
+    # где был нужнее всего. Текст модели при этом теряется: осознанный размен,
+    # предсказуемый ответ за две секунды полезнее красивого, который не дошёл.
+    if len(executions) == 1 and executions[0][1].client_reply is not None:
         reply = executions[0][1].client_reply
         await dialog_history.append_exchange(peer_id, user_text, reply)
         return reply
