@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import get_session_factory
 from app.modules.delivery import cdek_client
 from app.modules.dialog import telegram_client, vk_client
@@ -30,6 +31,15 @@ STATUS_NEW = "confirmed"
 STATUS_REGISTERED = "cdek_registered"
 STATUS_REJECTED = "cdek_rejected"
 STATUS_STUCK = "cdek_stuck"
+# Заказ не через СДЭК: проверять нечего, но в чат о нём сказать надо.
+STATUS_REPORTED = "reported"
+
+_DELIVERY_LABELS = {
+    "cdek_pvz": "СДЭК, пункт выдачи",
+    "cdek_courier": "СДЭК, курьером до адреса",
+    "ozon_pvz": "Ozon ПВЗ",
+    "russian_post": "Почта России",
+}
 
 # Сколько ждать, прежде чем считать зависшую заявку проблемой. СДЭК обычно
 # управляется за секунды; полчаса — это уже не «ещё обрабатывается».
@@ -67,6 +77,34 @@ def _is_rejected(data: dict) -> bool:
     )
 
 
+def _orders_chat() -> str | None:
+    # None означает «чат менеджера по умолчанию»: пока отдельный чат не
+    # заведён, сообщения о заказах всё равно должны доходить.
+    return settings.telegram_orders_chat_id or None
+
+
+async def _send(order: Order, text: str) -> None:
+    try:
+        await telegram_client.send_message(text, chat_id=_orders_chat())
+    except Exception:
+        logger.exception("Не смогли написать в чат заказов про заказ %s", order.id)
+
+
+def _order_card(order: Order, cdek_number: str | None = None) -> str:
+    lines = [f"🧾 <b>Заказ №{order.id}</b>"]
+    for item in order.items or []:
+        total = item.get("price", 0) * item.get("quantity", 1)
+        lines.append(f"{item.get('name', 'товар')} × {item.get('quantity', 1)} — {total} руб.")
+
+    delivery = _DELIVERY_LABELS.get(order.delivery_method or "", order.delivery_method or "—")
+    lines.append(f"Товары {order.items_total} руб. + доставка {order.delivery_cost} руб. = <b>{order.total} руб.</b>")
+    lines.append(f"Доставка: {delivery}")
+    if cdek_number:
+        lines.append(f"Накладная СДЭК: <code>{cdek_number}</code>")
+    lines.append(f"Диалог: {vk_client.dialog_link(order.peer_id)}")
+    return "\n".join(lines)
+
+
 async def _warn_manager(order: Order, what: str, details: str) -> None:
     text = (
         f"⚠️ Заказ №{order.id} {what}\n"
@@ -74,15 +112,12 @@ async def _warn_manager(order: Order, what: str, details: str) -> None:
         f"{details}\n"
         f"Диалог: {vk_client.dialog_link(order.peer_id)}"
     )
-    try:
-        await telegram_client.send_message(text)
-    except Exception:
-        logger.exception("Не смогли предупредить менеджера о заказе %s", order.id)
+    await _send(order, text)
 
 
 async def check_pending_orders() -> dict:
     """Сверяет с СДЭКом заказы, судьба которых ещё не известна."""
-    result = {"checked": 0, "registered": 0, "rejected": 0, "stuck": 0, "failed": 0}
+    result = {"checked": 0, "registered": 0, "rejected": 0, "stuck": 0, "failed": 0, "reported": 0}
 
     try:
         session_factory = get_session_factory()
@@ -98,7 +133,6 @@ async def check_pending_orders() -> dict:
             await session.execute(
                 select(Order)
                 .where(
-                    Order.cdek_uuid.is_not(None),
                     Order.status == STATUS_NEW,
                     Order.created_at > now - _GIVE_UP_AFTER,
                 )
@@ -108,6 +142,14 @@ async def check_pending_orders() -> dict:
         ).scalars().all()
 
         for order in rows:
+            # Заказ не через СДЭК проверять не у кого — просто показываем его
+            # в чате и закрываем вопрос.
+            if not order.cdek_uuid:
+                order.status = STATUS_REPORTED
+                result["reported"] += 1
+                await _send(order, _order_card(order))
+                continue
+
             result["checked"] += 1
             try:
                 data = await cdek_client.order_state(order.cdek_uuid)
@@ -129,6 +171,7 @@ async def check_pending_orders() -> dict:
                 result["registered"] += 1
                 number = (data.get("entity") or {}).get("cdek_number")
                 logger.info("Заказ %s подтверждён СДЭКом, номер %s", order.id, number)
+                await _send(order, _order_card(order, number))
                 continue
 
             # Ни «создан», ни «отклонён» — значит всё ещё висит в обработке.

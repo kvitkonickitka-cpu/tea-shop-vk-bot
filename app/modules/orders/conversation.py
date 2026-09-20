@@ -457,6 +457,8 @@ async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
             peer_id,
             f"⚠️ Заказ подтверждён, но в СДЭК не уехал — завести руками.\n"
             f"Диалог: {vk_client.dialog_link(peer_id)}",
+            # Всё, что про заказы, идёт в свой чат; пусто — значит менеджеру.
+            chat_id=settings.telegram_orders_chat_id or None,
         )
         return None
 
@@ -514,9 +516,9 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     return ToolExecution(reply, client_reply=reply)
 
 
-async def _notify_manager(peer_id: int, message: str) -> None:
+async def _notify_manager(peer_id: int, message: str, chat_id: str | None = None) -> None:
     try:
-        await telegram_client.send_message(message)
+        await telegram_client.send_message(message, chat_id=chat_id)
     except Exception:
         logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
 
