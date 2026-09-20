@@ -38,28 +38,29 @@ def _authorized(request: Request, body: str = "") -> bool:
     return bool(body) and expected in body
 
 
+async def _run_task(name: str, coro) -> dict:
+    """Одна задача расписания. Падение одной не должно ронять остальные.
+
+    Раньше рассылка отчётов шла без защиты, и её ошибка обрывала весь тик —
+    вместе с проверкой заказов и выгрузкой каталога, о которых в логах не
+    оставалось ни строчки.
+    """
+    try:
+        result = await coro
+        logger.info("%s: %s", name, result)
+        return result
+    except Exception:
+        logger.exception("%s — сорвалось", name)
+        return {"failed": "исключение, см. лог"}
+
+
 async def _run_scheduled() -> dict:
     """Всё, что делается по таймеру, а не в ответ на сообщение клиента."""
-    reports = await reports_service.send_pending_reports()
-    logger.info("Отчёты по диалогам: %s", reports)
-
-    # Проверка заказов не должна падать вместе с отчётами и наоборот: это
-    # независимые задачи, просто ходят по одному расписанию.
-    try:
-        orders = await cdek_watch.check_pending_orders()
-        logger.info("Проверка заказов СДЭК: %s", orders)
-    except Exception:
-        logger.exception("Проверка заказов СДЭК сорвалась")
-        orders = {"failed": "исключение, см. лог"}
-
-    try:
-        catalog = await ozon_catalog.sync()
-        logger.info("Каталог Ozon: %s", catalog)
-    except Exception:
-        logger.exception("Выгрузка каталога Ozon сорвалась")
-        catalog = {"failed": "исключение, см. лог"}
-
-    return {"reports": reports, "cdek_orders": orders, "ozon_catalog": catalog}
+    return {
+        "reports": await _run_task("Отчёты по диалогам", reports_service.send_pending_reports()),
+        "cdek_orders": await _run_task("Проверка заказов СДЭК", cdek_watch.check_pending_orders()),
+        "ozon_catalog": await _run_task("Каталог Ozon", ozon_catalog.sync()),
+    }
 
 
 @router.post("/internal/reports/dialogs")
