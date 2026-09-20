@@ -304,20 +304,35 @@ def _draft_weight_grams(draft: OrderDraft) -> int:
     return settings.cdek_default_package_weight_grams * quantity
 
 
-async def _cdek_delivery(draft: OrderDraft, method: str, address: str) -> cdek_client.Tariff:
-    """Тариф СДЭКа для выбранного клиентом способа.
+async def _cdek_delivery(
+    draft: OrderDraft, method: str, address: str, delivery_point: str | None = None
+) -> tuple[cdek_client.Tariff, float]:
+    """Тариф СДЭКа и то, во сколько он обойдётся на самом деле.
 
     Режимы различаем осознанно: посылку мы сами сдаём в отделение, поэтому
     берём тарифы, которые начинаются со «склада». Тариф «до двери» дороже
     «до пункта выдачи» примерно на 250 руб — перепутать их значит возить
     часть заказов себе в убыток.
+
+    Цену берём не из списка тарифов: там `delivery_sum` — база без НДС и
+    допсборов. Счёт приходит другой (320 руб базы → 397.72 руб счёта), и
+    разницу оплачивал бы магазин.
     """
     modes = cdek_client.TO_DOOR if method == "cdek_courier" else cdek_client.TO_PICKUP
-    tariffs = await cdek_client.calculate_tariffs(address, _draft_weight_grams(draft))
+    weight = _draft_weight_grams(draft)
+    tariffs = await cdek_client.calculate_tariffs(address, weight)
     tariff = cdek_client.cheapest(tariffs, modes)
     if tariff is None:
         raise cdek_client.CdekError(f"нет подходящего тарифа до «{address}»")
-    return tariff
+
+    total = await cdek_client.calculate_total(
+        tariff.code,
+        address,
+        weight,
+        declared_value=draft.items_total,
+        delivery_point=delivery_point,
+    )
+    return tariff, total
 
 
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
@@ -339,7 +354,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
                 "(для курьера — полный адрес). Спроси и вызови инструмент ещё раз."
             )
         try:
-            tariff = await _cdek_delivery(draft, method, address)
+            tariff, total = await _cdek_delivery(draft, method, address)
         except Exception:
             logger.exception("Не посчитали доставку СДЭК для peer_id=%s по адресу «%s»", peer_id, address)
             return (
@@ -369,6 +384,17 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
                 if len(found) == 1:
                     draft.details["delivery_point"] = found[0].code
                     label = f"{label}: {found[0].address}"
+                    # С известным пунктом цена может отличаться, поэтому
+                    # пересчитываем: платит клиент ровно то, что выставят нам.
+                    try:
+                        tariff, total = await _cdek_delivery(
+                            draft, method, address, delivery_point=found[0].code
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Не пересчитали доставку с пунктом %s для peer_id=%s",
+                            found[0].code, peer_id,
+                        )
                 elif found:
                     options = "; ".join(f"{i}) {p.describe()}" for i, p in enumerate(found, start=1))
                     await state.set_draft(peer_id, draft)
@@ -386,7 +412,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
                     )
 
         draft.delivery_label = label
-        draft.delivery_cost = tariff.delivery_sum
+        # Именно total: в нём НДС и сбор за объявленную стоимость.
+        draft.delivery_cost = total
     else:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)

@@ -419,3 +419,77 @@ async def order_state(uuid: str) -> dict:
     if response.status_code >= 400:
         raise CdekError(f"Не узнали состояние заказа — {_describe_failure(response)}")
     return response.json()
+
+
+# Услуга страхования. Объявленная стоимость обязана совпадать со стоимостью
+# товаров в заказе, иначе СДЭК отклонит регистрацию.
+SERVICE_INSURANCE = "INSURANCE"
+
+_totals_cache: dict[tuple, tuple[float, float]] = {}
+
+
+async def calculate_total(
+    tariff_code: int,
+    to_address: str,
+    weight_grams: int,
+    *,
+    declared_value: float,
+    delivery_point: str | None = None,
+) -> float:
+    """Во сколько доставка обойдётся на самом деле — с НДС и допсборами.
+
+    `delivery_sum` из списка тарифов — это база **без НДС и без
+    дополнительных услуг**, так прямо написано в спецификации. Брать её как
+    цену для клиента значит недобирать: на заказе Краснодар→Москва 320 руб
+    базы превращались в 397.72 руб счёта (НДС 22% плюс сбор за объявленную
+    стоимость). Поэтому спрашиваем `total_sum` по конкретному тарифу.
+    """
+    if not settings.cdek_from_address:
+        raise CdekError("CDEK_FROM_ADDRESS не задан — расчёт невозможен")
+
+    cache_key = (
+        tariff_code, to_address.strip().lower(), weight_grams,
+        delivery_point, round(declared_value, 2),
+    )
+    cached = _totals_cache.get(cache_key)
+    if cached and time.time() - cached[0] < _TARIFFS_TTL_SECONDS:
+        return cached[1]
+
+    payload: dict = {
+        "type": _ORDER_TYPE_ONLINE_SHOP,
+        "lang": "rus",
+        "tariff_code": tariff_code,
+        "from_location": {"address": settings.cdek_from_address},
+        "to_location": {"address": to_address},
+        "packages": [{"weight": weight_grams}],
+        # Страховку считаем явно: в заказ уходит стоимость товаров, и СДЭК
+        # всё равно возьмёт за неё сбор — пусть он будет виден заранее.
+        "services": [{"code": SERVICE_INSURANCE, "parameter": str(int(declared_value))}],
+    }
+    if settings.cdek_shipment_point:
+        payload["shipment_point"] = settings.cdek_shipment_point
+    if delivery_point:
+        payload["delivery_point"] = delivery_point
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        token = await _get_access_token(client)
+        response = await client.post(
+            f"{settings.cdek_api_base_url}/v2/calculator/tariff",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        raise CdekError(f"Полный расчёт СДЭК не удался — {_describe_failure(response)}")
+
+    data = response.json()
+    if data.get("errors"):
+        raise CdekError(f"Полный расчёт СДЭК не удался — {_describe_failure(response)}")
+
+    total = data.get("total_sum")
+    if total is None:
+        raise CdekError(f"В ответе СДЭК нет итоговой суммы: {str(data)[:300]}")
+
+    total = float(total)
+    _totals_cache[cache_key] = (time.time(), total)
+    return total
