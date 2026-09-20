@@ -36,6 +36,9 @@ SCOPES = [
 
 _TIMEOUT_SECONDS = 10
 _MAX_REDIRECTS = 3
+# Проверено живым запросом: Ozon отвечает «размер страницы должен быть от 1
+# до 100», хотя в спецификации ограничения нет.
+_MAX_PAGE = 100
 
 _token: str | None = None
 _token_expires_at: float = 0.0
@@ -180,25 +183,41 @@ async def shipment_methods() -> list[ShipmentMethod]:
     ]
 
 
-async def dropoff_points(address_search: str, limit: int = 10) -> list[dict]:
-    """Пункты отгрузки — куда мы сами сдаём посылки."""
+def viewport_around(latitude: float, longitude: float, span: float = 0.15) -> dict:
+    """Прямоугольник вокруг точки. Полградуса широты — примерно 55 км."""
+    return {
+        "left_bottom": {"latitude": latitude - span, "longitude": longitude - span},
+        "right_top": {"latitude": latitude + span, "longitude": longitude + span},
+    }
+
+
+async def dropoff_points(
+    viewport: dict, address_search: str = "", limit: int = 10
+) -> list[dict]:
+    """Пункты отгрузки — куда мы сами сдаём посылки.
+
+    `viewport` обязателен, хотя в спецификации помечен необязательным:
+    сервер отвечает «missing required properties including: viewport».
+    Поиск по строке адреса работает только внутри этого прямоугольника.
+    """
+    filters: dict = {"is_bulky": False, "viewport": viewport}
+    if address_search:
+        filters["address_search"] = address_search
+
     data = await call(
         "/v1/dropoff-point/search",
-        {
-            "filters": {"is_bulky": False, "address_search": address_search},
-            "pagination": {"limit": limit},
-        },
+        {"filters": filters, "pagination": {"limit": min(limit, _MAX_PAGE)}},
     )
     return data.get("dropoff_points") or []
 
 
-async def delivery_point_ids(cursor: str = "", limit: int = 1000) -> tuple[list[dict], str]:
+async def delivery_point_ids(cursor: str = "", limit: int = _MAX_PAGE) -> tuple[list[dict], str]:
     """Страница списка пунктов выдачи: только идентификаторы.
 
     Адресов здесь нет и фильтра по городу тоже — Ozon отдаёт весь каталог
     постранично. Подробности приходится добирать методом `info`.
     """
-    pagination: dict = {"limit": limit}
+    pagination: dict = {"limit": min(limit, _MAX_PAGE)}
     if cursor:
         pagination["cursor"] = cursor
     data = await call("/v1/delivery-point/list", {"pagination": pagination})

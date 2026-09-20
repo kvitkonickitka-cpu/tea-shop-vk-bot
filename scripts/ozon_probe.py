@@ -4,9 +4,13 @@
 Тот же приём, что сработал со СДЭКом: сначала узнаём недостающие числа
 живым запросом, потом пишем код, который на них опирается.
 
-    python scripts/ozon_probe.py "Краснодар, Игнатова"
+    python scripts/ozon_probe.py                      # Краснодар
+    python scripts/ozon_probe.py 45.035 38.975        # своя точка
+    python scripts/ozon_probe.py 45.035 38.975 Игнатова
 
-Аргумент — по какому адресу искать пункт отгрузки (куда мы сдаём посылки).
+Аргументы — координаты центра поиска и, необязательно, часть адреса.
+Пункты отгрузки Ozon ищет внутри прямоугольника на карте, а не по городу,
+поэтому нужны именно координаты.
 Ключи берутся из .env или переменных окружения, в аргументах не передаются.
 Секретов в выводе нет.
 """
@@ -50,20 +54,24 @@ async def show_methods() -> int | None:
     return None
 
 
-async def show_dropoff_points(query: str) -> None:
-    print(f"\n== Пункты отгрузки по запросу «{query}» ==")
+async def show_dropoff_points(latitude: float, longitude: float, query: str) -> None:
+    where = f" по запросу «{query}»" if query else ""
+    print(f"\n== Пункты отгрузки вокруг {latitude}, {longitude}{where} ==")
+    viewport = ozon_client.viewport_around(latitude, longitude)
     try:
-        points = await ozon_client.dropoff_points(query)
+        points = await ozon_client.dropoff_points(viewport, query)
     except ozon_client.OzonError as error:
         print(f"  не получилось: {error}")
         return
 
     if not points:
-        print("  ничего не нашлось — попробуй другой запрос")
+        print("  ничего не нашлось — расширь область или убери часть адреса")
         return
     for point in points[:10]:
-        address = point.get("full_address") or point.get("address") or "—"
-        print(f"  id={point.get('dropoff_point_id') or point.get('id')}  {address}")
+        address = point.get("full_address") or "—"
+        приёмка = "самоприёмка" if point.get("has_self_acceptance") else "без самоприёмки"
+        print(f"  id={point.get('dropoff_point_id')}  {point.get('name', '')}"
+              f"  {address}  ({приёмка})")
 
 
 async def measure_catalog() -> None:
@@ -72,13 +80,14 @@ async def measure_catalog() -> None:
 
     started = time.monotonic()
     try:
-        page, cursor = await ozon_client.delivery_point_ids(limit=1000)
+        page, cursor = await ozon_client.delivery_point_ids()
     except ozon_client.OzonError as error:
         print(f"  не получилось: {error}")
         return
     first_page = time.monotonic() - started
 
-    print(f"  первая страница: {len(page)} пунктов за {first_page:.2f}с")
+    print(f"  первая страница: {len(page)} пунктов за {first_page:.2f}с"
+          f"  (больше 100 за раз Ozon не отдаёт)")
     print(f"  курсор дальше: {'есть' if cursor else 'нет — каталог кончился'}")
     if not page:
         return
@@ -102,7 +111,10 @@ async def measure_catalog() -> None:
 
 
 async def main() -> int:
-    query = sys.argv[1] if len(sys.argv) > 1 else (settings.cdek_from_address or "Краснодар")
+    # Центр Краснодара: оттуда мы отправляем посылки.
+    latitude = float(sys.argv[1]) if len(sys.argv) > 1 else 45.035
+    longitude = float(sys.argv[2]) if len(sys.argv) > 2 else 38.975
+    query = sys.argv[3] if len(sys.argv) > 3 else ""
 
     if not ozon_client.is_configured():
         print("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы — добавь их в .env")
@@ -113,7 +125,7 @@ async def main() -> int:
     print(f"Уровни:   {', '.join(ozon_client.SCOPES)}\n")
 
     method_id = await show_methods()
-    await show_dropoff_points(query)
+    await show_dropoff_points(latitude, longitude, query)
     await measure_catalog()
 
     print("\nЧто дальше: пришли этот вывод — по нему станет понятно,")
