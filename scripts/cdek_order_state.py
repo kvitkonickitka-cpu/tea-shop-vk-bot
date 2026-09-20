@@ -54,6 +54,14 @@ async def main() -> int:
     if entity.get("shipment_point"):
         print(f"Отделение отправки: {entity['shipment_point']}")
 
+    recipient = entity.get("recipient") or {}
+    if recipient:
+        phones = ", ".join(p.get("number", "") for p in recipient.get("phones") or [])
+        print(f"Получатель: {recipient.get('name', '—')} {phones}".rstrip())
+    # Комментарий — единственное место, куда влезает ссылка на диалог:
+    # в номере заказа СДЭК допускает только цифры и латиницу.
+    print(f"Комментарий: {entity.get('comment') or '— пусто'}")
+
     print("\nЗаявки по заказу:")
     failed = False
     for request in data.get("requests") or []:
