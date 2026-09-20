@@ -1,0 +1,186 @@
+"""Копия каталога пунктов выдачи Ozon и поиск по ней.
+
+У Ozon нет поиска пункта ни по городу, ни по адресу: `delivery-point/list`
+отдаёт голые идентификаторы постранично (не больше ста за раз), а адреса
+приходится добирать методом `info`. Спрашивать это по ходу диалога нельзя —
+каталог на всю страну, — поэтому держим копию у себя и ищем по ней.
+
+Выгрузка идёт по таймеру и кусками: за один заход тратим ограниченное время
+и запоминаем курсор, следующий тик продолжает с того же места. Контейнеру на
+всё про всё отведено 60 секунд, и упереться в них посреди страницы нельзя.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
+
+from app.core.database import get_session_factory
+from app.modules.delivery import ozon_client
+from app.modules.delivery.models import OzonDeliveryPoint, OzonSyncState
+
+logger = logging.getLogger(__name__)
+
+# Сколько секунд за один заход. Меньше отведённых контейнеру 60 с запасом:
+# после выгрузки в том же тике ещё работают отчёты и проверка заказов.
+_BUDGET_SECONDS = 20
+# Адреса добираем пачками: за раз Ozon отдаёт не больше ста.
+_INFO_BATCH = 100
+
+_NOISE_WORDS = {
+    "россия", "область", "обл", "край", "республика", "район", "рн",
+    "город", "г", "улица", "ул", "дом", "д", "проспект", "пр", "пр-т",
+    "переулок", "пер", "шоссе", "ш", "бульвар", "б-р", "проезд",
+    "микрорайон", "мкр", "корпус", "корп", "к", "строение", "стр",
+    "округ", "внутригородской",
+}
+
+
+def normalize(text: str) -> str:
+    """Значимые слова адреса: без пунктуации и без «улица», «дом», «край»."""
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in (text or "").lower())
+    words = [w for w in cleaned.split() if w and w not in _NOISE_WORDS]
+    return " ".join(words)
+
+
+async def _load_state(session) -> OzonSyncState:
+    state = await session.get(OzonSyncState, 1)
+    if state is None:
+        state = OzonSyncState(id=1, cursor=None, seen=0)
+        session.add(state)
+        await session.flush()
+    return state
+
+
+async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None:
+    if not points:
+        return
+    rows = [
+        {
+            "id": point.id,
+            "name": point.name,
+            "address": point.address,
+            "search_text": normalize(point.address),
+            "updated_at": datetime.now(timezone.utc),
+        }
+        for point in points
+        if point.id
+    ]
+    # Пункты приходят одни и те же на каждом проходе, поэтому обновляем на
+    # месте, а не пытаемся вставить заново.
+    statement = insert(OzonDeliveryPoint).values(rows)
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[OzonDeliveryPoint.id],
+            set_={
+                "name": statement.excluded.name,
+                "address": statement.excluded.address,
+                "search_text": statement.excluded.search_text,
+                "updated_at": statement.excluded.updated_at,
+            },
+        )
+    )
+
+
+async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
+    """Дотянуть каталог, сколько успеем за отведённое время."""
+    result = {"pages": 0, "points": 0, "finished": False, "skipped": None}
+
+    if not ozon_client.is_configured():
+        result["skipped"] = "ключи Ozon не заданы"
+        return result
+
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        result["skipped"] = "база недоступна"
+        return result
+
+    started = time.monotonic()
+
+    async with session_factory() as session:
+        state = await _load_state(session)
+        cursor = state.cursor or ""
+        seen = state.seen if cursor else 0
+
+        # Цикл с проверкой в конце, а не в начале: иначе заход, у которого
+        # бюджет съели подготовка или медленная база, не сделает ни одной
+        # страницы — и выгрузка не сдвинется никогда.
+        while True:
+            try:
+                page, next_cursor = await ozon_client.delivery_point_ids(cursor=cursor)
+            except Exception:
+                logger.exception("Не получили страницу каталога Ozon")
+                break
+
+            ids = [p.get("delivery_point_id") for p in page if p.get("delivery_point_id")]
+            if ids:
+                try:
+                    details = await ozon_client.delivery_points_info(ids[:_INFO_BATCH])
+                except Exception:
+                    logger.exception("Не получили адреса пунктов Ozon")
+                    break
+                await _save_points(session, details)
+                seen += len(details)
+                result["points"] += len(details)
+
+            result["pages"] += 1
+            cursor = next_cursor
+
+            if not next_cursor or not page:
+                # Дошли до конца: следующий проход начнём сначала, чтобы
+                # подхватить новые и закрывшиеся пункты.
+                state.completed_at = datetime.now(timezone.utc)
+                cursor = ""
+                seen = 0
+                result["finished"] = True
+                break
+
+            if time.monotonic() - started >= budget_seconds:
+                break
+
+        state.cursor = cursor or None
+        state.seen = seen
+        await session.commit()
+
+    return result
+
+
+async def find(query: str, limit: int = 5) -> list[OzonDeliveryPoint]:
+    """Пункты, подходящие под то, что назвал клиент.
+
+    Клиент пишет адрес как придётся, поэтому сравниваем по значимым словам:
+    ищем строки, где встречаются все слова запроса.
+    """
+    words = normalize(query).split()
+    if not words:
+        return []
+
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return []
+
+    async with session_factory() as session:
+        statement = select(OzonDeliveryPoint)
+        for word in words[:5]:
+            statement = statement.where(OzonDeliveryPoint.search_text.contains(word))
+        rows = (await session.execute(statement.limit(limit))).scalars().all()
+    return list(rows)
+
+
+async def count() -> int:
+    """Сколько пунктов уже выгружено — для диагностики."""
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return 0
+    async with session_factory() as session:
+        from sqlalchemy import func as sql_func
+
+        total = await session.scalar(sql_func.count(OzonDeliveryPoint.id))
+    return int(total or 0)

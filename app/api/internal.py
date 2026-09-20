@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, Response
 from app.core.config import settings
 from app.modules import events
 from app.modules.dialog import telegram_client
+from app.modules.delivery import ozon_catalog
 from app.modules.orders import cdek_watch
 from app.modules.queue import client as queue_client
 from app.modules.reports import service as reports_service
@@ -51,7 +52,14 @@ async def _run_scheduled() -> dict:
         logger.exception("Проверка заказов СДЭК сорвалась")
         orders = {"failed": "исключение, см. лог"}
 
-    return {"reports": reports, "cdek_orders": orders}
+    try:
+        catalog = await ozon_catalog.sync()
+        logger.info("Каталог Ozon: %s", catalog)
+    except Exception:
+        logger.exception("Выгрузка каталога Ozon сорвалась")
+        catalog = {"failed": "исключение, см. лог"}
+
+    return {"reports": reports, "cdek_orders": orders, "ozon_catalog": catalog}
 
 
 @router.post("/internal/reports/dialogs")
@@ -100,6 +108,17 @@ async def telegram_ping(request: Request):
 
     logger.info("Проверка связи: сообщение ушло в %s", where)
     return {"chat": where, "sent": True}
+
+
+@router.post("/internal/ozon/sync")
+async def sync_ozon_catalog(request: Request):
+    """Догрузить каталог пунктов Ozon вручную, не дожидаясь таймера."""
+    if not _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    result = await ozon_catalog.sync()
+    result["всего в базе"] = await ozon_catalog.count()
+    logger.info("Каталог Ozon: %s", result)
+    return result
 
 
 @router.post("/internal/cdek/check")

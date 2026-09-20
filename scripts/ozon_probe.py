@@ -164,10 +164,12 @@ async def count_catalog() -> None:
 
 
 async def main() -> int:
+    # Флаги отбрасываем до разбора координат: иначе «--count» уедет в float().
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     # Центр Краснодара: оттуда мы отправляем посылки.
-    latitude = float(sys.argv[1]) if len(sys.argv) > 1 else 45.035
-    longitude = float(sys.argv[2]) if len(sys.argv) > 2 else 38.975
-    query = sys.argv[3] if len(sys.argv) > 3 else ""
+    latitude = float(args[0]) if args else 45.035
+    longitude = float(args[1]) if len(args) > 1 else 38.975
+    query = args[2] if len(args) > 2 else ""
 
     if not ozon_client.is_configured():
         print("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы — добавь их в .env")
