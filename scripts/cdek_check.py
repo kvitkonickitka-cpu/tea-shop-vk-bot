@@ -8,9 +8,10 @@
     export CDEK_CLIENT_ID=...
     export CDEK_CLIENT_SECRET=...
     export CDEK_FROM_ADDRESS="Москва, ул. Ленина, 1"
-    python scripts/cdek_check.py "Санкт-Петербург, Невский пр-т, 1" 400
+    python scripts/cdek_check.py "Санкт-Петербург, Невский пр-т, 1" 400 1500
 
-Второй аргумент — вес в граммах, по умолчанию 200.
+Второй аргумент — вес в граммах (по умолчанию 200), третий — объявленная
+стоимость в рублях (по умолчанию 1000): от неё считается сбор за страховку.
 """
 
 from __future__ import annotations
@@ -42,12 +43,14 @@ _MODE_LABELS = {
 async def main() -> int:
     address = sys.argv[1] if len(sys.argv) > 1 else "Санкт-Петербург, Невский проспект, 1"
     weight = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+    declared_value = float(sys.argv[3]) if len(sys.argv) > 3 else 1000.0
 
     contour = "ПЕСОЧНИЦА" if "edu" in settings.cdek_api_base_url else "БОЕВОЙ КОНТУР"
     print(f"Контур:  {contour}  ({settings.cdek_api_base_url})")
     print(f"Откуда:  {settings.cdek_from_address or '— НЕ ЗАДАН, расчёт не пойдёт'}")
     print(f"Куда:    {address}")
-    print(f"Вес:     {weight} г\n")
+    print(f"Вес:     {weight} г")
+    print(f"Оценка:  {declared_value:.0f} руб (с неё берётся сбор за страховку)\n")
 
     try:
         tariffs = await cdek_client.calculate_tariffs(address, weight)
@@ -69,13 +72,27 @@ async def main() -> int:
     door = cdek_client.cheapest(tariffs, cdek_client.TO_DOOR)
     pickup = cdek_client.cheapest(tariffs, cdek_client.TO_PICKUP)
 
+    # В списке тарифов лежит база без НДС и допсборов, а счёт приходит
+    # другой — именно на этом однажды и попались, выставив клиенту 320 руб
+    # при счёте 397.72. Бот берёт цену вторым запросом, и проверка обязана
+    # показывать ту же цифру, иначе она проверяет не то.
     print("Что выберет бот:")
-    print(f"  до двери клиента:  {f'{door.delivery_sum:.2f} руб, {door.period}, {door.name}' if door else 'нет подходящего тарифа'}")
-    print(f"  до пункта выдачи:  {f'{pickup.delivery_sum:.2f} руб, {pickup.period}, {pickup.name}' if pickup else 'нет подходящего тарифа'}")
+    for title, tariff in (("до двери клиента", door), ("до пункта выдачи", pickup)):
+        if tariff is None:
+            print(f"  {title}:  нет подходящего тарифа")
+            continue
+        try:
+            total = await cdek_client.calculate_total(
+                tariff.code, address, weight, declared_value=declared_value
+            )
+            price = f"{total:.2f} руб (база {tariff.delivery_sum:.2f} + НДС и сборы)"
+        except cdek_client.CdekError as error:
+            price = f"база {tariff.delivery_sum:.2f} руб, полную цену не дали: {error}"
+        print(f"  {title}:  {price}, {tariff.period}, {tariff.name}")
 
     if door and pickup and door.delivery_sum != pickup.delivery_sum:
         diff = door.delivery_sum - pickup.delivery_sum
-        print(f"\nРазница между «до двери» и «в пункт выдачи»: {diff:+.2f} руб.")
+        print(f"\nРазница между «до двери» и «в пункт выдачи» по базе: {diff:+.2f} руб.")
         print("Прежний код взял бы меньшую цифру независимо от того, куда везём.")
     return 0
 
