@@ -33,6 +33,11 @@ _ORDER_FLOW_PROMPT = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
 
 _TARIFFS_PATH = Path(__file__).parent / "delivery_tariffs.json"
 
+# Карта пунктов выдачи: адрес пункта спрашиваем у клиента словами, а ссылку
+# даём, чтобы он мог свериться. Тянуть список пунктов из API в путь обработки
+# сообщения нельзя — не укладываемся в 8 секунд, которые даёт VK.
+CDEK_OFFICES_MAP_URL = "https://www.cdek.ru/ru/offices"
+
 TOOLS = [
     {
         "name": "propose_order",
@@ -82,6 +87,15 @@ TOOLS = [
                     "description": (
                         "Город клиента, а для доставки курьером — полный адрес. "
                         "Обязателен для cdek_pvz и cdek_courier."
+                    ),
+                },
+                "pickup_point": {
+                    "type": "string",
+                    "description": (
+                        "Адрес пункта выдачи СДЭК, который назвал клиент — "
+                        "только для cdek_pvz. Если клиент его ещё не назвал, "
+                        "вызови инструмент без этого поля: цена посчитается, а "
+                        "адрес спросишь следующим сообщением."
                     ),
                 },
             },
@@ -227,7 +241,9 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
         "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
         "СДЭК — он дешевле всего, клиент забирает посылку сам. Если клиент "
         "хочет курьером до двери, Ozon ПВЗ или Почтой России — тоже можно. "
-        "Для СДЭКа спроси город клиента: без него стоимость не посчитать."
+        "Для СДЭКа спроси город клиента: без него стоимость не посчитать. "
+        "Для пункта выдачи нужен ещё и адрес самого пункта — предложи клиенту "
+        f"карту пунктов, если он не знает ближайший: {CDEK_OFFICES_MAP_URL}"
     )
     return result
 
@@ -257,11 +273,14 @@ async def _cdek_delivery(draft: OrderDraft, method: str, address: str) -> tuple[
 
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
     draft = await state.get_draft(peer_id)
-    if draft is None or draft.stage != "awaiting_delivery":
+    # Способ доставки можно уточнять и после того, как цена названа: клиент
+    # передумывает, а адрес пункта выдачи приходит отдельным сообщением.
+    if draft is None or draft.stage not in ("awaiting_delivery", "awaiting_confirmation"):
         return "Нет черновика заказа, ожидающего выбора доставки. Уточни у клиента, что он хочет заказать."
 
     method = tool_input.get("method")
     period = ""
+    ask_for_point = False
 
     if method in ("cdek_pvz", "cdek_courier"):
         address = (tool_input.get("address") or "").strip()
@@ -278,6 +297,14 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
                 "Расчёт СДЭКа сейчас недоступен. Скажи клиенту, что стоимость "
                 "доставки уточнит менеджер, и вызови escalate_to_manager."
             )
+        # Пункт выдачи держим прямо в названии способа: колонки под него в
+        # базе нет, а менеджеру важно видеть, куда везти посылку.
+        if method == "cdek_pvz":
+            point = (tool_input.get("pickup_point") or "").strip()
+            if point:
+                label = f"{label}: {point}"
+            else:
+                ask_for_point = True
         draft.delivery_label = label
         draft.delivery_cost = cost
     else:
@@ -296,16 +323,34 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
     # Срок у СДЭКа уже заканчивается точкой («3–4 раб. дн.»), своей не добавляем.
     head = f"Способ доставки зафиксирован: {draft.delivery_label}, {draft.delivery_cost} руб"
     head += f", срок {period}\n" if period else ".\n"
-    return head + (
-        f"Сумма товаров: {draft.items_total} руб. Итого с доставкой: {total} руб.\n"
-        "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ."
-    )
+    head += f"Сумма товаров: {draft.items_total} руб. Итого с доставкой: {total} руб.\n"
+
+    if ask_for_point:
+        return head + (
+            "Сообщи клиенту эти суммы и спроси, в какой пункт выдачи СДЭК ему "
+            "удобно забрать заказ — нужен адрес пункта, а не просто город. "
+            f"Предложи прислать карту пунктов, чтобы свериться: {CDEK_OFFICES_MAP_URL}. "
+            "Когда клиент назовёт адрес, вызови set_delivery_method ещё раз с тем "
+            "же городом и адресом пункта в pickup_point."
+        )
+
+    return head + "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ."
 
 
 async def _execute_confirm_order(peer_id: int) -> str:
     draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
         return "Нет черновика заказа, ожидающего подтверждения. Уточни у клиента, что он хочет заказать."
+
+    # Заказ в пункт выдачи без адреса пункта бесполезен: менеджеру некуда
+    # его отправлять. Адрес лежит в названии способа после двоеточия.
+    if draft.delivery_method == "cdek_pvz" and ":" not in (draft.delivery_label or ""):
+        return (
+            "Перед подтверждением спроси у клиента адрес пункта выдачи СДЭК, куда "
+            f"везти заказ. Можешь прислать карту пунктов: {CDEK_OFFICES_MAP_URL}. "
+            "Получишь адрес — вызови set_delivery_method с pickup_point, а потом "
+            "confirm_order."
+        )
 
     draft.stage = "confirmed"
 
