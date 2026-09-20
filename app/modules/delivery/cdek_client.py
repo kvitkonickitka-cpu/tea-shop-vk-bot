@@ -86,6 +86,18 @@ def _describe_failure(response: httpx.Response) -> str:
     return "; ".join(parts)
 
 
+def describe_request_error(error: dict) -> str:
+    """Ошибка внутри `requests[]` у заказа.
+
+    У СДЭКа два разных формата ошибок: на верхнем уровне ответа это
+    `code`/`message`, а в заявках по заказу — `error`/`error_description`.
+    Читать не то поле значит потерять текст ошибки ровно там, где он нужен.
+    """
+    code = error.get("error") or error.get("code") or "?"
+    message = error.get("error_description") or error.get("message") or ""
+    return f"{code}: {message}".strip(": ")
+
+
 async def _get_access_token(client: httpx.AsyncClient) -> str:
     global _token, _token_expires_at
     if _token and time.time() < _token_expires_at:
@@ -391,7 +403,7 @@ async def register_order(
     # «завели». Ошибки валидации всплывут позже, при запросе состояния.
     for request in data.get("requests") or []:
         for error in request.get("errors") or []:
-            raise CdekError(f"СДЭК отклонил заказ — {error.get('code')}: {error.get('message')}")
+            raise CdekError(f"СДЭК отклонил заказ — {describe_request_error(error)}")
 
     return RegisteredOrder(uuid=uuid, number=number)
 
