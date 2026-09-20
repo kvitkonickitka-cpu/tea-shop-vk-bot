@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
+from app.modules.orders import cdek_watch
 from app.modules.reports import service as reports_service
 
 logger = logging.getLogger(__name__)
@@ -31,18 +32,39 @@ def _authorized(request: Request, body: str = "") -> bool:
     return bool(body) and expected in body
 
 
-async def _run_reports() -> dict:
-    result = await reports_service.send_pending_reports()
-    logger.info("Отчёты по диалогам: %s", result)
-    return result
+async def _run_scheduled() -> dict:
+    """Всё, что делается по таймеру, а не в ответ на сообщение клиента."""
+    reports = await reports_service.send_pending_reports()
+    logger.info("Отчёты по диалогам: %s", reports)
+
+    # Проверка заказов не должна падать вместе с отчётами и наоборот: это
+    # независимые задачи, просто ходят по одному расписанию.
+    try:
+        orders = await cdek_watch.check_pending_orders()
+        logger.info("Проверка заказов СДЭК: %s", orders)
+    except Exception:
+        logger.exception("Проверка заказов СДЭК сорвалась")
+        orders = {"failed": "исключение, см. лог"}
+
+    return {"reports": reports, "cdek_orders": orders}
 
 
 @router.post("/internal/reports/dialogs")
 async def send_dialog_reports(request: Request):
-    """Рассылка отчётов вручную — этим адресом удобно проверять."""
+    """Прогон задач по расписанию вручную — этим адресом удобно проверять."""
     if not _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
-    return await _run_reports()
+    return await _run_scheduled()
+
+
+@router.post("/internal/cdek/check")
+async def check_cdek_orders(request: Request):
+    """Только сверка заказов с СДЭКом, без рассылки отчётов."""
+    if not _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    result = await cdek_watch.check_pending_orders()
+    logger.info("Проверка заказов СДЭК: %s", result)
+    return result
 
 
 @router.post("/")
@@ -55,4 +77,4 @@ async def timer_entrypoint(request: Request):
     body = (await request.body()).decode("utf-8", errors="replace")
     if not _authorized(request, body):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
-    return await _run_reports()
+    return await _run_scheduled()
