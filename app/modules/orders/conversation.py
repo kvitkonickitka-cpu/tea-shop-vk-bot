@@ -335,12 +335,14 @@ async def _cdek_delivery(
     return tariff, total
 
 
-async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
+async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolExecution:
     draft = await state.get_draft(peer_id)
     # Способ доставки можно уточнять и после того, как цена названа: клиент
     # передумывает, а адрес пункта выдачи приходит отдельным сообщением.
     if draft is None or draft.stage not in ("awaiting_delivery", "awaiting_confirmation"):
-        return "Нет черновика заказа, ожидающего выбора доставки. Уточни у клиента, что он хочет заказать."
+        return ToolExecution(
+            "Нет черновика заказа, ожидающего выбора доставки. Уточни у клиента, что он хочет заказать."
+        )
 
     method = tool_input.get("method")
     period = ""
@@ -349,7 +351,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
     if method in ("cdek_pvz", "cdek_courier"):
         address = (tool_input.get("address") or "").strip()
         if not address:
-            return (
+            return ToolExecution(
                 "Чтобы посчитать доставку СДЭКом, нужен город клиента "
                 "(для курьера — полный адрес). Спроси и вызови инструмент ещё раз."
             )
@@ -357,7 +359,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
             tariff, total = await _cdek_delivery(draft, method, address)
         except Exception:
             logger.exception("Не посчитали доставку СДЭК для peer_id=%s по адресу «%s»", peer_id, address)
-            return (
+            return ToolExecution(
                 "Расчёт СДЭКа сейчас недоступен. Скажи клиенту, что стоимость "
                 "доставки уточнит менеджер, и вызови escalate_to_manager."
             )
@@ -398,17 +400,28 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
                 elif found:
                     options = "; ".join(f"{i}) {p.describe()}" for i, p in enumerate(found, start=1))
                     await state.set_draft(peer_id, draft)
-                    return (
+                    варианты = "\n".join(
+                        f"{i}. {p.describe()}" for i, p in enumerate(found, start=1)
+                    )
+                    return ToolExecution(
                         f"По запросу «{hint}» в городе {address} нашлось несколько пунктов: "
                         f"{options}. Спроси клиента, какой из них, и вызови "
-                        "set_delivery_method ещё раз с точным адресом в pickup_point."
+                        "set_delivery_method ещё раз с точным адресом в pickup_point.",
+                        client_reply=(
+                            f"Нашла несколько пунктов рядом 📍\n{варианты}\n\n"
+                            "Какой удобнее? Напишите номер или адрес."
+                        ),
                     )
                 else:
                     await state.set_draft(peer_id, draft)
-                    return (
+                    return ToolExecution(
                         f"Пункт выдачи «{hint}» в городе {address} не нашёлся. Попроси "
                         "клиента уточнить адрес и предложи карту пунктов: "
-                        f"{CDEK_OFFICES_MAP_URL}"
+                        f"{CDEK_OFFICES_MAP_URL}",
+                        client_reply=(
+                            f"Не нашла пункт по запросу «{hint}» 🤔 Уточните адрес, "
+                            f"пожалуйста. Посмотреть все пункты: {CDEK_OFFICES_MAP_URL}"
+                        ),
                     )
 
         draft.delivery_label = label
@@ -418,7 +431,9 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)
         if tariff is None:
-            return f"Неизвестный способ доставки: {method}. Предложи клиенту выбрать из вариантов ещё раз."
+            return ToolExecution(
+                f"Неизвестный способ доставки: {method}. Предложи клиенту выбрать из вариантов ещё раз."
+            )
         draft.delivery_label = tariff["label"]
         draft.delivery_cost = tariff["price"]
 
@@ -432,16 +447,42 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
     head += f", срок {period}\n" if period else ".\n"
     head += f"Сумма товаров: {draft.items_total} руб. Итого с доставкой: {total} руб.\n"
 
+    # Ответ клиенту пишем здесь, а не отдаём Claude на пересказ. Второй заход
+    # к модели стоит около двух секунд, а этот ход и так самый тяжёлый:
+    # список тарифов, полный расчёт, иногда ещё и поиск пункта. Из-за него
+    # вебхук упирался в 8 секунд VK и обрывался (Code 499) — клиент не
+    # получал ничего. Предсказуемый ответ вовремя полезнее красивого, но
+    # не дошедшего.
+    цены = (
+        f"{draft.delivery_label} — {draft.delivery_cost} руб."
+        + (f", срок {period}" if period else "")
+        + f"\nТовары: {draft.items_total} руб.\nИтого: {total} руб."
+    )
+
     if ask_for_point:
-        return head + (
-            "Сообщи клиенту эти суммы и спроси, в какой пункт выдачи СДЭК ему "
+        return ToolExecution(
+            head
+            + "Сообщи клиенту эти суммы и спроси, в какой пункт выдачи СДЭК ему "
             "удобно забрать заказ — нужен адрес пункта, а не просто город. "
             f"Предложи прислать карту пунктов, чтобы свериться: {CDEK_OFFICES_MAP_URL}. "
             "Когда клиент назовёт адрес, вызови set_delivery_method ещё раз с тем "
-            "же городом и адресом пункта в pickup_point."
+            "же городом и адресом пункта в pickup_point.",
+            client_reply=(
+                f"{цены}\n\nВ какой пункт выдачи СДЭК вам удобно забрать заказ? "
+                f"Нужен адрес пункта 📍 Если не знаете ближайший — вот карта: "
+                f"{CDEK_OFFICES_MAP_URL}"
+            ),
         )
 
-    return head + "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ."
+    следующий_шаг = (
+        "Подскажите, пожалуйста, ФИО получателя и телефон — и оформим заказ 🙏"
+        if method in ("cdek_pvz", "cdek_courier")
+        else "Оформляем заказ?"
+    )
+    return ToolExecution(
+        head + "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ.",
+        client_reply=f"{цены}\n\n{следующий_шаг}",
+    )
 
 
 async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
@@ -602,7 +643,7 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
     if name == "propose_order":
         return ToolExecution(await _execute_propose_order(peer_id, tool_input))
     if name == "set_delivery_method":
-        return ToolExecution(await _execute_set_delivery_method(peer_id, tool_input))
+        return await _execute_set_delivery_method(peer_id, tool_input)
     if name == "confirm_order":
         return await _execute_confirm_order(peer_id)
     if name == "set_recipient":
