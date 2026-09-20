@@ -29,15 +29,19 @@ logger = logging.getLogger(__name__)
 _ESCALATION_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "escalation_flow_prompt.md"
 _ESCALATION_FLOW_PROMPT = _ESCALATION_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
 
-_ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "order_flow_prompt.md"
-_ORDER_FLOW_PROMPT = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
-
 _TARIFFS_PATH = Path(__file__).parent / "delivery_tariffs.json"
 
 # Карта пунктов выдачи: адрес пункта спрашиваем у клиента словами, а ссылку
 # даём, чтобы он мог свериться. Тянуть список пунктов из API в путь обработки
 # сообщения нельзя — не укладываемся в 8 секунд, которые даёт VK.
 CDEK_OFFICES_MAP_URL = "https://www.cdek.ru/ru/offices"
+
+_ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "order_flow_prompt.md"
+# Ссылку подставляем из кода, а не пишем в промпт руками: иначе она разъедется
+# с той, что возвращают инструменты, и бот начнёт слать две разные.
+_ORDER_FLOW_PROMPT = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8").replace(
+    "{map_url}", CDEK_OFFICES_MAP_URL
+)
 
 TOOLS = [
     {
