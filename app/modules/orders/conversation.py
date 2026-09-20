@@ -627,8 +627,14 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     # обычно не выполнялось, так что короткий путь не срабатывал именно там,
     # где был нужнее всего. Текст модели при этом теряется: осознанный размен,
     # предсказуемый ответ за две секунды полезнее красивого, который не дошёл.
-    if len(executions) == 1 and executions[0][1].client_reply is not None:
-        reply = executions[0][1].client_reply
+    # Условие «ровно один инструмент» было слишком узким. Когда за ход
+    # срабатывали set_recipient и confirm_order, готовый текст уходил не
+    # клиенту, а в Claude на пересказ — и модель теряла из него важное.
+    # Так клиент прочитал «Заказ оформлен! ✅» вместо честного «заказ
+    # подтверждён, но в СДЭК не уехал». Смотрим на последний инструмент:
+    # он и есть итог хода.
+    if executions and executions[-1][1].client_reply is not None:
+        reply = executions[-1][1].client_reply
         await dialog_history.append_exchange(peer_id, user_text, reply)
         return reply
 
