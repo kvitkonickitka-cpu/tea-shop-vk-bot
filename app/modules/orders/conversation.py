@@ -88,9 +88,9 @@ TOOLS = [
             "cdek_pvz, cdek_courier и ozon_pvz стоимость считается у "
             "перевозчика по-настоящему, поэтому нужен город клиента — если "
             "клиент его ещё не назвал, сначала спроси, а инструмент вызывай "
-            "уже с ним. У Ozon цена зависит ещё и от пункта выдачи: вызови "
-            "инструмент с одним городом, получи список пунктов и спроси "
-            "клиента, какой ему удобнее. "
+            "уже с ним. Для Ozon инструмент вместе с ценой вернёт список "
+            "пунктов выдачи города — перечисли их клиенту и спроси, какой "
+            "ему удобнее. "
             "Не вызывай инструмент повторно, если способ доставки не менялся: "
             "чтобы прислать карту пунктов или просто ответить на вопрос, "
             "инструмент не нужен — ответь словами."
@@ -113,11 +113,10 @@ TOOLS = [
                     "type": "string",
                     "description": (
                         "Адрес пункта выдачи, который назвал клиент — для "
-                        "cdek_pvz и ozon_pvz. Для СДЭКа поле необязательное: "
-                        "без него цена всё равно посчитается, а адрес спросишь "
-                        "следующим сообщением. Для Ozon без пункта цены нет — "
-                        "инструмент вернёт список пунктов города, чтобы клиент "
-                        "выбрал."
+                        "cdek_pvz и ozon_pvz. Поле необязательное: без него "
+                        "цена всё равно посчитается, а адрес спросишь "
+                        "следующим сообщением. Для Ozon инструмент заодно "
+                        "вернёт список пунктов города, чтобы клиент выбрал."
                     ),
                 },
             },
@@ -392,6 +391,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     method = tool_input.get("method")
     period = ""
     ask_for_point = False
+    ozon_options = ""
 
     if method in ("cdek_pvz", "cdek_courier"):
         address = (tool_input.get("address") or "").strip()
@@ -493,16 +493,13 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 "клиента адрес пункта или предложи доставку СДЭКом."
             )
 
-        if len(points) > 1:
-            options = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
-            return ToolExecution(
-                f"Пункты выдачи Ozon рядом с «{hint or city}»: {options}. Перечисли "
-                "их клиенту и спроси, какой удобнее, а потом вызови "
-                "set_delivery_method ещё раз с тем же городом и адресом выбранного "
-                "пункта в pickup_point. Цену пока не называй: у Ozon она зависит "
-                "от пункта и считается только после выбора."
-            )
-
+        # Цену считаем по первому подходящему пункту и называем сразу, даже
+        # когда клиент ещё не выбрал. На живой проверке она от пункта не
+        # зависела: Владивосток, два пункта на разных концах города — 176 руб
+        # оба. Ждать выбора значит растягивать разговор на лишний круг ради
+        # цифры, которая, скорее всего, не изменится. А если где-то всё-таки
+        # изменится — второй вызов с выбранным пунктом пересчитает, и до
+        # подтверждения клиент услышит верную сумму.
         point = points[0]
         try:
             quote = await _ozon_price(draft, point.id)
@@ -516,13 +513,22 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             )
 
         draft.details["address"] = city
-        draft.details["ozon_point_id"] = point.id
-        draft.details["ozon_point_address"] = point.address
-        draft.delivery_label = f"Ozon, пункт выдачи: {point.address}"
         # Тот же урок, что и с СДЭКом: страховку Ozon выставляет отдельной
         # строкой, и «забыть» её значит доплачивать за клиента.
         draft.delivery_cost = quote.total
         period = f"{quote.days} дн." if quote.days else ""
+
+        if len(points) > 1:
+            # Пункт не фиксируем: показанная цена относится к первому из
+            # списка, а поедет посылка туда, что выберет клиент.
+            draft.details.pop("ozon_point_id", None)
+            draft.details.pop("ozon_point_address", None)
+            draft.delivery_label = "Ozon, пункт выдачи"
+            ozon_options = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
+        else:
+            draft.details["ozon_point_id"] = point.id
+            draft.details["ozon_point_address"] = point.address
+            draft.delivery_label = f"Ozon, пункт выдачи: {point.address}"
     else:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)
@@ -554,6 +560,15 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             f"Предложи прислать карту пунктов, чтобы свериться: {CDEK_OFFICES_MAP_URL}. "
             "Когда клиент назовёт адрес, вызови set_delivery_method ещё раз с тем "
             "же городом и адресом пункта в pickup_point."
+        )
+
+    if ozon_options:
+        return ToolExecution(
+            head
+            + "Сообщи клиенту эти суммы и перечисли пункты выдачи Ozon: "
+            f"{ozon_options}. Спроси, какой ему удобнее, и вызови "
+            "set_delivery_method ещё раз с тем же городом и адресом выбранного "
+            "пункта в pickup_point."
         )
 
     next_step = (
