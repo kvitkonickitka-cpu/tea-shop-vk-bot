@@ -5,6 +5,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     app_name: str = "Tea Shop VK Bot Backend"
+    # Коммит, из которого собран образ. Подставляется при деплое и видна в
+    # /health: иначе нельзя отличить «деплой не доехал» от «кода нет».
+    app_revision: str = ""
     debug: bool = False
 
     vk_confirmation_token: str = ""
