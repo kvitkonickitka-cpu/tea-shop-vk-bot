@@ -240,6 +240,63 @@ async def delivery_points_info(ids: list[int]) -> list[DeliveryPoint]:
     return points
 
 
+def _declared_value(amount: float) -> dict:
+    # Сумма у Ozon — строка, а не число: так в спецификации, и на число он
+    # отвечает отказом разбора.
+    return {"amount": str(int(amount)), "currency_code": "RUB"}
+
+
+def _dimensions(weight_grams: int, length_mm: int, width_mm: int, height_mm: int) -> dict:
+    return {
+        "weight_g": weight_grams,
+        "length_mm": length_mm,
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+    }
+
+
+async def available_points(
+    *,
+    delivery_point_ids: list[int],
+    shipment_method_id: int,
+    weight_grams: int,
+    length_mm: int,
+    width_mm: int,
+    height_mm: int,
+    declared_value: float,
+) -> set[int]:
+    """Какие из пунктов примут именно нашу посылку.
+
+    Каталог у себя мы держим общий на всю страну, а метод доставки у нас свой
+    и обслуживает не каждый пункт. Без этой проверки бот предложил бы клиенту
+    пункт, на котором потом сорвётся расчёт, — а выбор уже сделан.
+    """
+    if not delivery_point_ids:
+        return set()
+
+    data = await call(
+        "/v1/delivery-point/check-availability",
+        {
+            "delivery_point_ids": delivery_point_ids,
+            "shipment_method_id": shipment_method_id,
+            "postings": [
+                {
+                    "request_id": 1,
+                    "declared_value": _declared_value(declared_value),
+                    "dimensions": _dimensions(weight_grams, length_mm, width_mm, height_mm),
+                }
+            ],
+        },
+    )
+
+    allowed = set()
+    for result in data.get("results") or []:
+        point_id = result.get("delivery_point_id")
+        if point_id and not result.get("error"):
+            allowed.add(int(point_id))
+    return allowed
+
+
 async def checkout(
     *,
     shipment_method_id: int,
@@ -254,6 +311,8 @@ async def checkout(
     """Предварительный расчёт: сколько будет стоить и сколько идти.
 
     Габариты обязательны — в отличие от СДЭКа, одним весом не обойтись.
+    Пункт выдачи тоже: цену «до города», как у калькулятора СДЭКа, Ozon не
+    считает, поэтому сначала выбираем пункт, а уже потом называем цену.
     """
     payload = {
         "recipient": {"phone_number": phone_number},
@@ -262,13 +321,8 @@ async def checkout(
             {
                 "request_id": 1,
                 "shipment_method_id": shipment_method_id,
-                "declared_value": {"amount": str(int(declared_value)), "currency_code": "RUB"},
-                "dimensions": {
-                    "weight_g": weight_grams,
-                    "length_mm": length_mm,
-                    "width_mm": width_mm,
-                    "height_mm": height_mm,
-                },
+                "declared_value": _declared_value(declared_value),
+                "dimensions": _dimensions(weight_grams, length_mm, width_mm, height_mm),
             }
         ],
     }

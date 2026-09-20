@@ -1,4 +1,6 @@
 {
-  "ozon_pvz": {"label": "Ozon ПВЗ", "price": 300},
-  "russian_post": {"label": "Почта России", "price": 300}
+  "russian_post": {
+    "label": "Почта России",
+    "price": 300
+  }
 }

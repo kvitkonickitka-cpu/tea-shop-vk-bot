@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request, Response
 from app.core.config import settings
 from app.modules import events
 from app.modules.dialog import telegram_client
-from app.modules.delivery import ozon_catalog
+from app.modules.delivery import ozon_catalog, ozon_quote
 from app.modules.orders import cdek_watch
 from app.modules.queue import client as queue_client
 from app.modules.reports import service as reports_service
@@ -27,7 +27,10 @@ def _authorized(request: Request, body: str = "") -> bool:
         return False
 
     provided = request.headers.get("x-internal-token") or request.query_params.get("token", "")
-    if provided and hmac.compare_digest(provided, expected):
+    # Сравниваем байтами: compare_digest на строках падает, если в них есть
+    # что-то кроме ASCII, а токен приходит снаружи и может быть каким угодно.
+    # Падение здесь означало бы 500 вместо честного «доступ закрыт».
+    if provided and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         return True
 
     # Таймер Yandex Cloud ни заголовков, ни пути задать не даёт — только
@@ -119,6 +122,57 @@ async def sync_ozon_catalog(request: Request):
     result = await ozon_catalog.sync()
     result["всего в базе"] = await ozon_catalog.count()
     logger.info("Каталог Ozon: %s", result)
+    return result
+
+
+@router.post("/internal/ozon/quote")
+async def quote_ozon(request: Request):
+    """Проверка подбора пункта и цены Ozon — тем же кодом, что и в диалоге.
+
+    Каталог лежит в базе, база живёт во внутренней сети, и повторить подбор
+    скриптом с ноутбука нельзя. Поэтому проверяем изнутри контейнера:
+    `?city=Москва&point=Тверская&weight=400&value=1500`.
+    """
+    if not _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    params = request.query_params
+    city = (params.get("city") or "").strip()
+    if not city:
+        return {"error": "нужен параметр city"}
+
+    hint = (params.get("point") or "").strip()
+    weight = int(params.get("weight") or settings.cdek_default_package_weight_grams)
+    value = float(params.get("value") or 1000)
+
+    if not ozon_quote.is_ready():
+        return {"error": "Ozon не настроен: нет ключей или OZON_SHIPMENT_METHOD_ID"}
+
+    points, found = await ozon_quote.points_for(
+        city, hint, weight_grams=weight, declared_value=value
+    )
+    result = {
+        "город": city,
+        "искали": hint or "(только город)",
+        "нашлось в каталоге": found,
+        "из них доступно": [{"id": p.id, "адрес": p.address} for p in points],
+    }
+    if len(points) != 1:
+        return result
+
+    try:
+        quote = await ozon_quote.price_for(
+            points[0].id, phone="", weight_grams=weight, declared_value=value
+        )
+    except Exception as error:
+        logger.exception("Не посчитали доставку Ozon в пункт %s", points[0].id)
+        result["ошибка расчёта"] = str(error)[:300]
+        return result
+
+    result["доставка"] = quote.delivery_cost
+    result["страховка"] = quote.insurance_cost
+    result["итого"] = quote.total
+    result["дней"] = quote.days
     return result
 
 

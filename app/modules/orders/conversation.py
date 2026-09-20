@@ -9,7 +9,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
-from app.modules.delivery import cdek_client
+from app.modules.delivery import cdek_client, ozon_client, ozon_quote
 from app.modules.dialog import (
     claude_client,
     escalation_log,
@@ -85,9 +85,12 @@ TOOLS = [
         "description": (
             "Зафиксировать выбранный клиентом способ доставки, когда есть "
             "активный черновик заказа, ожидающий выбора доставки. Для "
-            "способов cdek_pvz и cdek_courier стоимость считается у СДЭКа "
-            "по-настоящему, поэтому нужен город клиента — если клиент его "
-            "ещё не назвал, сначала спроси, а инструмент вызывай уже с ним. "
+            "cdek_pvz, cdek_courier и ozon_pvz стоимость считается у "
+            "перевозчика по-настоящему, поэтому нужен город клиента — если "
+            "клиент его ещё не назвал, сначала спроси, а инструмент вызывай "
+            "уже с ним. У Ozon цена зависит ещё и от пункта выдачи: вызови "
+            "инструмент с одним городом, получи список пунктов и спроси "
+            "клиента, какой ему удобнее. "
             "Не вызывай инструмент повторно, если способ доставки не менялся: "
             "чтобы прислать карту пунктов или просто ответить на вопрос, "
             "инструмент не нужен — ответь словами."
@@ -103,16 +106,18 @@ TOOLS = [
                     "type": "string",
                     "description": (
                         "Город клиента, а для доставки курьером — полный адрес. "
-                        "Обязателен для cdek_pvz и cdek_courier."
+                        "Обязателен для cdek_pvz, cdek_courier и ozon_pvz."
                     ),
                 },
                 "pickup_point": {
                     "type": "string",
                     "description": (
-                        "Адрес пункта выдачи СДЭК, который назвал клиент — "
-                        "только для cdek_pvz. Если клиент его ещё не назвал, "
-                        "вызови инструмент без этого поля: цена посчитается, а "
-                        "адрес спросишь следующим сообщением."
+                        "Адрес пункта выдачи, который назвал клиент — для "
+                        "cdek_pvz и ozon_pvz. Для СДЭКа поле необязательное: "
+                        "без него цена всё равно посчитается, а адрес спросишь "
+                        "следующим сообщением. Для Ozon без пункта цены нет — "
+                        "инструмент вернёт список пунктов города, чтобы клиент "
+                        "выбрал."
                     ),
                 },
             },
@@ -247,6 +252,9 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     if draft.delivery_method == "cdek_pvz" and not draft.details.get("delivery_point"):
         lines.append("Пункт выдачи ещё НЕ выбран.")
 
+    if draft.delivery_method == "ozon_pvz" and not draft.details.get("ozon_point_id"):
+        lines.append("Пункт выдачи Ozon ещё НЕ выбран.")
+
     return "\n".join(lines)
 
 
@@ -339,6 +347,33 @@ async def _cdek_delivery(
     return tariff, total
 
 
+async def _ozon_points(
+    draft: OrderDraft, city: str, hint: str = ""
+) -> tuple[list, int]:
+    """Пункты Ozon под то, что назвал клиент, и сколько их нашлось всего."""
+    return await ozon_quote.points_for(
+        city,
+        hint,
+        weight_grams=_draft_weight_grams(draft),
+        declared_value=draft.items_total,
+    )
+
+
+async def _ozon_price(draft: OrderDraft, point_id: int) -> ozon_client.Quote:
+    """Во что обойдётся доставка Ozon в конкретный пункт.
+
+    Телефон нужен самому Ozon для расчёта. Берём телефон получателя, если он
+    уже записан, иначе служебный: цену клиент должен увидеть раньше, чем мы
+    попросим его данные, — иначе получается допрос до первой цифры.
+    """
+    return await ozon_quote.price_for(
+        point_id,
+        phone=draft.details.get("recipient_phone", ""),
+        weight_grams=_draft_weight_grams(draft),
+        declared_value=draft.items_total,
+    )
+
+
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolExecution:
     draft = await state.get_draft(peer_id)
     # Способ доставки можно уточнять и после того, как цена названа: клиент
@@ -420,6 +455,68 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.delivery_label = label
         # Именно total: в нём НДС и сбор за объявленную стоимость.
         draft.delivery_cost = total
+    elif method == "ozon_pvz":
+        city = (tool_input.get("address") or "").strip()
+        if not city:
+            return ToolExecution(
+                "Чтобы посчитать доставку Ozon, нужен город клиента. "
+                "Спроси и вызови инструмент ещё раз."
+            )
+        if not ozon_quote.is_ready():
+            return ToolExecution(
+                "Доставка Ozon пока не настроена. Предложи клиенту пункт выдачи "
+                "СДЭК или курьера СДЭК."
+            )
+
+        hint = (tool_input.get("pickup_point") or "").strip()
+        try:
+            points, found = await _ozon_points(draft, city, hint)
+        except Exception:
+            logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
+            points, found = [], 0
+
+        if not points:
+            if found:
+                return ToolExecution(
+                    f"Пункты Ozon в городе {city} есть, но доставку нашим методом "
+                    "они не принимают. Предложи клиенту пункт выдачи СДЭК."
+                )
+            asked = f"«{hint}» " if hint else ""
+            return ToolExecution(
+                f"Пункт выдачи Ozon {asked}в городе {city} не нашёлся. Уточни у "
+                "клиента адрес пункта или предложи доставку СДЭКом."
+            )
+
+        if len(points) > 1:
+            options = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
+            return ToolExecution(
+                f"Пункты выдачи Ozon рядом с «{hint or city}»: {options}. Перечисли "
+                "их клиенту и спроси, какой удобнее, а потом вызови "
+                "set_delivery_method ещё раз с тем же городом и адресом выбранного "
+                "пункта в pickup_point. Цену пока не называй: у Ozon она зависит "
+                "от пункта и считается только после выбора."
+            )
+
+        point = points[0]
+        try:
+            quote = await _ozon_price(draft, point.id)
+        except Exception:
+            logger.exception(
+                "Не посчитали доставку Ozon в пункт %s для peer_id=%s", point.id, peer_id
+            )
+            return ToolExecution(
+                "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
+                "а если он хочет именно Ozon — вызови escalate_to_manager."
+            )
+
+        draft.details["address"] = city
+        draft.details["ozon_point_id"] = point.id
+        draft.details["ozon_point_address"] = point.address
+        draft.delivery_label = f"Ozon, пункт выдачи: {point.address}"
+        # Тот же урок, что и с СДЭКом: страховку Ozon выставляет отдельной
+        # строкой, и «забыть» её значит доплачивать за клиента.
+        draft.delivery_cost = quote.total
+        period = f"{quote.days} дн." if quote.days else ""
     else:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)
@@ -525,6 +622,12 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
             f"везти заказ. Можешь прислать карту пунктов: {CDEK_OFFICES_MAP_URL}. "
             "Получишь адрес — вызови set_delivery_method с pickup_point, а потом "
             "confirm_order."
+        )
+
+    if draft.delivery_method == "ozon_pvz" and not draft.details.get("ozon_point_id"):
+        return ToolExecution(
+            "Перед подтверждением нужно выбрать пункт выдачи Ozon: вызови "
+            "set_delivery_method с городом клиента и адресом пункта в pickup_point."
         )
 
     is_cdek = draft.delivery_method in ("cdek_pvz", "cdek_courier")
