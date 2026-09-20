@@ -155,24 +155,31 @@ async def quote_ozon(request: Request):
         "город": city,
         "искали": hint or "(только город)",
         "нашлось в каталоге": found,
-        "из них доступно": [{"id": p.id, "адрес": p.address} for p in points],
+        "доступных пунктов": len(points),
     }
-    if len(points) != 1:
-        return result
 
-    try:
-        quote = await ozon_quote.price_for(
-            points[0].id, phone="", weight_grams=weight, declared_value=value
-        )
-    except Exception as error:
-        logger.exception("Не посчитали доставку Ozon в пункт %s", points[0].id)
-        result["ошибка расчёта"] = str(error)[:300]
-        return result
+    # Считаем каждый доступный пункт, а не только единственный: в диалоге
+    # цена называется по одному выбранному, а здесь важно ровно обратное —
+    # видеть, расходятся ли цены внутри города. Пока непонятно, расходятся
+    # ли, флоу обязан спрашивать пункт до цены.
+    quotes = []
+    for point in points:
+        row = {"id": point.id, "адрес": point.address}
+        try:
+            quote = await ozon_quote.price_for(
+                point.id, phone="", weight_grams=weight, declared_value=value
+            )
+        except Exception as error:
+            logger.exception("Не посчитали доставку Ozon в пункт %s", point.id)
+            row["ошибка расчёта"] = str(error)[:200]
+        else:
+            row["доставка"] = quote.delivery_cost
+            row["страховка"] = quote.insurance_cost
+            row["итого"] = quote.total
+            row["дней"] = quote.days
+        quotes.append(row)
 
-    result["доставка"] = quote.delivery_cost
-    result["страховка"] = quote.insurance_cost
-    result["итого"] = quote.total
-    result["дней"] = quote.days
+    result["пункты"] = quotes
     return result
 
 
