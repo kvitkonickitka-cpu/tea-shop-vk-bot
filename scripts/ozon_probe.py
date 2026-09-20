@@ -7,6 +7,7 @@
     python scripts/ozon_probe.py                      # Краснодар
     python scripts/ozon_probe.py 45.035 38.975        # своя точка
     python scripts/ozon_probe.py 45.035 38.975 Игнатова
+    python scripts/ozon_probe.py --count            # пересчитать весь каталог
 
 Аргументы — координаты центра поиска и, необязательно, часть адреса.
 Пункты отгрузки Ozon ищет внутри прямоугольника на карте, а не по городу,
@@ -110,6 +111,58 @@ async def measure_catalog() -> None:
         print("  не выйдет, придётся выгружать его к себе и обновлять по таймеру.")
 
 
+async def count_catalog() -> None:
+    """Пройти каталог до конца и сказать, сколько в нём пунктов.
+
+    Нужно, чтобы решить, как строить поиск пункта для клиента: выгружать
+    каталог к себе или как-то иначе. Занимает несколько минут.
+    """
+    print("== Полный пересчёт каталога ==")
+    print("  идём постранично до конца, это небыстро\n")
+
+    total = 0
+    pages = 0
+    cursor = ""
+    started = time.monotonic()
+
+    while True:
+        try:
+            page, cursor = await ozon_client.delivery_point_ids(cursor=cursor)
+        except ozon_client.OzonError as error:
+            print(f"  оборвалось на странице {pages + 1}: {error}")
+            break
+
+        total += len(page)
+        pages += 1
+        if pages % 20 == 0:
+            print(f"  {pages} страниц, {total} пунктов, {time.monotonic() - started:.0f}с")
+        if not cursor or not page:
+            break
+
+    elapsed = time.monotonic() - started
+    print(f"\n  всего: {total} пунктов на {pages} страницах за {elapsed:.0f}с")
+
+    # Сколько идентификаторов принимает info за раз — от этого зависит,
+    # сколько будет стоить выгрузка адресов.
+    print("\n== Сколько адресов за один запрос ==")
+    page, _ = await ozon_client.delivery_point_ids()
+    ids = [p.get("delivery_point_id") for p in page if p.get("delivery_point_id")]
+    for size in (20, 50, 100):
+        if len(ids) < size:
+            break
+        started = time.monotonic()
+        try:
+            details = await ozon_client.delivery_points_info(ids[:size])
+        except ozon_client.OzonError as error:
+            print(f"  по {size}: отказ — {error}")
+            continue
+        print(f"  по {size}: вернулось {len(details)} за {time.monotonic() - started:.2f}с")
+
+    if total:
+        print(f"\n  Прикидка выгрузки адресов пачками по 100: "
+              f"{total // 100 + 1} запросов")
+
+
 async def main() -> int:
     # Центр Краснодара: оттуда мы отправляем посылки.
     latitude = float(sys.argv[1]) if len(sys.argv) > 1 else 45.035
@@ -119,6 +172,10 @@ async def main() -> int:
     if not ozon_client.is_configured():
         print("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы — добавь их в .env")
         return 2
+
+    if "--count" in sys.argv:
+        await count_catalog()
+        return 0
 
     print(f"Хост API: {settings.ozon_api_base_url}")
     print(f"Токен с:  {settings.ozon_auth_url}")
