@@ -74,8 +74,13 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict]):
     )
 
 
-def extract_text(response) -> str:
+def extract_text(response, default: str | None = None) -> str:
     for block in response.content:
         if block.type == "text":
             return block.text
+    # Ответ без текста — законный случай: модель может вернуть один вызов
+    # инструмента и ничего больше. Бросать здесь значит превращать это в
+    # извинение перед клиентом, поэтому вызывающий может дать запасной текст.
+    if default is not None:
+        return default
     raise ValueError("Claude response contained no text block")

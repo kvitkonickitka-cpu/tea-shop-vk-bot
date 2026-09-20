@@ -36,6 +36,11 @@ _TARIFFS_PATH = Path(__file__).parent / "delivery_tariffs.json"
 # сообщения нельзя — не укладываемся в 8 секунд, которые даёт VK.
 CDEK_OFFICES_MAP_URL = "https://www.cdek.ru/ru/offices"
 
+# На случай, когда модель второй раз подряд просит инструмент и не пишет ни
+# слова клиенту, а у инструмента нет готового ответа. Лучше нейтральная
+# фраза, чем извинение за несуществующую поломку.
+_SECOND_ROUND_FALLBACK = "Записала, спасибо! Подскажите, если нужно что-то поправить 🙏"
+
 _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "order_flow_prompt.md"
 # Ссылку подставляем из кода, а не пишем в промпт руками: иначе она разъедется
 # с той, что возвращают инструменты, и бот начнёт слать две разные.
@@ -178,18 +183,23 @@ class ToolExecution:
 
 
 def _tools_for_stage(stage: str | None) -> list[dict]:
-    # Даём модели только тот инструмент, который реально уместен на текущем
-    # этапе — так она физически не может вызвать propose_order повторно,
-    # пока черновик ждёт выбора доставки или подтверждения. escalate_to_manager
-    # доступен всегда — эскалация может понадобиться на любом шаге диалога.
+    # Даём модели только те инструменты, которые уместны на текущем этапе —
+    # так она физически не может вызвать propose_order повторно, пока черновик
+    # ждёт выбора доставки или подтверждения. escalate_to_manager доступен
+    # всегда: эскалация может понадобиться на любом шаге диалога.
+    #
+    # set_recipient идёт рядом со своим этапом, а не отдельным шагом. Клиент
+    # называет ФИО и телефон когда ему удобно, и модель должна успеть записать
+    # их и сразу подтвердить заказ за один ход: на второй круг к Claude уже не
+    # хватает 8 секунд, которые VK даёт на весь вебхук.
     by_name = {tool["name"]: tool for tool in TOOLS}
     if stage == "awaiting_delivery":
-        stage_tool = by_name["set_delivery_method"]
+        stage_tools = [by_name["set_delivery_method"], by_name["set_recipient"]]
     elif stage == "awaiting_confirmation":
-        stage_tool = by_name["confirm_order"]
+        stage_tools = [by_name["set_recipient"], by_name["confirm_order"]]
     else:
-        stage_tool = by_name["propose_order"]
-    return [stage_tool, by_name["escalate_to_manager"]]
+        stage_tools = [by_name["propose_order"]]
+    return stage_tools + [by_name["escalate_to_manager"]]
 
 
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
@@ -454,15 +464,17 @@ async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
     return registered.uuid
 
 
-async def _execute_confirm_order(peer_id: int) -> str:
+async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
-        return "Нет черновика заказа, ожидающего подтверждения. Уточни у клиента, что он хочет заказать."
+        return ToolExecution(
+            "Нет черновика заказа, ожидающего подтверждения. Уточни у клиента, что он хочет заказать."
+        )
 
     # Заказ в пункт выдачи без кода пункта бесполезен: СДЭК его не примет,
     # а менеджер не поймёт, куда везти посылку.
     if draft.delivery_method == "cdek_pvz" and not draft.details.get("delivery_point"):
-        return (
+        return ToolExecution(
             "Перед подтверждением спроси у клиента адрес пункта выдачи СДЭК, куда "
             f"везти заказ. Можешь прислать карту пунктов: {CDEK_OFFICES_MAP_URL}. "
             "Получишь адрес — вызови set_delivery_method с pickup_point, а потом "
@@ -471,7 +483,7 @@ async def _execute_confirm_order(peer_id: int) -> str:
 
     is_cdek = draft.delivery_method in ("cdek_pvz", "cdek_courier")
     if is_cdek and not (draft.details.get("recipient_name") and draft.details.get("recipient_phone")):
-        return (
+        return ToolExecution(
             "Для оформления доставки СДЭКом нужны ФИО получателя и телефон. "
             "Если клиент уже называл их в переписке — вызови set_recipient с "
             "этими данными прямо сейчас, не переспрашивая, и потом confirm_order. "
@@ -489,12 +501,17 @@ async def _execute_confirm_order(peer_id: int) -> str:
     payment_message = await payment_service.generate_payment_link(draft)
     await state.clear_draft(peer_id)
 
+    # Текст подтверждения полностью определён здесь и клиенту его можно
+    # отдать как есть. Это снимает второй заход к Claude на самом дорогом
+    # ходу диалога — те самые пара секунд, которых не хватало до таймаута VK.
     if is_cdek and cdek_uuid is None:
-        return (
+        reply = (
             f"Заказ подтверждён, но в СДЭКе его завести не удалось — этим займётся "
             f"менеджер. {payment_message}"
         )
-    return f"Заказ подтверждён. {payment_message}"
+    else:
+        reply = f"Заказ подтверждён. {payment_message}"
+    return ToolExecution(reply, client_reply=reply)
 
 
 async def _notify_manager(peer_id: int, message: str) -> None:
@@ -558,7 +575,7 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
     if name == "set_delivery_method":
         return ToolExecution(await _execute_set_delivery_method(peer_id, tool_input))
     if name == "confirm_order":
-        return ToolExecution(await _execute_confirm_order(peer_id))
+        return await _execute_confirm_order(peer_id)
     if name == "set_recipient":
         return ToolExecution(await _execute_set_recipient(peer_id, tool_input))
     if name == "escalate_to_manager":
@@ -622,6 +639,32 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     messages.append({"role": "user", "content": tool_results})
 
     follow_up = await claude_client.converse(messages, system_prompt, tools)
+
+    # Модель может попросить ещё один инструмент вместо того, чтобы ответить
+    # словами. Раньше здесь падало с «no text block», и клиент получал
+    # «Извините, сейчас не получается ответить» — то есть ошибка кода
+    # выглядела как поломка бота.
+    #
+    # Третий заход к Claude не делаем: два обращения уже съедают большую часть
+    # из восьми секунд VK. Инструмент выполняем — терять действие нельзя, —
+    # а отвечаем тем, что он вернул клиенту напрямую.
+    if follow_up.stop_reason == "tool_use":
+        extra = [block for block in follow_up.content if block.type == "tool_use"]
+        logger.warning(
+            "Модель запросила инструменты второй раз подряд для peer_id=%s: %s",
+            peer_id,
+            [block.name for block in extra],
+        )
+        direct_reply = None
+        for block in extra:
+            execution = await _execute_tool(peer_id, block.name, block.input)
+            if direct_reply is None and execution.client_reply is not None:
+                direct_reply = execution.client_reply
+
+        reply = direct_reply or claude_client.extract_text(follow_up, default=_SECOND_ROUND_FALLBACK)
+        await dialog_history.append_exchange(peer_id, user_text, reply)
+        return reply
+
     reply = claude_client.extract_text(follow_up)
     await dialog_history.append_exchange(peer_id, user_text, reply)
     return reply
