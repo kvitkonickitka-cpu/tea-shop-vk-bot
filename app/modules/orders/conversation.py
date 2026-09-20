@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +101,22 @@ TOOLS = [
                 },
             },
             "required": ["method"],
+        },
+    },
+    {
+        "name": "set_recipient",
+        "description": (
+            "Записать получателя заказа. Нужен для доставки СДЭКом: без ФИО "
+            "и телефона заказ в СДЭКе не завести. Спрашивай их после того, "
+            "как клиент выбрал доставку."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "ФИО получателя"},
+                "phone": {"type": "string", "description": "Телефон получателя"},
+            },
+            "required": ["name", "phone"],
         },
     },
     {
@@ -253,8 +270,8 @@ def _draft_weight_grams(draft: OrderDraft) -> int:
     return settings.cdek_default_package_weight_grams * quantity
 
 
-async def _cdek_delivery(draft: OrderDraft, method: str, address: str) -> tuple[str, float, str]:
-    """Цена и срок СДЭКа для выбранного клиентом способа.
+async def _cdek_delivery(draft: OrderDraft, method: str, address: str) -> cdek_client.Tariff:
+    """Тариф СДЭКа для выбранного клиентом способа.
 
     Режимы различаем осознанно: посылку мы сами сдаём в отделение, поэтому
     берём тарифы, которые начинаются со «склада». Тариф «до двери» дороже
@@ -266,9 +283,7 @@ async def _cdek_delivery(draft: OrderDraft, method: str, address: str) -> tuple[
     tariff = cdek_client.cheapest(tariffs, modes)
     if tariff is None:
         raise cdek_client.CdekError(f"нет подходящего тарифа до «{address}»")
-
-    label = "СДЭК, курьером до адреса" if method == "cdek_courier" else "СДЭК, пункт выдачи"
-    return label, tariff.delivery_sum, tariff.period
+    return tariff
 
 
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
@@ -290,23 +305,54 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
                 "(для курьера — полный адрес). Спроси и вызови инструмент ещё раз."
             )
         try:
-            label, cost, period = await _cdek_delivery(draft, method, address)
+            tariff = await _cdek_delivery(draft, method, address)
         except Exception:
             logger.exception("Не посчитали доставку СДЭК для peer_id=%s по адресу «%s»", peer_id, address)
             return (
                 "Расчёт СДЭКа сейчас недоступен. Скажи клиенту, что стоимость "
                 "доставки уточнит менеджер, и вызови escalate_to_manager."
             )
-        # Пункт выдачи держим прямо в названии способа: колонки под него в
-        # базе нет, а менеджеру важно видеть, куда везти посылку.
+
+        period = tariff.period
+        label = "СДЭК, курьером до адреса" if method == "cdek_courier" else "СДЭК, пункт выдачи"
+        draft.details["tariff_code"] = tariff.code
+        draft.details["address"] = address
+
         if method == "cdek_pvz":
-            point = (tool_input.get("pickup_point") or "").strip()
-            if point:
-                label = f"{label}: {point}"
-            else:
+            hint = (tool_input.get("pickup_point") or "").strip()
+            if not hint:
                 ask_for_point = True
+                draft.details.pop("delivery_point", None)
+            else:
+                # СДЭКу нужен код пункта, а клиент называет адрес словами,
+                # поэтому ищем совпадение по списку пунктов города.
+                try:
+                    found = await cdek_client.find_delivery_point(address, hint)
+                except Exception:
+                    logger.exception("Не нашли пункты выдачи в «%s» для peer_id=%s", address, peer_id)
+                    found = []
+
+                if len(found) == 1:
+                    draft.details["delivery_point"] = found[0].code
+                    label = f"{label}: {found[0].address}"
+                elif found:
+                    options = "; ".join(f"{i}) {p.describe()}" for i, p in enumerate(found, start=1))
+                    await state.set_draft(peer_id, draft)
+                    return (
+                        f"По запросу «{hint}» в городе {address} нашлось несколько пунктов: "
+                        f"{options}. Спроси клиента, какой из них, и вызови "
+                        "set_delivery_method ещё раз с точным адресом в pickup_point."
+                    )
+                else:
+                    await state.set_draft(peer_id, draft)
+                    return (
+                        f"Пункт выдачи «{hint}» в городе {address} не нашёлся. Попроси "
+                        "клиента уточнить адрес и предложи карту пунктов: "
+                        f"{CDEK_OFFICES_MAP_URL}"
+                    )
+
         draft.delivery_label = label
-        draft.delivery_cost = cost
+        draft.delivery_cost = tariff.delivery_sum
     else:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)
@@ -337,14 +383,61 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
     return head + "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ."
 
 
+async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
+    draft = await state.get_draft(peer_id)
+    if draft is None:
+        return "Нет черновика заказа. Уточни у клиента, что он хочет заказать."
+
+    name = (tool_input.get("name") or "").strip()
+    phone = (tool_input.get("phone") or "").strip()
+    if not name or not phone:
+        return "Нужны и ФИО получателя, и телефон. Спроси у клиента то, чего не хватает."
+
+    draft.details["recipient_name"] = name
+    draft.details["recipient_phone"] = phone
+    await state.set_draft(peer_id, draft)
+    return (
+        f"Получатель записан: {name}, {phone}. Если клиент уже согласился "
+        "оформить заказ, вызывай confirm_order."
+    )
+
+
+async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
+    """Завести заказ в СДЭКе. None — если не вышло: заказ доведёт менеджер."""
+    number = f"vk{peer_id}-{int(time.time())}"
+    try:
+        registered = await cdek_client.register_order(
+            number=number,
+            tariff_code=draft.details["tariff_code"],
+            recipient_name=draft.details["recipient_name"],
+            recipient_phone=draft.details["recipient_phone"],
+            items=draft.items,
+            weight_grams=_draft_weight_grams(draft),
+            to_address=draft.details.get("address"),
+            delivery_point=draft.details.get("delivery_point"),
+            comment=f"Заказ из ВК, диалог {vk_client.dialog_link(peer_id)}",
+        )
+    except Exception:
+        logger.exception("Не завели заказ в СДЭКе для peer_id=%s", peer_id)
+        await _notify_manager(
+            peer_id,
+            f"⚠️ Заказ подтверждён, но в СДЭК не уехал — завести руками.\n"
+            f"Диалог: {vk_client.dialog_link(peer_id)}",
+        )
+        return None
+
+    logger.info("Заказ %s заведён в СДЭКе: uuid=%s", number, registered.uuid)
+    return registered.uuid
+
+
 async def _execute_confirm_order(peer_id: int) -> str:
     draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
         return "Нет черновика заказа, ожидающего подтверждения. Уточни у клиента, что он хочет заказать."
 
-    # Заказ в пункт выдачи без адреса пункта бесполезен: менеджеру некуда
-    # его отправлять. Адрес лежит в названии способа после двоеточия.
-    if draft.delivery_method == "cdek_pvz" and ":" not in (draft.delivery_label or ""):
+    # Заказ в пункт выдачи без кода пункта бесполезен: СДЭК его не примет,
+    # а менеджер не поймёт, куда везти посылку.
+    if draft.delivery_method == "cdek_pvz" and not draft.details.get("delivery_point"):
         return (
             "Перед подтверждением спроси у клиента адрес пункта выдачи СДЭК, куда "
             f"везти заказ. Можешь прислать карту пунктов: {CDEK_OFFICES_MAP_URL}. "
@@ -352,15 +445,29 @@ async def _execute_confirm_order(peer_id: int) -> str:
             "confirm_order."
         )
 
+    is_cdek = draft.delivery_method in ("cdek_pvz", "cdek_courier")
+    if is_cdek and not (draft.details.get("recipient_name") and draft.details.get("recipient_phone")):
+        return (
+            "Для оформления доставки СДЭКом нужны ФИО получателя и телефон. "
+            "Спроси их у клиента и вызови set_recipient, потом confirm_order."
+        )
+
     draft.stage = "confirmed"
+    cdek_uuid = await _register_in_cdek(peer_id, draft) if is_cdek else None
 
     try:
-        await orders_repository.save_order(peer_id, draft)
+        await orders_repository.save_order(peer_id, draft, cdek_uuid)
     except Exception:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
     payment_message = await payment_service.generate_payment_link(draft)
     await state.clear_draft(peer_id)
+
+    if is_cdek and cdek_uuid is None:
+        return (
+            f"Заказ подтверждён, но в СДЭКе его завести не удалось — этим займётся "
+            f"менеджер. {payment_message}"
+        )
     return f"Заказ подтверждён. {payment_message}"
 
 
@@ -426,6 +533,8 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return ToolExecution(await _execute_set_delivery_method(peer_id, tool_input))
     if name == "confirm_order":
         return ToolExecution(await _execute_confirm_order(peer_id))
+    if name == "set_recipient":
+        return ToolExecution(await _execute_set_recipient(peer_id, tool_input))
     if name == "escalate_to_manager":
         return await _execute_escalate_to_manager(peer_id, tool_input)
     return ToolExecution(f"Неизвестный инструмент: {name}")

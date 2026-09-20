@@ -58,6 +58,10 @@ def is_available() -> bool:
 # холодном старте. Если появится третья такая строчка — пора заводить Alembic.
 _MISSING_COLUMNS = (
     "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS author VARCHAR",
+    # Получатель, код пункта выдачи и выбранный тариф — всё, что нужно СДЭКу
+    # для регистрации заказа. Одной колонкой, чтобы не плодить миграции.
+    "ALTER TABLE order_drafts ADD COLUMN IF NOT EXISTS details JSONB",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cdek_uuid VARCHAR",
 )
 
 

@@ -3,7 +3,7 @@ from app.modules.orders.models import Order
 from app.modules.orders.state import OrderDraft
 
 
-async def save_order(peer_id: int, draft: OrderDraft) -> None:
+async def save_order(peer_id: int, draft: OrderDraft, cdek_uuid: str | None = None) -> None:
     session_factory = get_session_factory()
     total = draft.items_total + (draft.delivery_cost or 0)
 
@@ -16,6 +16,7 @@ async def save_order(peer_id: int, draft: OrderDraft) -> None:
             delivery_cost=draft.delivery_cost,
             total=total,
             status="confirmed",
+            cdek_uuid=cdek_uuid,
         )
         session.add(order)
         await session.commit()

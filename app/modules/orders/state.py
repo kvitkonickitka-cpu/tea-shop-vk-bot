@@ -13,6 +13,9 @@ class OrderDraft:
     delivery_method: str | None = None
     delivery_label: str | None = None
     delivery_cost: float | None = None
+    # Получатель, код пункта выдачи, тариф — то, что нужно СДЭКу при
+    # регистрации заказа и чего нет в остальных полях.
+    details: dict = field(default_factory=dict)
     # collecting -> awaiting_delivery -> awaiting_confirmation -> confirmed
     stage: str = "collecting"
 
@@ -29,6 +32,7 @@ def _row_to_draft(row: OrderDraftRow) -> OrderDraft:
         delivery_method=row.delivery_method,
         delivery_label=row.delivery_label,
         delivery_cost=float(row.delivery_cost) if row.delivery_cost is not None else None,
+        details=row.details or {},
         stage=row.stage,
     )
 
@@ -61,6 +65,7 @@ async def set_draft(peer_id: int, draft: OrderDraft) -> None:
         row.delivery_method = draft.delivery_method
         row.delivery_label = draft.delivery_label
         row.delivery_cost = draft.delivery_cost
+        row.details = draft.details
         row.stage = draft.stage
         await session.commit()
 

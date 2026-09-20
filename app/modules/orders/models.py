@@ -19,6 +19,7 @@ class Order(Base):
     delivery_cost: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     total: Mapped[float] = mapped_column(Numeric(10, 2))
     status: Mapped[str] = mapped_column(String, default="confirmed")
+    cdek_uuid: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -31,6 +32,9 @@ class OrderDraftRow(Base):
     delivery_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     delivery_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     delivery_cost: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    # Получатель, код пункта выдачи и тариф: всё, что нужно СДЭКу и чего нет
+    # в остальных колонках. Одним полем, чтобы не заводить их по одной.
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     stage: Mapped[str] = mapped_column(String)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

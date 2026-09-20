@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     cdek_client_secret: str = ""
     # Адрес, откуда забирают заказы (нужен для расчёта тарифа)
     cdek_from_address: str = ""
+    # Код отделения СДЭК, куда сами сдаём посылки. Без него заказ по тарифу
+    # «от склада» не зарегистрировать. Посмотреть коды по своему городу —
+    # scripts/cdek_points_probe.py
+    cdek_shipment_point: str = ""
     # Заглушка веса заказа, пока нет точного веса по каждой упаковке
     cdek_default_package_weight_grams: int = 200
 
