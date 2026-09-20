@@ -64,6 +64,20 @@ class Settings(BaseSettings):
     # За один запуск по таймеру — не больше стольких отчётов, чтобы уложиться
     # в отведённое контейнеру время выполнения.
     dialog_report_batch_limit: int = 10
+    # Ozon Доставка. Токен берётся на отдельном хосте, методы — на своём.
+    ozon_client_id: str = ""
+    ozon_client_secret: str = ""
+    ozon_auth_url: str = "https://xapi.ozon.ru/oauth/token"
+    ozon_api_base_url: str = "https://api-delivery.ozon.ru"
+    # Метод доставки из кабинета: без его идентификатора Ozon не считает.
+    # Узнать — scripts/ozon_probe.py
+    ozon_shipment_method_id: int = 0
+    # Габариты коробки по умолчанию, мм. У Ozon они обязательны, одним весом
+    # не обойтись, а настоящих размеров в каталоге пока нет.
+    ozon_default_length_mm: int = 200
+    ozon_default_width_mm: int = 150
+    ozon_default_height_mm: int = 100
+
     # Очередь Yandex Message Queue. Пусто хотя бы в одном поле — очередь не
     # используется, вебхук обрабатывает событие сам, как раньше. Это нужно,
     # чтобы выкатить код до настройки очереди и ничего не сломать.
