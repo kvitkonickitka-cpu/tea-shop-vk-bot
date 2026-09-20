@@ -7,6 +7,7 @@
 ничего не меняет, только измеряет.
 
     python scripts/cdek_points_probe.py Москва Краснодар
+    python scripts/cdek_points_probe.py Краснодар --all   # все пункты города
 
 Города можно перечислить через пробел, по умолчанию — Москва.
 """
@@ -24,6 +25,9 @@ import httpx  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.modules.delivery import cdek_client  # noqa: E402
+
+# По умолчанию печатаем три пункта для примера: в крупном городе их сотни.
+SHOW_ALL = False
 
 
 async def probe(client: httpx.AsyncClient, token: str, city: str) -> None:
@@ -65,19 +69,23 @@ async def probe(client: httpx.AsyncClient, token: str, city: str) -> None:
     points = response.json()
     print(f"{city}: пунктов {len(points)}, ответ {size_kb:.0f} КБ, время {points_time:.2f}с")
 
-    for point in points[:3]:
+    shown = points if SHOW_ALL else points[:3]
+    for point in shown:
         location = point.get("location", {})
         print(
             f"    [{point.get('code')}] {location.get('address_full') or location.get('address')}"
             f"   часы: {point.get('work_time') or '—'}"
         )
-    if len(points) > 3:
-        print(f"    ... и ещё {len(points) - 3}")
+    if len(points) > len(shown):
+        print(f"    ... и ещё {len(points) - len(shown)} — покажет флаг --all")
     print()
 
 
 async def main() -> int:
-    cities = sys.argv[1:] or ["Москва"]
+    global SHOW_ALL
+    args = sys.argv[1:]
+    SHOW_ALL = "--all" in args
+    cities = [a for a in args if not a.startswith("--")] or ["Москва"]
     contour = "ПЕСОЧНИЦА" if "edu" in settings.cdek_api_base_url else "БОЕВОЙ КОНТУР"
     print(f"Контур: {contour} ({settings.cdek_api_base_url})\n")
 
