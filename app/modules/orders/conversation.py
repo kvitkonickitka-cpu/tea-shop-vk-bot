@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
+from app.modules.delivery import cdek_client
 from app.modules.dialog import (
     claude_client,
     escalation_log,
@@ -64,15 +65,25 @@ TOOLS = [
         "name": "set_delivery_method",
         "description": (
             "Зафиксировать выбранный клиентом способ доставки, когда есть "
-            "активный черновик заказа, ожидающий выбора доставки."
+            "активный черновик заказа, ожидающий выбора доставки. Для "
+            "способов cdek_pvz и cdek_courier стоимость считается у СДЭКа "
+            "по-настоящему, поэтому нужен город клиента — если клиент его "
+            "ещё не назвал, сначала спроси, а инструмент вызывай уже с ним."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "method": {
                     "type": "string",
-                    "enum": ["ozon_pvz", "russian_post", "cdek"],
-                }
+                    "enum": ["cdek_pvz", "cdek_courier", "ozon_pvz", "russian_post"],
+                },
+                "address": {
+                    "type": "string",
+                    "description": (
+                        "Город клиента, а для доставки курьером — полный адрес. "
+                        "Обязателен для cdek_pvz и cdek_courier."
+                    ),
+                },
             },
             "required": ["method"],
         },
@@ -209,8 +220,39 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} руб."
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
-    result += "\nТеперь предложи клиенту выбрать способ доставки: Ozon ПВЗ, Почта России или СДЭК."
+    # Пункт выдачи называем первым и объясняем почему: он дешевле доставки
+    # до двери примерно на 250 руб, и клиенту проще согласиться на вариант,
+    # который уже предложен, чем выбирать из списка.
+    result += (
+        "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
+        "СДЭК — он дешевле всего, клиент забирает посылку сам. Если клиент "
+        "хочет курьером до двери, Ozon ПВЗ или Почтой России — тоже можно. "
+        "Для СДЭКа спроси город клиента: без него стоимость не посчитать."
+    )
     return result
+
+
+def _draft_weight_grams(draft: OrderDraft) -> int:
+    quantity = sum(item.get("quantity", 1) for item in draft.items) or 1
+    return settings.cdek_default_package_weight_grams * quantity
+
+
+async def _cdek_delivery(draft: OrderDraft, method: str, address: str) -> tuple[str, float, str]:
+    """Цена и срок СДЭКа для выбранного клиентом способа.
+
+    Режимы различаем осознанно: посылку мы сами сдаём в отделение, поэтому
+    берём тарифы, которые начинаются со «склада». Тариф «до двери» дороже
+    «до пункта выдачи» примерно на 250 руб — перепутать их значит возить
+    часть заказов себе в убыток.
+    """
+    modes = cdek_client.TO_DOOR if method == "cdek_courier" else cdek_client.TO_PICKUP
+    tariffs = await cdek_client.calculate_tariffs(address, _draft_weight_grams(draft))
+    tariff = cdek_client.cheapest(tariffs, modes)
+    if tariff is None:
+        raise cdek_client.CdekError(f"нет подходящего тарифа до «{address}»")
+
+    label = "СДЭК, курьером до адреса" if method == "cdek_courier" else "СДЭК, пункт выдачи"
+    return label, tariff.delivery_sum, tariff.period
 
 
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
@@ -219,20 +261,42 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> str:
         return "Нет черновика заказа, ожидающего выбора доставки. Уточни у клиента, что он хочет заказать."
 
     method = tool_input.get("method")
-    tariffs = _load_tariffs()
-    tariff = tariffs.get(method)
-    if tariff is None:
-        return f"Неизвестный способ доставки: {method}. Предложи клиенту выбрать из трёх вариантов ещё раз."
+    period = ""
+
+    if method in ("cdek_pvz", "cdek_courier"):
+        address = (tool_input.get("address") or "").strip()
+        if not address:
+            return (
+                "Чтобы посчитать доставку СДЭКом, нужен город клиента "
+                "(для курьера — полный адрес). Спроси и вызови инструмент ещё раз."
+            )
+        try:
+            label, cost, period = await _cdek_delivery(draft, method, address)
+        except Exception:
+            logger.exception("Не посчитали доставку СДЭК для peer_id=%s по адресу «%s»", peer_id, address)
+            return (
+                "Расчёт СДЭКа сейчас недоступен. Скажи клиенту, что стоимость "
+                "доставки уточнит менеджер, и вызови escalate_to_manager."
+            )
+        draft.delivery_label = label
+        draft.delivery_cost = cost
+    else:
+        tariffs = _load_tariffs()
+        tariff = tariffs.get(method)
+        if tariff is None:
+            return f"Неизвестный способ доставки: {method}. Предложи клиенту выбрать из вариантов ещё раз."
+        draft.delivery_label = tariff["label"]
+        draft.delivery_cost = tariff["price"]
 
     draft.delivery_method = method
-    draft.delivery_label = tariff["label"]
-    draft.delivery_cost = tariff["price"]
     draft.stage = "awaiting_confirmation"
     await state.set_draft(peer_id, draft)
 
     total = draft.items_total + draft.delivery_cost
-    return (
-        f"Способ доставки зафиксирован: {draft.delivery_label}, {draft.delivery_cost} руб.\n"
+    # Срок у СДЭКа уже заканчивается точкой («3–4 раб. дн.»), своей не добавляем.
+    head = f"Способ доставки зафиксирован: {draft.delivery_label}, {draft.delivery_cost} руб"
+    head += f", срок {period}\n" if period else ".\n"
+    return head + (
         f"Сумма товаров: {draft.items_total} руб. Итого с доставкой: {total} руб.\n"
         "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ."
     )

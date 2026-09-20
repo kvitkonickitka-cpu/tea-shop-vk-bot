@@ -22,9 +22,11 @@ class Settings(BaseSettings):
     # Railway автоматически прокидывает DATABASE_URL при подключении Postgres
     database_url: str = ""
 
-    # Тестовый (sandbox) контур CDEK по умолчанию — для продакшена сменить
-    # на https://api.cdek.ru, когда появится боевой договор и ключи
-    cdek_api_base_url: str = "https://api.edu.cdek.ru"
+    # Боевой контур СДЭК. Песочница (https://api.edu.cdek.ru) живёт на
+    # отдельных ключах, которые выдаёт менеджер: те, что приходят письмом
+    # при регистрации личного кабинета, там не работают. Расчёт тарифа —
+    # операция чтения, поэтому проверять его на боевом безопасно.
+    cdek_api_base_url: str = "https://api.cdek.ru"
     cdek_client_id: str = ""
     cdek_client_secret: str = ""
     # Адрес, откуда забирают заказы (нужен для расчёта тарифа)

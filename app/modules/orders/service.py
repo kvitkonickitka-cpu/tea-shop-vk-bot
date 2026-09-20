@@ -57,25 +57,38 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
         await vk_client.send_message(user_id, unknown_cost)
         return
 
-    # Именно до двери: у нас на руках уличный адрес, а не код пункта выдачи.
-    # Самый дешёвый тариф вообще — почти всегда «склад-склад», то есть клиент
-    # едет за посылкой сам; показывать его цену как доставку по адресу нельзя.
-    tariff = cdek_client.cheapest(tariffs, cdek_client.TO_DOOR)
-    if tariff is None:
+    # Два режима считаем отдельно и оба показываем клиенту. Пункт выдачи
+    # дешевле доставки до двери примерно на 250 руб, поэтому называем его
+    # первым; курьера оставляем как второй вариант, а не как единственный.
+    # Смешивать режимы нельзя: самый дешёвый тариф вообще — «склад-склад»,
+    # и выдать его цену за доставку по адресу значит возить себе в убыток.
+    pickup = cdek_client.cheapest(tariffs, cdek_client.TO_PICKUP)
+    courier = cdek_client.cheapest(tariffs, cdek_client.TO_DOOR)
+    if pickup is None and courier is None:
         logger.warning(
-            "Order %s: СДЭК не предложил ни одного тарифа с доставкой до двери по адресу «%s»",
+            "Order %s: СДЭК не предложил ни одного подходящего тарифа по адресу «%s»",
             order_id,
             address,
         )
         await vk_client.send_message(user_id, unknown_cost)
         return
 
-    delivery_cost = tariff.delivery_sum
+    options = []
+    if pickup is not None:
+        options.append(
+            f"Пункт выдачи СДЭК рядом с адресом «{address}»: {pickup.delivery_sum} руб, "
+            f"срок {pickup.period}, итого {items_total + pickup.delivery_sum} руб."
+        )
+    if courier is not None:
+        options.append(
+            f"Курьером до адреса «{address}»: {courier.delivery_sum} руб, "
+            f"срок {courier.period}, итого {items_total + courier.delivery_sum} руб."
+        )
+
     facts = (
         f"Заказ №{order_id} принят. Сумма товаров: {items_total} руб. "
-        f"Доставка СДЭК курьером до адреса «{address}»: {delivery_cost} руб, "
-        f"срок {tariff.period}. "
-        f"Итого с доставкой: {items_total + delivery_cost} руб."
+        + " ".join(options)
+        + " Первым предложи пункт выдачи — он дешевле."
     )
 
     try:
