@@ -41,6 +41,10 @@ CDEK_OFFICES_MAP_URL = "https://www.cdek.ru/ru/offices"
 # фраза, чем извинение за несуществующую поломку.
 _SECOND_ROUND_FALLBACK = "Записала, спасибо! Подскажите, если нужно что-то поправить 🙏"
 
+# Первый ход после старта контейнера идёт дольше: прогреваются соединения,
+# пусты все кэши. Отмечаем его в логе, чтобы не искать причину там, где её нет.
+_cold_start = True
+
 _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / "order_flow_prompt.md"
 # Ссылку подставляем из кода, а не пишем в промпт руками: иначе она разъедется
 # с той, что возвращают инструменты, и бот начнёт слать две разные.
@@ -400,28 +404,17 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 elif found:
                     options = "; ".join(f"{i}) {p.describe()}" for i, p in enumerate(found, start=1))
                     await state.set_draft(peer_id, draft)
-                    варианты = "\n".join(
-                        f"{i}. {p.describe()}" for i, p in enumerate(found, start=1)
-                    )
                     return ToolExecution(
                         f"По запросу «{hint}» в городе {address} нашлось несколько пунктов: "
-                        f"{options}. Спроси клиента, какой из них, и вызови "
-                        "set_delivery_method ещё раз с точным адресом в pickup_point.",
-                        client_reply=(
-                            f"Нашла несколько пунктов рядом 📍\n{варианты}\n\n"
-                            "Какой удобнее? Напишите номер или адрес."
-                        ),
+                        f"{options}. Перечисли их клиенту и спроси, какой из них, а потом "
+                        "вызови set_delivery_method ещё раз с точным адресом в pickup_point."
                     )
                 else:
                     await state.set_draft(peer_id, draft)
                     return ToolExecution(
                         f"Пункт выдачи «{hint}» в городе {address} не нашёлся. Попроси "
                         "клиента уточнить адрес и предложи карту пунктов: "
-                        f"{CDEK_OFFICES_MAP_URL}",
-                        client_reply=(
-                            f"Не нашла пункт по запросу «{hint}» 🤔 Уточните адрес, "
-                            f"пожалуйста. Посмотреть все пункты: {CDEK_OFFICES_MAP_URL}"
-                        ),
+                        f"{CDEK_OFFICES_MAP_URL}"
                     )
 
         draft.delivery_label = label
@@ -447,18 +440,9 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     head += f", срок {period}\n" if period else ".\n"
     head += f"Сумма товаров: {draft.items_total} руб. Итого с доставкой: {total} руб.\n"
 
-    # Ответ клиенту пишем здесь, а не отдаём Claude на пересказ. Второй заход
-    # к модели стоит около двух секунд, а этот ход и так самый тяжёлый:
-    # список тарифов, полный расчёт, иногда ещё и поиск пункта. Из-за него
-    # вебхук упирался в 8 секунд VK и обрывался (Code 499) — клиент не
-    # получал ничего. Предсказуемый ответ вовремя полезнее красивого, но
-    # не дошедшего.
-    цены = (
-        f"{draft.delivery_label} — {draft.delivery_cost} руб."
-        + (f", срок {period}" if period else "")
-        + f"\nТовары: {draft.items_total} руб.\nИтого: {total} руб."
-    )
-
+    # Формулировку отдаём модели: с очередью второй заход к Claude перестал
+    # быть роскошью, а живой текст клиенту приятнее нашего шаблона. Пока
+    # висел восьмисекундный потолок VK, этот заход приходилось вырезать.
     if ask_for_point:
         return ToolExecution(
             head
@@ -466,23 +450,15 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             "удобно забрать заказ — нужен адрес пункта, а не просто город. "
             f"Предложи прислать карту пунктов, чтобы свериться: {CDEK_OFFICES_MAP_URL}. "
             "Когда клиент назовёт адрес, вызови set_delivery_method ещё раз с тем "
-            "же городом и адресом пункта в pickup_point.",
-            client_reply=(
-                f"{цены}\n\nВ какой пункт выдачи СДЭК вам удобно забрать заказ? "
-                f"Нужен адрес пункта 📍 Если не знаете ближайший — вот карта: "
-                f"{CDEK_OFFICES_MAP_URL}"
-            ),
+            "же городом и адресом пункта в pickup_point."
         )
 
-    следующий_шаг = (
-        "Подскажите, пожалуйста, ФИО получателя и телефон — и оформим заказ 🙏"
+    next_step = (
+        "Потом спроси ФИО получателя и телефон — они нужны для доставки СДЭКом."
         if method in ("cdek_pvz", "cdek_courier")
-        else "Оформляем заказ?"
+        else "Спроси, готов ли он оформить заказ."
     )
-    return ToolExecution(
-        head + "Сообщи клиенту эти суммы и спроси, готов ли он оформить заказ.",
-        client_reply=f"{цены}\n\n{следующий_шаг}",
-    )
+    return ToolExecution(head + "Сообщи клиенту эти суммы. " + next_step)
 
 
 async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
@@ -653,7 +629,63 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
     return ToolExecution(f"Неизвестный инструмент: {name}")
 
 
+class _Spent:
+    """Куда ушло время внутри хода.
+
+    Общей длительности мало: 13 секунд из-за медленной модели и 13 секунд
+    из-за медленного СДЭКа лечатся по-разному, а по одной цифре их не
+    различить. Разбираться постфактум в логах дороже, чем считать сразу.
+    """
+
+    def __init__(self) -> None:
+        self.claude_seconds = 0.0
+        self.claude_calls = 0
+        self.tool_seconds = 0.0
+        self.tool_calls = 0
+
+    async def claude(self, coro):
+        started = time.monotonic()
+        try:
+            return await coro
+        finally:
+            self.claude_seconds += time.monotonic() - started
+            self.claude_calls += 1
+
+    async def tool(self, coro):
+        started = time.monotonic()
+        try:
+            return await coro
+        finally:
+            self.tool_seconds += time.monotonic() - started
+            self.tool_calls += 1
+
+    def describe(self, total: float) -> str:
+        other = total - self.claude_seconds - self.tool_seconds
+        return (
+            f"claude={self.claude_calls}×{self.claude_seconds:.2f}с "
+            f"инструменты={self.tool_calls}×{self.tool_seconds:.2f}с "
+            f"прочее={other:.2f}с всего={total:.2f}с"
+        )
+
+
 async def handle_turn(peer_id: int, user_text: str) -> str:
+    global _cold_start
+    started = time.monotonic()
+    spent = _Spent()
+    cold = _cold_start
+    _cold_start = False
+    try:
+        return await _handle_turn(peer_id, user_text, spent)
+    finally:
+        logger.info(
+            "ход peer_id=%s %s%s",
+            peer_id,
+            spent.describe(time.monotonic() - started),
+            " (холодный старт)" if cold else "",
+        )
+
+
+async def _handle_turn(peer_id: int, user_text: str, spent: _Spent) -> str:
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
 
@@ -672,7 +704,7 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     history = await dialog_history.get_history(peer_id)
     messages: list[dict] = history + [{"role": "user", "content": user_text}]
 
-    response = await claude_client.converse(messages, system_prompt, tools)
+    response = await spent.claude(claude_client.converse(messages, system_prompt, tools))
 
     if response.stop_reason != "tool_use":
         reply = claude_client.extract_text(response)
@@ -682,7 +714,10 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
     messages.append({"role": "assistant", "content": response.content})
 
-    executions = [(block, await _execute_tool(peer_id, block.name, block.input)) for block in tool_use_blocks]
+    executions = [
+        (block, await spent.tool(_execute_tool(peer_id, block.name, block.input)))
+        for block in tool_use_blocks
+    ]
 
     # Если за ход выполнился ровно один инструмент и ответ клиенту у него
     # детерминированный (сейчас так только у escalate_to_manager), отдаём этот
@@ -714,7 +749,7 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
     ]
     messages.append({"role": "user", "content": tool_results})
 
-    follow_up = await claude_client.converse(messages, system_prompt, tools)
+    follow_up = await spent.claude(claude_client.converse(messages, system_prompt, tools))
 
     # Модель может попросить ещё один инструмент вместо того, чтобы ответить
     # словами. Раньше здесь падало с «no text block», и клиент получал
@@ -733,7 +768,7 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
         )
         direct_reply = None
         for block in extra:
-            execution = await _execute_tool(peer_id, block.name, block.input)
+            execution = await spent.tool(_execute_tool(peer_id, block.name, block.input))
             if direct_reply is None and execution.client_reply is not None:
                 direct_reply = execution.client_reply
 
