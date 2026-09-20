@@ -1,9 +1,11 @@
 import hmac
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
+from app.modules.dialog import telegram_client
 from app.modules.orders import cdek_watch
 from app.modules.reports import service as reports_service
 
@@ -55,6 +57,46 @@ async def send_dialog_reports(request: Request):
     if not _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
     return await _run_scheduled()
+
+
+def _hide_token(text: str) -> str:
+    """Убрать токен бота из текста ошибки.
+
+    httpx кладёт в сообщение об ошибке полный URL, а он у Telegram вида
+    `/bot<токен>/sendMessage`. Отдавать это наружу нельзя даже через
+    защищённый токеном эндпоинт: ответ легко переслать или вставить в чат.
+    """
+    token = settings.telegram_bot_token
+    return text.replace(token, "<токен скрыт>") if token else text
+
+
+@router.post("/internal/telegram/ping")
+async def telegram_ping(request: Request):
+    """Проверка связи: пишет тестовое сообщение в чат заказов."""
+    if not _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    chat_id = settings.telegram_orders_chat_id or None
+    where = chat_id or "чат менеджера (TELEGRAM_ORDERS_CHAT_ID не задан)"
+    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    text = (
+        "✅ <b>Проверка связи</b>\n"
+        "Бот пишет в этот чат. Сюда будут приходить карточки новых заказов "
+        "и предупреждения о проблемах с регистрацией в СДЭКе.\n"
+        f"Отправлено: {now}"
+    )
+
+    try:
+        await telegram_client.send_message(text, chat_id=chat_id)
+    except Exception as error:
+        # Без exception(): в трассировке может оказаться токен бота, а логи
+        # читает больше людей, чем стоило бы.
+        safe = _hide_token(str(error))
+        logger.error("Проверка связи с чатом заказов не прошла: %s", safe)
+        return {"chat": where, "sent": False, "error": safe[:300]}
+
+    logger.info("Проверка связи: сообщение ушло в %s", where)
+    return {"chat": where, "sent": True}
 
 
 @router.post("/internal/cdek/check")

@@ -32,9 +32,21 @@ async def send_message(text: str, chat_id: str | None = None) -> None:
         else {}
     )
 
+    # Токен бота лежит прямо в пути URL, а httpx кладёт URL в текст своих
+    # ошибок. Без этой обёртки любой сбой Telegram писал бы токен в логи —
+    # и в облачные, и в ответы служебных эндпоинтов. Поэтому наружу отдаём
+    # только код и тело ответа, без адреса.
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        try:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise RuntimeError(
+                f"Telegram ответил {error.response.status_code}: {error.response.text[:300]}"
+            ) from None
+        except httpx.RequestError as error:
+            raise RuntimeError(f"Telegram недоступен: {type(error).__name__}") from None
+
         data = response.json()
         if not data.get("ok"):
             raise RuntimeError(f"Telegram API error: {data}")
