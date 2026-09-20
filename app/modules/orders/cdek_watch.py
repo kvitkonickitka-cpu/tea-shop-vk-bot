@@ -153,9 +153,21 @@ async def check_pending_orders() -> dict:
             result["checked"] += 1
             try:
                 data = await cdek_client.order_state(order.cdek_uuid)
-            except Exception:
+            except Exception as error:
                 logger.exception("Не узнали состояние заказа %s в СДЭКе", order.id)
                 result["failed"] += 1
+                # Иначе безнадёжный заказ опрашивался бы каждые пять минут
+                # целые сутки. Так бывает, например, когда заказ удалили в
+                # кабинете: для API его больше нет, и ответ всегда будет 400.
+                if now - order.created_at > _STUCK_AFTER:
+                    order.status = STATUS_STUCK
+                    result["stuck"] += 1
+                    await _warn_manager(
+                        order,
+                        "не отвечает в СДЭКе",
+                        f"Состояние узнать не получается: {str(error)[:200]}\n"
+                        f"Возможно, заказ удалили в кабинете. uuid {order.cdek_uuid}",
+                    )
                 continue
 
             if _is_rejected(data):
