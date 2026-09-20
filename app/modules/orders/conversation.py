@@ -216,6 +216,23 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     lines.append(f"Сумма товаров: {draft.items_total} руб.")
     if draft.delivery_label:
         lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} руб.")
+
+    # Показываем, что записано на самом деле. Без этого модель судит по
+    # собственной прошлой реплике: написала клиенту «получатель записан», а
+    # инструмент не вызвала — и узнаёт об этом только при подтверждении.
+    name = draft.details.get("recipient_name")
+    phone = draft.details.get("recipient_phone")
+    if name and phone:
+        lines.append(f"Получатель записан: {name}, {phone}.")
+    elif draft.delivery_method in ("cdek_pvz", "cdek_courier"):
+        lines.append(
+            "Получатель ещё НЕ записан. Если клиент уже называл ФИО и телефон — "
+            "вызови set_recipient с ними, не переспрашивая."
+        )
+
+    if draft.delivery_method == "cdek_pvz" and not draft.details.get("delivery_point"):
+        lines.append("Пункт выдачи ещё НЕ выбран.")
+
     return "\n".join(lines)
 
 
@@ -456,7 +473,9 @@ async def _execute_confirm_order(peer_id: int) -> str:
     if is_cdek and not (draft.details.get("recipient_name") and draft.details.get("recipient_phone")):
         return (
             "Для оформления доставки СДЭКом нужны ФИО получателя и телефон. "
-            "Спроси их у клиента и вызови set_recipient, потом confirm_order."
+            "Если клиент уже называл их в переписке — вызови set_recipient с "
+            "этими данными прямо сейчас, не переспрашивая, и потом confirm_order. "
+            "Если не называл — спроси."
         )
 
     draft.stage = "confirmed"
