@@ -48,18 +48,33 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
     total_quantity = sum(item.get("quantity", 1) for item in items) or 1
     weight_grams = settings.cdek_default_package_weight_grams * total_quantity
 
+    unknown_cost = "Ваш заказ принят! Точную стоимость доставки СДЭК уточним и напишем вам отдельно."
+
     try:
-        tariff = await cdek_client.calculate_cheapest_tariff(address, weight_grams)
-        delivery_cost = tariff["delivery_sum"]
+        tariffs = await cdek_client.calculate_tariffs(address, weight_grams)
     except Exception:
         logger.exception("Failed to calculate CDEK delivery for order %s", order_id)
-        reply = "Ваш заказ принят! Точную стоимость доставки СДЭК уточним и напишем вам отдельно."
-        await vk_client.send_message(user_id, reply)
+        await vk_client.send_message(user_id, unknown_cost)
         return
 
+    # Именно до двери: у нас на руках уличный адрес, а не код пункта выдачи.
+    # Самый дешёвый тариф вообще — почти всегда «склад-склад», то есть клиент
+    # едет за посылкой сам; показывать его цену как доставку по адресу нельзя.
+    tariff = cdek_client.cheapest(tariffs, cdek_client.TO_DOOR)
+    if tariff is None:
+        logger.warning(
+            "Order %s: СДЭК не предложил ни одного тарифа с доставкой до двери по адресу «%s»",
+            order_id,
+            address,
+        )
+        await vk_client.send_message(user_id, unknown_cost)
+        return
+
+    delivery_cost = tariff.delivery_sum
     facts = (
         f"Заказ №{order_id} принят. Сумма товаров: {items_total} руб. "
-        f"Доставка СДЭК до адреса «{address}»: {delivery_cost} руб. "
+        f"Доставка СДЭК курьером до адреса «{address}»: {delivery_cost} руб, "
+        f"срок {tariff.period}. "
         f"Итого с доставкой: {items_total + delivery_cost} руб."
     )
 
