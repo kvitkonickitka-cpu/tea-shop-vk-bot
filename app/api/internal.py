@@ -1,12 +1,15 @@
 import hmac
+import json
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
+from app.modules import events
 from app.modules.dialog import telegram_client
 from app.modules.orders import cdek_watch
+from app.modules.queue import client as queue_client
 from app.modules.reports import service as reports_service
 
 logger = logging.getLogger(__name__)
@@ -110,13 +113,48 @@ async def check_cdek_orders(request: Request):
 
 
 @router.post("/")
-async def timer_entrypoint(request: Request):
-    """Точка входа для таймера Yandex Cloud.
+async def trigger_entrypoint(request: Request):
+    """Общая точка входа для триггеров Yandex Cloud.
 
-    В форме триггера нет поля пути: он всегда стучится в корень контейнера.
-    Токен кладётся в поле «Данные» и приезжает где-то внутри тела запроса.
+    В форме триггера нет поля пути: любой из них стучится в корень
+    контейнера. Поэтому сюда приходят и таймер, и очередь, и различать их
+    приходится по содержимому: у сообщения очереди есть тело, у таймера нет.
+
+    Токен в обоих случаях приезжает внутри запроса — у таймера из поля
+    «Данные», у очереди мы кладём его в сообщение сами, — так что проверка
+    доступа одна на оба случая.
     """
-    body = (await request.body()).decode("utf-8", errors="replace")
-    if not _authorized(request, body):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    if not _authorized(request, raw):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    try:
+        payload = json.loads(raw) if raw else {}
+    except ValueError:
+        payload = {}
+
+    vk_events = queue_client.extract_events(payload) if isinstance(payload, dict) else []
+    if vk_events:
+        handled = 0
+        for event in vk_events:
+            # Одно упавшее сообщение не должно уронить остальные из той же
+            # пачки: триггер приносит их вместе.
+            try:
+                await events.process_event(event)
+                handled += 1
+            except Exception:
+                logger.exception("Событие из очереди не обработалось: %s", event.get("event_id"))
+        logger.info("Из очереди обработано событий: %s из %s", handled, len(vk_events))
+        if handled < len(vk_events):
+            # Отвечаем ошибкой, чтобы очередь принесла пачку ещё раз. Иначе
+            # упавшее событие пропадёт совсем, а раньше его повторял сам VK.
+            # Повторная обработка уже удавшихся отсеется дедупликацией по
+            # event_id — она для того и живёт в базе.
+            return Response(
+                content=json.dumps({"queue_events": len(vk_events), "handled": handled}),
+                media_type="application/json",
+                status_code=500,
+            )
+        return {"queue_events": len(vk_events), "handled": handled}
+
     return await _run_scheduled()

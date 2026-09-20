@@ -1,10 +1,16 @@
+import logging
+
 from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
-from app.modules.dialog import service
-from app.modules.orders import service as orders_service
+from app.modules import events
+from app.modules.queue import client as queue_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["vk"])
+
+_OK = Response(content="ok", media_type="text/plain")
 
 
 @router.post("/vk/callback")
@@ -14,37 +20,23 @@ async def vk_callback(request: Request) -> Response:
     if body.get("secret") != settings.vk_secret_key:
         return Response(content="ok", media_type="text/plain", status_code=403)
 
-    event_type = body.get("type")
-
-    if event_type == "confirmation":
+    if body.get("type") == "confirmation":
         return Response(content=settings.vk_confirmation_token, media_type="text/plain")
 
-    event_id = body.get("event_id", "")
-    if event_id and await service.already_processed(event_id):
-        return Response(content="ok", media_type="text/plain")
+    # VK ждёт ответа около восьми секунд, а обработка в них уже не помещается:
+    # Claude, СДЭК, дальше ЮKassa и другие доставки. Поэтому кладём событие в
+    # очередь и отвечаем сразу — разберёт его отдельный вызов, без секундомера.
+    if queue_client.is_configured():
+        try:
+            message_id = await queue_client.enqueue(body)
+            logger.info(
+                "Событие %s поставлено в очередь: %s", body.get("event_id", ""), message_id
+            )
+            return _OK
+        except Exception:
+            # Очередь недоступна — лучше обработать на месте и, возможно,
+            # не уложиться в таймаут, чем потерять сообщение клиента совсем.
+            logger.exception("Не удалось поставить событие в очередь, обрабатываем на месте")
 
-    # Обрабатываем синхронно, до ответа "ok" — на serverless-платформах
-    # (Yandex Cloud) фоновые задачи после ответа не гарантированно
-    # довыполняются, контейнер может быть заморожен раньше времени.
-    if event_type == "message_new":
-        message = body.get("object", {}).get("message", {})
-        await service.handle_message_new(message)
-    elif event_type == "message_reply":
-        # У message_new object вложен под ключом "message", у message_reply
-        # по документации VK — это сам объект сообщения; на случай если VK
-        # пришлёт другой формат, подстрахуемся обоими вариантами.
-        reply_object = body.get("object", {})
-        message = reply_object.get("message", reply_object)
-        await service.handle_message_reply(message)
-    elif event_type == "market_order_new":
-        order_event = body.get("object", {})
-        await orders_service.handle_new_order(order_event)
-
-    # Отмечаем событие обработанным только здесь, когда ответ клиенту уже ушёл.
-    # Если обработка не дошла досюда — упала с ошибкой или её оборвал VK по
-    # таймауту, — отметки не будет, и повторная доставка отработает заново,
-    # а не потеряется как дубликат.
-    if event_id:
-        await service.mark_processed(event_id)
-
-    return Response(content="ok", media_type="text/plain")
+    await events.process_event(body)
+    return _OK

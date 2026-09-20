@@ -5,3 +5,4 @@ httpx
 anthropic
 sqlalchemy[asyncio]
 asyncpg
+boto3
