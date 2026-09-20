@@ -31,7 +31,19 @@ TO_PICKUP = (MODE_DOOR_WAREHOUSE, MODE_WAREHOUSE_WAREHOUSE)
 TO_POSTAMAT = (MODE_DOOR_POSTAMAT, MODE_WAREHOUSE_POSTAMAT)
 
 _ORDER_TYPE_ONLINE_SHOP = 1
-_TIMEOUT_SECONDS = 10
+# Таймаут заведомо меньше 8 секунд, которые VK даёт на весь вебхук: иначе
+# один медленный ответ СДЭКа съедает всё окно и клиент не получает ничего.
+# Лучше остаться без цены и сказать об этом, чем промолчать.
+_TIMEOUT_SECONDS = 3.5
+# Регистрации даём больше: оборванный на полпути POST /v2/orders оставляет
+# заказ в неизвестном состоянии, а это хуже, чем задержка.
+_ORDER_TIMEOUT_SECONDS = 5
+
+# Тариф по одному и тому же городу и весу не меняется в пределах разговора,
+# а поход за ним стоит двух запросов. Память контейнера переживает диалог,
+# этого достаточно.
+_TARIFFS_TTL_SECONDS = 600
+_tariffs_cache: dict[tuple, tuple[float, list]] = {}
 
 _token: str | None = None
 _token_expires_at: float = 0.0
@@ -113,6 +125,11 @@ async def calculate_tariffs(
     if not settings.cdek_from_address:
         raise CdekError("CDEK_FROM_ADDRESS не задан — расчёт невозможен")
 
+    cache_key = (to_address.strip().lower(), weight_grams, delivery_point)
+    cached = _tariffs_cache.get(cache_key)
+    if cached and time.time() - cached[0] < _TARIFFS_TTL_SECONDS:
+        return cached[1]
+
     payload: dict = {
         "type": _ORDER_TYPE_ONLINE_SHOP,
         "lang": "rus",
@@ -154,6 +171,8 @@ async def calculate_tariffs(
     ]
     if not tariffs:
         raise CdekError(f"СДЭК не вернул ни одного тарифа — {_describe_failure(response)}")
+
+    _tariffs_cache[cache_key] = (time.time(), tariffs)
     return tariffs
 
 
@@ -352,7 +371,7 @@ async def register_order(
     else:
         payload["to_location"] = {"address": to_address}
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(timeout=_ORDER_TIMEOUT_SECONDS) as client:
         token = await _get_access_token(client)
         response = await client.post(
             f"{settings.cdek_api_base_url}/v2/orders",
