@@ -57,5 +57,21 @@ case "$PATH_PART" in
     *)  URL="$CONTAINER/internal/$PATH_PART" ;;
 esac
 
-curl -sS -X POST "$URL" -H "x-internal-token: $TOKEN"
-echo
+BODY=$(curl -sS -X POST "$URL" -H "x-internal-token: $TOKEN")
+echo "$BODY"
+
+# `forbidden` значит, что токен в .env и токен в ревизии разошлись. Сравнить
+# значения напрямую нельзя — их нельзя ни показать, ни переслать, — поэтому
+# сверяем отпечатки: /health отдаёт свой, а здесь считаем свой.
+if [ "$BODY" = "forbidden" ]; then
+    if command -v shasum > /dev/null 2>&1; then
+        MINE=$(printf '%s' "$TOKEN" | shasum -a 256 | cut -c1-8)
+    else
+        MINE=$(printf '%s' "$TOKEN" | openssl dgst -sha256 | sed 's/.*= //' | cut -c1-8)
+    fi
+    echo >&2
+    echo "Токен не подошёл. Отпечаток токена из .env: $MINE" >&2
+    echo "Сравни с полем token в ответе: scripts/api.sh health" >&2
+    echo "Разные — значит в секрете GitHub INTERNAL_API_TOKEN другое значение." >&2
+    echo "Поправь его и передеплой: Actions -> Run workflow." >&2
+fi
