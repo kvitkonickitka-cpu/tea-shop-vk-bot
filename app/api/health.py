@@ -1,11 +1,16 @@
 import hashlib
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.core.config import settings
 from app.core.database import is_available
 
 router = APIRouter(tags=["health"])
+
+
+def _fingerprint(value: str) -> str:
+    """Восемь символов sha256 — сверять, не показывая само значение."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
 
 def _token_fingerprint() -> str:
@@ -17,14 +22,24 @@ def _token_fingerprint() -> str:
     напрямую нельзя, их нельзя ни показать, ни переслать. Восемь символов от
     sha256 для сверки достаточно, а обратно из них токен не достать.
     """
-    if not settings.internal_api_token:
+    token = (settings.internal_api_token or "").strip()
+    if not token:
         return "не задан"
-    digest = hashlib.sha256(settings.internal_api_token.encode("utf-8")).hexdigest()
-    return digest[:8]
+    return _fingerprint(token)
+
+
+def _received_header(request: Request) -> str:
+    value = request.headers.get("x-internal-token")
+    if value is None:
+        return "заголовок не пришёл"
+    stripped = value.strip()
+    if value != stripped:
+        return f"{_fingerprint(stripped)} (по краям были лишние пробелы)"
+    return _fingerprint(stripped)
 
 
 @router.get("/health")
-async def health_check() -> dict[str, str]:
+async def health_check(request: Request) -> dict[str, str]:
     # Кроме «жив», отвечаем какая ревизия крутится и видна ли база. Без
     # первого невозможно понять, доехал ли деплой: свежий эндпоинт отвечает
     # 404 и когда его нет в коде, и когда контейнер ещё на старой ревизии.
@@ -33,4 +48,10 @@ async def health_check() -> dict[str, str]:
         "revision": settings.app_revision or "не задана",
         "database": "ok" if is_available() else "резервный режим",
         "token": _token_fingerprint(),
+        # Что дошло до приложения в заголовке. Отпечатки токена в ревизии и в
+        # .env сошлись, а доступ всё равно закрывался — значит вопрос не к
+        # значению, а к дороге: заголовок могли не донести или подправить по
+        # пути. Своё значение вызывающий и так знает, так что его отпечаток
+        # ему ничего не открывает.
+        "header": _received_header(request),
     }
