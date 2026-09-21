@@ -65,6 +65,8 @@ async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None
             "name": point.name,
             "address": point.address,
             "search_text": normalize(point.address),
+            "is_active": point.is_active,
+            "kind": point.kind,
             "updated_at": datetime.now(timezone.utc),
         }
         for point in points
@@ -80,6 +82,8 @@ async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None
                 "name": statement.excluded.name,
                 "address": statement.excluded.address,
                 "search_text": statement.excluded.search_text,
+                "is_active": statement.excluded.is_active,
+                "kind": statement.excluded.kind,
                 "updated_at": statement.excluded.updated_at,
             },
         )
@@ -150,14 +154,27 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
     return result
 
 
-async def find(query: str, limit: int = 5) -> list[OzonDeliveryPoint]:
-    """Пункты, подходящие под то, что назвал клиент.
+def _matching(query: str):
+    """Запрос по значимым словам адреса, или None, если искать нечего.
 
-    Клиент пишет адрес как придётся, поэтому сравниваем по значимым словам:
-    ищем строки, где встречаются все слова запроса.
+    Клиент пишет адрес как придётся, поэтому сравниваем по словам: берём
+    строки, где встречаются все слова запроса. Закрытые пункты не показываем
+    никогда — это дорога к запертой двери.
     """
     words = normalize(query).split()
     if not words:
+        return None
+
+    statement = select(OzonDeliveryPoint).where(OzonDeliveryPoint.is_active.isnot(False))
+    for word in words[:5]:
+        statement = statement.where(OzonDeliveryPoint.search_text.contains(word))
+    return statement
+
+
+async def find(query: str, limit: int = 5) -> list[OzonDeliveryPoint]:
+    """Пункты, подходящие под то, что назвал клиент."""
+    statement = _matching(query)
+    if statement is None:
         return []
 
     try:
@@ -166,11 +183,33 @@ async def find(query: str, limit: int = 5) -> list[OzonDeliveryPoint]:
         return []
 
     async with session_factory() as session:
-        statement = select(OzonDeliveryPoint)
-        for word in words[:5]:
-            statement = statement.where(OzonDeliveryPoint.search_text.contains(word))
         rows = (await session.execute(statement.limit(limit))).scalars().all()
     return list(rows)
+
+
+async def count_matching(query: str) -> int:
+    """Сколько всего пунктов подходит под запрос.
+
+    Клиенту важно знать, из скольких он выбирает: пять адресов из сорока —
+    это не выбор, а случайная выборка, и предлагать её как весь список
+    нечестно.
+    """
+    statement = _matching(query)
+    if statement is None:
+        return 0
+
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return 0
+
+    from sqlalchemy import func as sql_func
+
+    async with session_factory() as session:
+        total = await session.scalar(
+            select(sql_func.count()).select_from(statement.subquery())
+        )
+    return int(total or 0)
 
 
 async def count() -> int:

@@ -64,6 +64,12 @@ class DeliveryPoint:
     name: str
     address: str
     shipment_method_ids: tuple[int, ...]
+    # Закрытые пункты Ozon из каталога не убирает, помечает флагом. Предложить
+    # клиенту закрытый пункт — значит отправить его к запертой двери.
+    is_active: bool = True
+    # pvz или postamat: в постамат посылку кладут в ячейку, и клиенту это
+    # стоит сказать заранее.
+    kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -235,6 +241,8 @@ async def delivery_points_info(ids: list[int]) -> list[DeliveryPoint]:
                 name=item.get("name", ""),
                 address=item.get("full_address", ""),
                 shipment_method_ids=tuple(item.get("shipment_method_ids") or ()),
+                is_active=item.get("is_active", True),
+                kind=item.get("type", ""),
             )
         )
     return points

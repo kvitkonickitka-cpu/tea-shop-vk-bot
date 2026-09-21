@@ -36,6 +36,11 @@ _TARIFFS_PATH = Path(__file__).parent / "delivery_tariffs.json"
 # сообщения нельзя — не укладываемся в 8 секунд, которые даёт VK.
 CDEK_OFFICES_MAP_URL = "https://www.cdek.ru/ru/offices"
 
+# То же для Ozon. В городе-миллионнике пунктов десятки, и показать клиенту
+# пять первых из каталога — это выбрать за него. Пусть смотрит на карте и
+# называет удобный, а мы найдём его в своей копии каталога.
+OZON_POINTS_MAP_URL = "https://www.ozon.ru/geo/"
+
 # Последнее средство: модель не написала ни слова даже тогда, когда её
 # позвали без инструментов. Лучше нейтральная фраза, чем извинение за
 # несуществующую поломку.
@@ -327,10 +332,8 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
         "быстрее, предложи пункт выдачи СДЭК: дороже, но идёт в полтора-два "
         "раза меньше. Курьер СДЭК до двери и Почта России — тоже можно. "
         "Для любого расчёта спроси город клиента: без него стоимость не "
-        "посчитать. У Ozon цену можно назвать только после того, как клиент "
-        "выберет пункт: вызови set_delivery_method с городом, инструмент "
-        "вернёт список пунктов. Для пункта выдачи СДЭК нужен адрес самого "
-        "пункта — предложи карту, если клиент не знает ближайший: "
+        "посчитать. Дальше нужен адрес пункта выдачи — если клиент не знает "
+        f"ближайший, предложи карту: у Ozon {OZON_POINTS_MAP_URL}, у СДЭКа "
         f"{CDEK_OFFICES_MAP_URL}"
     )
     return result
@@ -374,8 +377,8 @@ async def _cdek_delivery(
 
 async def _ozon_points(
     draft: OrderDraft, city: str, hint: str = ""
-) -> tuple[list, int]:
-    """Пункты Ozon под то, что назвал клиент, и сколько их нашлось всего."""
+) -> tuple[list, int, int]:
+    """Пункты Ozon под то, что назвал клиент, и счётчики вокруг них."""
     return await ozon_quote.points_for(
         city,
         hint,
@@ -496,10 +499,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
         hint = (tool_input.get("pickup_point") or "").strip()
         try:
-            points, found = await _ozon_points(draft, city, hint)
+            points, found, total_points = await _ozon_points(draft, city, hint)
         except Exception:
             logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
-            points, found = [], 0
+            points, found, total_points = [], 0, 0
 
         if not points:
             if found:
@@ -544,7 +547,20 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             draft.details.pop("ozon_point_id", None)
             draft.details.pop("ozon_point_address", None)
             draft.delivery_label = "Ozon, пункт выдачи"
-            ozon_options = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
+            listed = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
+            ozon_options = (
+                f"Подходящих пунктов Ozon в городе {city}: {total_points}. "
+                f"Вот несколько: {listed}. Перечисли их клиенту и обязательно "
+                f"скажи, что это не весь список: удобный пункт можно выбрать на "
+                f"карте {OZON_POINTS_MAP_URL} и назвать адрес — ты найдёшь его. "
+                "Получив адрес, вызови set_delivery_method ещё раз с тем же "
+                "городом и этим адресом в pickup_point."
+                if total_points > len(points)
+                else f"Пункты выдачи Ozon в городе {city}: {listed}. Перечисли их "
+                "клиенту и спроси, какой удобнее, а потом вызови "
+                "set_delivery_method ещё раз с тем же городом и адресом "
+                "выбранного пункта в pickup_point."
+            )
         else:
             draft.details["ozon_point_id"] = point.id
             draft.details["ozon_point_address"] = point.address
@@ -565,9 +581,16 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
     total = draft.items_total + draft.delivery_cost
     # Срок у СДЭКа уже заканчивается точкой («3–4 раб. дн.»), своей не добавляем.
+    # Состав заказа перечисляем прямо здесь. Без него модель писала клиенту
+    # «Товары: 800 руб.» — сумму, по которой не проверить, то ли он заказывает.
+    items_line = ", ".join(
+        f"{item['name']} × {item['quantity']}" for item in draft.items
+    ) or "—"
+
     head = f"Способ доставки зафиксирован: {draft.delivery_label}, {draft.delivery_cost} руб"
     head += f", срок {period}\n" if period else ".\n"
-    head += f"Сумма товаров: {draft.items_total} руб. Итого с доставкой: {total} руб.\n"
+    head += f"Заказ: {items_line} — {draft.items_total} руб.\n"
+    head += f"Итого с доставкой: {total} руб.\n"
 
     # Формулировку отдаём модели: с очередью второй заход к Claude перестал
     # быть роскошью, а живой текст клиенту приятнее нашего шаблона. Пока
@@ -575,7 +598,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     if ask_for_point:
         return ToolExecution(
             head
-            + "Сообщи клиенту эти суммы и спроси, в какой пункт выдачи СДЭК ему "
+            + "Назови клиенту состав заказа и эти суммы и спроси, в какой пункт выдачи СДЭК ему "
             "удобно забрать заказ — нужен адрес пункта, а не просто город. "
             f"Предложи прислать карту пунктов, чтобы свериться: {CDEK_OFFICES_MAP_URL}. "
             "Когда клиент назовёт адрес, вызови set_delivery_method ещё раз с тем "
@@ -583,20 +606,14 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         )
 
     if ozon_options:
-        return ToolExecution(
-            head
-            + "Сообщи клиенту эти суммы и перечисли пункты выдачи Ozon: "
-            f"{ozon_options}. Спроси, какой ему удобнее, и вызови "
-            "set_delivery_method ещё раз с тем же городом и адресом выбранного "
-            "пункта в pickup_point."
-        )
+        return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + ozon_options)
 
     next_step = (
         "Потом спроси ФИО получателя и телефон — они нужны для доставки СДЭКом."
         if method in ("cdek_pvz", "cdek_courier")
         else "Спроси, готов ли он оформить заказ."
     )
-    return ToolExecution(head + "Сообщи клиенту эти суммы. " + next_step)
+    return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + next_step)
 
 
 async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:

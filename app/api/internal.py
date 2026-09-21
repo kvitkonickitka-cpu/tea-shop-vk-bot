@@ -148,13 +148,14 @@ async def quote_ozon(request: Request):
     if not ozon_quote.is_ready():
         return {"error": "Ozon не настроен: нет ключей или OZON_SHIPMENT_METHOD_ID"}
 
-    points, found = await ozon_quote.points_for(
+    points, found, total = await ozon_quote.points_for(
         city, hint, weight_grams=weight, declared_value=value
     )
     result = {
         "город": city,
         "искали": hint or "(только город)",
-        "нашлось в каталоге": found,
+        "всего подходит в каталоге": total,
+        "взяли на проверку": found,
         "доступных пунктов": len(points),
     }
 

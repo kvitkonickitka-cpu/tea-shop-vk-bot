@@ -62,6 +62,10 @@ _MISSING_COLUMNS = (
     # для регистрации заказа. Одной колонкой, чтобы не плодить миграции.
     "ALTER TABLE order_drafts ADD COLUMN IF NOT EXISTS details JSONB",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cdek_uuid VARCHAR",
+    # Признак работы пункта и его тип: закрытый пункт Ozon из каталога не
+    # убирает, а предлагать его клиенту нельзя.
+    "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+    "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS kind VARCHAR",
 )
 
 

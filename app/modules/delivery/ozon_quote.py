@@ -31,20 +31,26 @@ async def points_for(
     weight_grams: int,
     declared_value: float,
     limit: int = _MAX_OPTIONS,
-) -> tuple[list, int]:
-    """Пункты под то, что назвал клиент, и сколько их нашлось до проверки.
+) -> tuple[list, int, int]:
+    """Пункты под то, что назвал клиент, и два счётчика вокруг них.
 
     Поиска по адресу у Ozon нет — каталог отдаётся целиком, — поэтому ищем по
     своей копии. А вот обслуживает ли пункт наш метод доставки, знает только
     Ozon: каталог общий на всю страну. Предложить пункт, на котором потом
     сорвётся расчёт, хуже, чем не предложить его вовсе.
 
-    Два числа, а не одно: «в городе вообще нет пунктов» и «есть, но не наши» —
-    разные разговоры с клиентом.
+    Счётчиков два, и оба нужны. `found` — сколько вернул каталог до проверки
+    доступности: «в городе вообще нет пунктов» и «есть, но не наши» — разные
+    разговоры с клиентом. `total` — сколько всего подходит под запрос, без
+    ограничения по количеству: показать пять адресов из сорока и выдать их за
+    весь список значит выбирать за клиента.
     """
-    rows = await ozon_catalog.find(f"{city} {hint}".strip(), limit=limit)
+    query = f"{city} {hint}".strip()
+    rows = await ozon_catalog.find(query, limit=limit)
     if not rows:
-        return [], 0
+        return [], 0, 0
+
+    total = await ozon_catalog.count_matching(query)
 
     try:
         allowed = await ozon_client.available_points(
@@ -60,9 +66,9 @@ async def points_for(
         # Проверка не прошла — отдаём что нашли: цену всё равно считает
         # следующий вызов, и он же откажет, если пункт не подходит.
         logger.exception("Не проверили доступность пунктов Ozon в «%s»", city)
-        return list(rows), len(rows)
+        return list(rows), len(rows), total
 
-    return [row for row in rows if row.id in allowed], len(rows)
+    return [row for row in rows if row.id in allowed], len(rows), total
 
 
 async def price_for(
