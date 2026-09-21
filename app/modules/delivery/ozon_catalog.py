@@ -16,7 +16,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.database import get_session_factory
@@ -56,7 +56,9 @@ async def _load_state(session) -> OzonSyncState:
     return state
 
 
-async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None:
+async def _save_points(
+    session, points: list[ozon_client.DeliveryPoint], pass_number: int
+) -> None:
     if not points:
         return
     rows = [
@@ -67,6 +69,7 @@ async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None
             "search_text": normalize(point.address),
             "is_active": point.is_active,
             "kind": point.kind,
+            "seen_pass": pass_number,
             "updated_at": datetime.now(timezone.utc),
         }
         for point in points
@@ -84,6 +87,7 @@ async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None
                 "search_text": statement.excluded.search_text,
                 "is_active": statement.excluded.is_active,
                 "kind": statement.excluded.kind,
+                "seen_pass": statement.excluded.seen_pass,
                 "updated_at": statement.excluded.updated_at,
             },
         )
@@ -92,7 +96,7 @@ async def _save_points(session, points: list[ozon_client.DeliveryPoint]) -> None
 
 async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
     """Дотянуть каталог, сколько успеем за отведённое время."""
-    result = {"pages": 0, "points": 0, "finished": False, "skipped": None}
+    result = {"pages": 0, "points": 0, "finished": False, "gone": 0, "skipped": None}
 
     if not ozon_client.is_configured():
         result["skipped"] = "ключи Ozon не заданы"
@@ -110,6 +114,7 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
         state = await _load_state(session)
         cursor = state.cursor or ""
         seen = state.seen if cursor else 0
+        pass_number = state.pass_number or 1
 
         # Цикл с проверкой в конце, а не в начале: иначе заход, у которого
         # бюджет съели подготовка или медленная база, не сделает ни одной
@@ -128,7 +133,7 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
                 except Exception:
                     logger.exception("Не получили адреса пунктов Ozon")
                     break
-                await _save_points(session, details)
+                await _save_points(session, details, pass_number)
                 seen += len(details)
                 result["points"] += len(details)
 
@@ -138,7 +143,15 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
             if not next_cursor or not page:
                 # Дошли до конца: следующий проход начнём сначала, чтобы
                 # подхватить новые и закрывшиеся пункты.
+                #
+                # И только здесь можно гасить пропавшие. Ozon не сообщает,
+                # что пункт исчез, — он просто перестаёт его отдавать, и
+                # заметить это можно единственным способом: сверить, кто
+                # встретился за полный проход. Прерванный проход для этого не
+                # годится — погасили бы всё, до чего не дошли.
+                result["gone"] = await _deactivate_missing(session, pass_number)
                 state.completed_at = datetime.now(timezone.utc)
+                state.pass_number = pass_number + 1
                 cursor = ""
                 seen = 0
                 result["finished"] = True
@@ -152,6 +165,27 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
         await session.commit()
 
     return result
+
+
+async def _deactivate_missing(session, pass_number: int) -> int:
+    """Погасить пункты, которых не было в только что завершённом проходе.
+
+    Не удаляем: пункт может открыться снова, а в старых заказах он останется
+    упомянут. Гашение достаточно — закрытые мы клиенту и так не показываем.
+    """
+    result = await session.execute(
+        update(OzonDeliveryPoint)
+        .where(
+            OzonDeliveryPoint.seen_pass.isnot(None),
+            OzonDeliveryPoint.seen_pass != pass_number,
+            OzonDeliveryPoint.is_active.isnot(False),
+        )
+        .values(is_active=False, updated_at=datetime.now(timezone.utc))
+    )
+    gone = result.rowcount or 0
+    if gone:
+        logger.warning("Ozon перестал отдавать пункты, гасим: %s", gone)
+    return gone
 
 
 def _matching(query: str):

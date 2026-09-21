@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -29,6 +29,10 @@ class OzonDeliveryPoint(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # pvz или postamat.
     kind: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # На каком проходе каталога пункт встретился в последний раз. Ozon не
+    # говорит, что пункт исчез, — он просто перестаёт его отдавать. Сравнение
+    # с номером завершённого прохода и есть способ это заметить.
+    seen_pass: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -47,6 +51,8 @@ class OzonSyncState(Base):
     cursor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Сколько пунктов записали за текущий проход по каталогу.
     seen: Mapped[int] = mapped_column(default=0)
+    # Номер текущего прохода. Растёт, когда проход дошёл до конца.
+    pass_number: Mapped[int] = mapped_column(default=1)
     # Когда последний раз дошли до конца каталога.
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True

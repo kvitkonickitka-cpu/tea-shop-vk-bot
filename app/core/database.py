@@ -67,6 +67,10 @@ _MISSING_COLUMNS = (
     "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
     "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS kind VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ozon_posting VARCHAR",
+    # Номер прохода выгрузки: по нему видно пункты, которые Ozon перестал
+    # отдавать, — сам он об их исчезновении не сообщает.
+    "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS seen_pass INTEGER",
+    "ALTER TABLE ozon_sync_state ADD COLUMN IF NOT EXISTS pass_number INTEGER DEFAULT 1",
 )
 
 
