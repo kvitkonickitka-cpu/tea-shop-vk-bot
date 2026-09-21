@@ -196,15 +196,25 @@ def _tools_for_stage(stage: str | None) -> list[dict]:
     # ждёт выбора доставки или подтверждения. escalate_to_manager доступен
     # всегда: эскалация может понадобиться на любом шаге диалога.
     #
-    # set_recipient идёт рядом со своим этапом, а не отдельным шагом. Клиент
+    # set_recipient идёт рядом со своим этапом, а не отдельным шагом: клиент
     # называет ФИО и телефон когда ему удобно, и модель должна успеть записать
-    # их и сразу подтвердить заказ за один ход: на второй круг к Claude уже не
-    # хватает 8 секунд, которые VK даёт на весь вебхук.
+    # их и сразу подтвердить заказ за один ход.
+    #
+    # set_delivery_method доступен и на подтверждении. Сам инструмент это
+    # всегда умел — клиент передумывает, и цена пересчитывается, — а вот
+    # выдавали мы его только на выборе доставки. Из-за этого клиент, который
+    # после расчёта СДЭКа написал «отмена, буду через Ozon», упёрся в бота
+    # без подходящего инструмента: тот честно позвал менеджера с формулировкой
+    # «не хватает инструмента для расчёта».
     by_name = {tool["name"]: tool for tool in TOOLS}
     if stage == "awaiting_delivery":
         stage_tools = [by_name["set_delivery_method"], by_name["set_recipient"]]
     elif stage == "awaiting_confirmation":
-        stage_tools = [by_name["set_recipient"], by_name["confirm_order"]]
+        stage_tools = [
+            by_name["set_delivery_method"],
+            by_name["set_recipient"],
+            by_name["confirm_order"],
+        ]
     else:
         stage_tools = [by_name["propose_order"]]
     return stage_tools + [by_name["escalate_to_manager"]]
