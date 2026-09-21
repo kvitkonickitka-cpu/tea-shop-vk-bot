@@ -498,11 +498,34 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             )
 
         hint = (tool_input.get("pickup_point") or "").strip()
+        not_found_note = ""
         try:
             points, found, total_points = await _ozon_points(draft, city, hint)
         except Exception:
             logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
             points, found, total_points = [], 0, 0
+
+        if not points and hint:
+            # Адрес с карты Ozon может не найтись у нас: копия каталога
+            # неполная. Возвращаться к клиенту с «не нашёлся» и тупиком нельзя
+            # — показываем, что есть в городе, и просим выбрать из этого.
+            logger.info(
+                "Пункт Ozon «%s» в городе %s не нашёлся, показываем что есть", hint, city
+            )
+            try:
+                points, found, total_points = await _ozon_points(draft, city)
+            except Exception:
+                logger.exception("Не подобрали пункты Ozon в «%s»", city)
+                points, found, total_points = [], 0, 0
+            if points:
+                not_found_note = (
+                    f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом "
+                    "клиенту и предложи выбрать из тех, что есть, или назвать "
+                    "адрес иначе. "
+                )
+                hint = ""
+            else:
+                not_found_note = ""
 
         if not points:
             if found:
@@ -546,20 +569,23 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             # списка, а поедет посылка туда, что выберет клиент.
             draft.details.pop("ozon_point_id", None)
             draft.details.pop("ozon_point_address", None)
-            draft.delivery_label = "Ozon, пункт выдачи"
+            draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
             listed = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
+            # Карту даём всегда, а не только когда в нашей копии каталога
+            # нашлось больше, чем показали. Копия неполная — выгрузка идёт по
+            # кругу и на любой момент отстаёт, — так что «в Уфе пять пунктов»
+            # означает лишь «пять доехало до нашей базы». Выдавать это за весь
+            # город нечестно, а клиент на карте Ozon видит настоящий список.
             ozon_options = (
-                f"Подходящих пунктов Ozon в городе {city}: {total_points}. "
-                f"Вот несколько: {listed}. Перечисли их клиенту и обязательно "
-                f"скажи, что это не весь список: удобный пункт можно выбрать на "
-                f"карте {OZON_POINTS_MAP_URL} и назвать адрес — ты найдёшь его. "
-                "Получив адрес, вызови set_delivery_method ещё раз с тем же "
-                "городом и этим адресом в pickup_point."
-                if total_points > len(points)
-                else f"Пункты выдачи Ozon в городе {city}: {listed}. Перечисли их "
-                "клиенту и спроси, какой удобнее, а потом вызови "
-                "set_delivery_method ещё раз с тем же городом и адресом "
-                "выбранного пункта в pickup_point."
+                not_found_note
+                + f"Пункты выдачи Ozon в городе {city} (нашлось в нашей копии "
+                f"каталога: {total_points}): {listed}. "
+                "Перечисли их клиенту и обязательно скажи, что это не весь "
+                f"список: все пункты города видно на карте {OZON_POINTS_MAP_URL} "
+                "— пусть выберет удобный и назовёт адрес, ты его найдёшь. "
+                "ВАЖНО: пункт выдачи ещё НЕ выбран, не говори клиенту, что он "
+                "уже выбран. Получив адрес, вызови set_delivery_method ещё раз "
+                "с тем же городом и этим адресом в pickup_point."
             )
         else:
             draft.details["ozon_point_id"] = point.id
@@ -589,7 +615,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
     head = f"Способ доставки зафиксирован: {draft.delivery_label}, {draft.delivery_cost} руб"
     head += f", срок {period}\n" if period else ".\n"
-    head += f"Заказ: {items_line} — {draft.items_total} руб.\n"
+    head += f"Состав заказа (перечисли клиенту названия и количество, а не "
+    head += f"только сумму): {items_line} — {draft.items_total} руб.\n"
     head += f"Итого с доставкой: {total} руб.\n"
 
     # Формулировку отдаём модели: с очередью второй заход к Claude перестал
