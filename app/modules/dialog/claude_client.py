@@ -65,12 +65,16 @@ async def generate_dialog_report(transcript: str) -> str:
 
 
 async def converse(messages: list[dict], system_prompt: str, tools: list[dict]):
+    # Пустой список инструментов не передаём вовсе: так вызывается последний
+    # круг хода, когда модель обязана ответить словами, а не просить ещё
+    # одно действие.
+    extra = {"tools": tools} if tools else {}
     return await _client.messages.create(
         model=settings.anthropic_model,
         max_tokens=1024,
         system=system_prompt,
-        tools=tools,
         messages=messages,
+        **extra,
     )
 
 

@@ -36,10 +36,20 @@ _TARIFFS_PATH = Path(__file__).parent / "delivery_tariffs.json"
 # сообщения нельзя — не укладываемся в 8 секунд, которые даёт VK.
 CDEK_OFFICES_MAP_URL = "https://www.cdek.ru/ru/offices"
 
-# На случай, когда модель второй раз подряд просит инструмент и не пишет ни
-# слова клиенту, а у инструмента нет готового ответа. Лучше нейтральная
-# фраза, чем извинение за несуществующую поломку.
-_SECOND_ROUND_FALLBACK = "Записала, спасибо! Подскажите, если нужно что-то поправить 🙏"
+# Последнее средство: модель не написала ни слова даже тогда, когда её
+# позвали без инструментов. Лучше нейтральная фраза, чем извинение за
+# несуществующую поломку.
+_NO_TEXT_FALLBACK = "Записала, спасибо! Подскажите, если нужно что-то поправить 🙏"
+
+# Сколько раз за ход модель может попросить инструменты. Круг был всего
+# один: второе обращение к Claude не помещалось в восемь секунд VK, и после
+# него оставалось только отдать заглушку. Очередь этот потолок сняла —
+# у контейнера 60 секунд, — а ограничение осталось, и клиент, спросивший
+# цену доставки, читал в ответ «Записала, спасибо».
+_MAX_TOOL_ROUNDS = 4
+# Запас до потолка контейнера. Упереться в него значит не ответить вовсе,
+# поэтому лучше ответить словами, не доделав последнее действие.
+_TURN_BUDGET_SECONDS = 35
 
 # Первый ход после старта контейнера идёт дольше: прогреваются соединения,
 # пусты все кэши. Отмечаем его в логе, чтобы не искать причину там, где её нет.
@@ -828,78 +838,71 @@ async def _handle_turn(peer_id: int, user_text: str, spent: _Spent) -> str:
     history = await dialog_history.get_history(peer_id)
     messages: list[dict] = history + [{"role": "user", "content": user_text}]
 
+    turn_started = time.monotonic()
     response = await spent.claude(claude_client.converse(messages, system_prompt, tools))
 
-    if response.stop_reason != "tool_use":
-        reply = claude_client.extract_text(response)
-        await dialog_history.append_exchange(peer_id, user_text, reply)
-        return reply
+    for round_number in range(1, _MAX_TOOL_ROUNDS + 1):
+        if response.stop_reason != "tool_use":
+            break
 
-    tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
-    messages.append({"role": "assistant", "content": response.content})
+        tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
+        messages.append({"role": "assistant", "content": response.content})
 
-    executions = [
-        (block, await spent.tool(_execute_tool(peer_id, block.name, block.input)))
-        for block in tool_use_blocks
-    ]
+        executions = [
+            (block, await spent.tool(_execute_tool(peer_id, block.name, block.input)))
+            for block in tool_use_blocks
+        ]
 
-    # Если за ход выполнился ровно один инструмент и ответ клиенту у него
-    # детерминированный (сейчас так только у escalate_to_manager), отдаём этот
-    # текст напрямую. Второй запрос к Claude нужен лишь чтобы пересказать то же
-    # самое своими словами, а стоит он несколько секунд — из-за него путь
-    # эскалации не укладывался в таймаут вебхука VK: тот рвал соединение
-    # (в логах ERROR Code 499), ответ клиенту отправить уже не успевали, и
-    # человек не получал ничего.
-    #
-    # Раньше здесь дополнительно требовалось, чтобы модель не написала своего
-    # текста рядом с вызовом инструмента, — и на первой эскалации это условие
-    # обычно не выполнялось, так что короткий путь не срабатывал именно там,
-    # где был нужнее всего. Текст модели при этом теряется: осознанный размен,
-    # предсказуемый ответ за две секунды полезнее красивого, который не дошёл.
-    # Условие «ровно один инструмент» было слишком узким. Когда за ход
-    # срабатывали set_recipient и confirm_order, готовый текст уходил не
-    # клиенту, а в Claude на пересказ — и модель теряла из него важное.
-    # Так клиент прочитал «Заказ оформлен! ✅» вместо честного «заказ
-    # подтверждён, но в СДЭК не уехал». Смотрим на последний инструмент:
-    # он и есть итог хода.
-    if executions and executions[-1][1].client_reply is not None:
-        reply = executions[-1][1].client_reply
-        await dialog_history.append_exchange(peer_id, user_text, reply)
-        return reply
+        # Если у последнего инструмента есть готовый ответ клиенту, отдаём его
+        # напрямую. Второй запрос к Claude нужен лишь чтобы пересказать то же
+        # самое своими словами, а стоит он несколько секунд — из-за него путь
+        # эскалации не укладывался в таймаут вебхука VK: тот рвал соединение
+        # (в логах ERROR Code 499), и человек не получал ничего.
+        #
+        # Смотрим именно на последний инструмент: он и есть итог хода. Когда
+        # условие было «ровно один инструмент», ход из set_recipient и
+        # confirm_order уходил на пересказ, и модель теряла из готового текста
+        # важное — клиент читал «Заказ оформлен! ✅» вместо честного «заказ
+        # подтверждён, но в СДЭК не уехал».
+        if executions and executions[-1][1].client_reply is not None:
+            reply = executions[-1][1].client_reply
+            await dialog_history.append_exchange(peer_id, user_text, reply)
+            return reply
 
-    tool_results = [
-        {"type": "tool_result", "tool_use_id": block.id, "content": execution.tool_result}
-        for block, execution in executions
-    ]
-    messages.append({"role": "user", "content": tool_results})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": block.id, "content": execution.tool_result}
+                for block, execution in executions
+            ],
+        })
 
-    follow_up = await spent.claude(claude_client.converse(messages, system_prompt, tools))
+        # Этап заказа мог смениться прямо сейчас: после set_delivery_method
+        # черновик ждёт подтверждения, и confirm_order должен стать доступен
+        # в этом же ходу, а не со следующего сообщения клиента.
+        fresh_draft = await state.get_draft(peer_id)
+        tools = _tools_for_stage(fresh_draft.stage if fresh_draft else None)
 
-    # Модель может попросить ещё один инструмент вместо того, чтобы ответить
-    # словами. Раньше здесь падало с «no text block», и клиент получал
-    # «Извините, сейчас не получается ответить» — то есть ошибка кода
-    # выглядела как поломка бота.
-    #
-    # Третий заход к Claude не делаем: два обращения уже съедают большую часть
-    # из восьми секунд VK. Инструмент выполняем — терять действие нельзя, —
-    # а отвечаем тем, что он вернул клиенту напрямую.
-    if follow_up.stop_reason == "tool_use":
-        extra = [block for block in follow_up.content if block.type == "tool_use"]
-        logger.warning(
-            "Модель запросила инструменты второй раз подряд для peer_id=%s: %s",
-            peer_id,
-            [block.name for block in extra],
+        # Последний круг зовём без инструментов: модель обязана ответить
+        # словами. Раньше здесь просто стояла заглушка «Записала, спасибо»,
+        # и клиент, спросивший цену, получал её вместо цены.
+        last_round = (
+            round_number == _MAX_TOOL_ROUNDS
+            or time.monotonic() - turn_started > _TURN_BUDGET_SECONDS
         )
-        direct_reply = None
-        for block in extra:
-            execution = await spent.tool(_execute_tool(peer_id, block.name, block.input))
-            if direct_reply is None and execution.client_reply is not None:
-                direct_reply = execution.client_reply
+        if last_round:
+            logger.warning(
+                "Ход peer_id=%s дошёл до последнего круга (%s-й, %.1fс) — "
+                "спрашиваем ответ словами",
+                peer_id, round_number, time.monotonic() - turn_started,
+            )
 
-        reply = direct_reply or claude_client.extract_text(follow_up, default=_SECOND_ROUND_FALLBACK)
-        await dialog_history.append_exchange(peer_id, user_text, reply)
-        return reply
+        response = await spent.claude(
+            claude_client.converse(messages, system_prompt, [] if last_round else tools)
+        )
+        if last_round:
+            break
 
-    reply = claude_client.extract_text(follow_up)
+    reply = claude_client.extract_text(response, default=_NO_TEXT_FALLBACK)
     await dialog_history.append_exchange(peer_id, user_text, reply)
     return reply
