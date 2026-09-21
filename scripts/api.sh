@@ -39,7 +39,10 @@ PATH_PART=${1:-health}
 # /health токена не требует и отвечает на GET — по нему удобно проверять,
 # какая ревизия сейчас живая.
 if [ "$PATH_PART" = "health" ]; then
-    curl -sS "$CONTAINER/health"
+    # Потолок по времени обязателен: без него curl при недоступном контейнере
+    # висит молча и бесконечно, а это ровно тот молчаливый отказ, от которого
+    # скрипт и заводился. Холодный старт занимает пару секунд, 20 хватает.
+    curl -sS --max-time 20 "$CONTAINER/health"
     echo
     exit 0
 fi
@@ -57,7 +60,9 @@ case "$PATH_PART" in
     *)  URL="$CONTAINER/internal/$PATH_PART" ;;
 esac
 
-BODY=$(curl -sS -X POST "$URL" -H "x-internal-token: $TOKEN")
+# Служебные эндпоинты работают дольше: выгрузка каталога тратит до 20 секунд
+# сама по себе, расчёт ходит в Ozon. Минута — с запасом, но не навсегда.
+BODY=$(curl -sS --max-time 60 -X POST "$URL" -H "x-internal-token: $TOKEN")
 echo "$BODY"
 
 # `forbidden` значит, что токен в .env и токен в ревизии разошлись. Сравнить
