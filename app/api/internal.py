@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request, Response
 from app.core.config import settings
 from app.modules import events
 from app.modules.dialog import telegram_client
-from app.modules.delivery import ozon_catalog, ozon_quote
+from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import cdek_watch
 from app.modules.queue import client as queue_client
 from app.modules.reports import service as reports_service
@@ -182,6 +182,31 @@ async def quote_ozon(request: Request):
 
     result["пункты"] = quotes
     return result
+
+
+@router.post("/internal/ozon/posting")
+async def ozon_posting(request: Request):
+    """Состояние отправления Ozon, а с `cancel=1` — его отмена.
+
+    Нужно для проверки боевого расчёта: заказ создаётся по-настоящему, и
+    лишнее отправление надо уметь убрать, не заходя в кабинет.
+    `?number=<номер отправления>&cancel=1`
+    """
+    if not _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    number = (request.query_params.get("number") or "").strip()
+    if not number:
+        return {"error": "нужен параметр number — номер отправления"}
+
+    try:
+        if request.query_params.get("cancel") in ("1", "true", "да"):
+            logger.info("Отменяем отправление Ozon %s по служебному запросу", number)
+            return {"отменено": number, "ответ": await ozon_client.cancel_posting(number)}
+        return {"отправление": await ozon_client.posting_info(number)}
+    except Exception as error:
+        logger.exception("Не получилось с отправлением Ozon %s", number)
+        return {"error": str(error)[:300]}
 
 
 @router.post("/internal/cdek/check")

@@ -20,6 +20,10 @@ class Order(Base):
     total: Mapped[float] = mapped_column(Numeric(10, 2))
     status: Mapped[str] = mapped_column(String, default="confirmed")
     cdek_uuid: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Номер отправления Ozon. У СДЭКа заказ опознаётся по uuid, у Ozon — по
+    # номеру отправления: по нему смотрят статус, печатают этикетку и
+    # отменяют.
+    ozon_posting: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -66,6 +66,7 @@ _MISSING_COLUMNS = (
     # убирает, а предлагать его клиенту нельзя.
     "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
     "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS kind VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ozon_posting VARCHAR",
 )
 
 

@@ -73,6 +73,27 @@ class DeliveryPoint:
 
 
 @dataclass(frozen=True)
+class RegisteredPosting:
+    """Созданное отправление: то, что Ozon вернул на самом деле.
+
+    Цены здесь те же `estimated_*`, что и в расчёте. Ozon и у созданного
+    отправления показывает оценку, а не выставленный счёт, — сверять придётся
+    с кабинетом.
+    """
+
+    order_number: str
+    posting_number: str
+    delivery_cost: float
+    insurance_cost: float
+    days: int
+    cutoff_at: str
+
+    @property
+    def total(self) -> float:
+        return round(self.delivery_cost + self.insurance_cost, 2)
+
+
+@dataclass(frozen=True)
 class Quote:
     """Во что обойдётся доставка. Страховка приходит отдельной строкой."""
 
@@ -351,6 +372,93 @@ async def checkout(
         insurance_cost=_money(posting.get("estimated_insurance_cost")),
         days=int(posting.get("estimated_delivery_days") or 0),
     )
+
+
+_MAX_DESCRIPTION = 500
+
+
+def describe_items(items: list[dict]) -> str:
+    """Содержимое посылки словами — Ozon требует это поле и режет по 500."""
+    parts = [
+        f"{item.get('name', 'товар')} x{item.get('quantity', 1)}" for item in items
+    ]
+    text = ", ".join(parts) or "Чай"
+    return text[:_MAX_DESCRIPTION]
+
+
+async def create_order(
+    *,
+    external_id: str,
+    shipment_method_id: int,
+    delivery_point_id: int,
+    recipient_name: str,
+    phone_number: str,
+    items: list[dict],
+    weight_grams: int,
+    length_mm: int,
+    width_mm: int,
+    height_mm: int,
+    declared_value: float,
+) -> RegisteredPosting:
+    """Завести заказ в Ozon.
+
+    В отличие от СДЭКа ответ синхронный: номер отправления приходит сразу, и
+    отдельной проверки «а приняли ли заявку на самом деле» не нужно. Зато
+    `approve` мы не вызываем — подтверждение к отгрузке означает, что посылку
+    и правда повезут, и это решение остаётся за менеджером.
+    """
+    payload = {
+        "order_external_id": external_id,
+        "recipient": {"phone_number": phone_number, "full_name": recipient_name},
+        "delivery": {"delivery_point": {"delivery_point_id": delivery_point_id}},
+        "postings": [
+            {
+                "request_id": 1,
+                "posting_external_id": external_id,
+                "shipment_method_id": shipment_method_id,
+                "description": describe_items(items),
+                "declared_value": _declared_value(declared_value),
+                "dimensions": _dimensions(weight_grams, length_mm, width_mm, height_mm),
+            }
+        ],
+    }
+    data = await call("/v1/order/create", payload)
+
+    postings = data.get("postings") or []
+    if not postings:
+        raise OzonError(f"Ozon не вернул отправление: {str(data)[:300]}")
+
+    posting = postings[0]
+    if posting.get("error"):
+        error = posting["error"]
+        raise OzonError(
+            f"Ozon отказал в заказе — {error.get('code', '?')}: {error.get('message', '')}"
+        )
+
+    number = posting.get("posting_number")
+    if not number:
+        raise OzonError(f"В ответе Ozon нет номера отправления: {str(data)[:300]}")
+
+    return RegisteredPosting(
+        order_number=data.get("order_number", ""),
+        posting_number=number,
+        delivery_cost=_money(posting.get("estimated_delivery_cost")),
+        insurance_cost=_money(posting.get("estimated_insurance_cost")),
+        days=int(posting.get("estimated_delivery_days") or 0),
+        cutoff_at=posting.get("cutoff_at", ""),
+    )
+
+
+async def posting_info(posting_number: str) -> dict:
+    """Что стало с отправлением: статус, срок, цены."""
+    data = await call("/v1/posting/info", {"posting_numbers": [posting_number]})
+    postings = data.get("postings") or []
+    return postings[0] if postings else {}
+
+
+async def cancel_posting(posting_number: str) -> dict:
+    """Отменить отправление — нужно, чтобы убирать тестовые заказы."""
+    return await call("/v1/posting/cancel", {"posting_number": posting_number})
 
 
 def _money(value) -> float:

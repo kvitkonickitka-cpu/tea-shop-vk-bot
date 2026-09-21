@@ -101,6 +101,8 @@ def _order_card(order: Order, cdek_number: str | None = None) -> str:
     lines.append(f"Доставка: {delivery}")
     if cdek_number:
         lines.append(f"Накладная СДЭК: <code>{cdek_number}</code>")
+    if order.ozon_posting:
+        lines.append(f"Отправление Ozon: <code>{order.ozon_posting}</code>")
     lines.append(f"Диалог: {vk_client.dialog_link(order.peer_id)}")
     return "\n".join(lines)
 
@@ -142,8 +144,9 @@ async def check_pending_orders() -> dict:
         ).scalars().all()
 
         for order in rows:
-            # Заказ не через СДЭК проверять не у кого — просто показываем его
-            # в чате и закрываем вопрос.
+            # Заказ не через СДЭК проверять не у кого: у Ozon ответ на создание
+            # синхронный, номер отправления уже в карточке. Показываем и
+            # закрываем вопрос.
             if not order.cdek_uuid:
                 order.status = STATUS_REPORTED
                 result["reported"] += 1

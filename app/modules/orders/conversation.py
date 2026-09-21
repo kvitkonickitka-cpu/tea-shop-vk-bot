@@ -141,9 +141,9 @@ TOOLS = [
     {
         "name": "set_recipient",
         "description": (
-            "Записать получателя заказа. Нужен для доставки СДЭКом: без ФИО "
-            "и телефона заказ в СДЭКе не завести. Спрашивай их после того, "
-            "как клиент выбрал доставку."
+            "Записать получателя заказа. Без ФИО и телефона отправление не "
+            "завести ни у СДЭКа, ни у Ozon. Спрашивай их после того, как "
+            "клиент выбрал доставку и пункт выдачи."
         ),
         "input_schema": {
             "type": "object",
@@ -267,7 +267,7 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     phone = draft.details.get("recipient_phone")
     if name and phone:
         lines.append(f"Получатель записан: {name}, {phone}.")
-    elif draft.delivery_method in ("cdek_pvz", "cdek_courier"):
+    elif draft.delivery_method in ("cdek_pvz", "cdek_courier", "ozon_pvz"):
         lines.append(
             "Получатель ещё НЕ записан. Если клиент уже называл ФИО и телефон — "
             "вызови set_recipient с ними, не переспрашивая."
@@ -609,8 +609,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + ozon_options)
 
     next_step = (
-        "Потом спроси ФИО получателя и телефон — они нужны для доставки СДЭКом."
-        if method in ("cdek_pvz", "cdek_courier")
+        "Потом спроси ФИО получателя и телефон — без них отправление не завести."
+        if method in ("cdek_pvz", "cdek_courier", "ozon_pvz")
         else "Спроси, готов ли он оформить заказ."
     )
     return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + next_step)
@@ -665,6 +665,52 @@ async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
     return registered.uuid
 
 
+async def _register_in_ozon(peer_id: int, draft: OrderDraft) -> str | None:
+    """Завести отправление в Ozon. None — если не вышло: доведёт менеджер.
+
+    Ответ у Ozon синхронный, в отличие от СДЭКа: номер отправления приходит
+    сразу, и догляда за «а приняли ли заявку» не нужно.
+    """
+    external_id = f"vk{peer_id}-{int(time.time())}"
+    try:
+        posting = await ozon_client.create_order(
+            external_id=external_id,
+            shipment_method_id=settings.ozon_shipment_method_id,
+            delivery_point_id=int(draft.details["ozon_point_id"]),
+            recipient_name=draft.details["recipient_name"],
+            phone_number=draft.details["recipient_phone"],
+            items=draft.items,
+            weight_grams=_draft_weight_grams(draft),
+            length_mm=settings.ozon_default_length_mm,
+            width_mm=settings.ozon_default_width_mm,
+            height_mm=settings.ozon_default_height_mm,
+            declared_value=draft.items_total,
+        )
+    except Exception:
+        logger.exception("Не завели заказ в Ozon для peer_id=%s", peer_id)
+        await _notify_manager(
+            peer_id,
+            f"⚠️ Заказ подтверждён, но в Ozon не уехал — завести руками.\n"
+            f"Диалог: {vk_client.dialog_link(peer_id)}",
+            chat_id=settings.telegram_orders_chat_id or None,
+        )
+        return None
+
+    # Цену сверяем с тем, что назвали клиенту: Ozon считает заново на
+    # создании, и разойтись она может — например, если пункт выбрали другой.
+    if draft.delivery_cost is not None and abs(posting.total - draft.delivery_cost) > 1:
+        logger.warning(
+            "Ozon посчитал доставку иначе, чем мы назвали клиенту: %s против %s (отправление %s)",
+            posting.total, draft.delivery_cost, posting.posting_number,
+        )
+
+    logger.info(
+        "Заказ %s заведён в Ozon: отправление %s, доставка %s руб",
+        external_id, posting.posting_number, posting.total,
+    )
+    return posting.posting_number
+
+
 async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
@@ -689,9 +735,14 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
         )
 
     is_cdek = draft.delivery_method in ("cdek_pvz", "cdek_courier")
-    if is_cdek and not (draft.details.get("recipient_name") and draft.details.get("recipient_phone")):
+    is_ozon = draft.delivery_method == "ozon_pvz"
+    # Перевозчику всё равно, чей он: без ФИО и телефона отправление не завести
+    # ни у СДЭКа, ни у Ozon.
+    if (is_cdek or is_ozon) and not (
+        draft.details.get("recipient_name") and draft.details.get("recipient_phone")
+    ):
         return ToolExecution(
-            "Для оформления доставки СДЭКом нужны ФИО получателя и телефон. "
+            "Для оформления доставки нужны ФИО получателя и телефон. "
             "Если клиент уже называл их в переписке — вызови set_recipient с "
             "этими данными прямо сейчас, не переспрашивая, и потом confirm_order. "
             "Если не называл — спроси."
@@ -699,9 +750,10 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
 
     draft.stage = "confirmed"
     cdek_uuid = await _register_in_cdek(peer_id, draft) if is_cdek else None
+    ozon_posting = await _register_in_ozon(peer_id, draft) if is_ozon else None
 
     try:
-        await orders_repository.save_order(peer_id, draft, cdek_uuid)
+        await orders_repository.save_order(peer_id, draft, cdek_uuid, ozon_posting)
     except Exception:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
@@ -711,9 +763,11 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     # Текст подтверждения полностью определён здесь и клиенту его можно
     # отдать как есть. Это снимает второй заход к Claude на самом дорогом
     # ходу диалога — те самые пара секунд, которых не хватало до таймаута VK.
-    if is_cdek and cdek_uuid is None:
+    carrier_failed = (is_cdek and cdek_uuid is None) or (is_ozon and ozon_posting is None)
+    if carrier_failed:
+        carrier = "СДЭКе" if is_cdek else "Ozon"
         reply = (
-            f"Заказ подтверждён, но в СДЭКе его завести не удалось — этим займётся "
+            f"Заказ подтверждён, но в {carrier} его завести не удалось — этим займётся "
             f"менеджер. {payment_message}"
         )
     else:
