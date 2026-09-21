@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["internal"])
 
 
-def _authorized(request: Request, body: str = "") -> bool:
+async def _authorized(request: Request, body: str | None = None) -> bool:
     # Адрес контейнера открыт всему интернету, так что служебные эндпоинты
     # защищены общим секретом. Пустой секрет закрывает их полностью: лучше
     # не работающие отчёты, чем эндпоинт, который любой может дёргать.
@@ -42,11 +42,16 @@ def _authorized(request: Request, body: str = "") -> bool:
     if provided and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         return True
 
-    # Таймер Yandex Cloud ни заголовков, ни пути задать не даёт — только
-    # произвольную строку в поле «Данные», и приходит она внутри его
-    # собственной обёртки, форма которой нам не обещана. Поэтому ищем токен
-    # в теле целиком: угадать 256 бит всё равно нельзя, а разбирать чужой
-    # формат, который может измениться, — лишняя точка отказа.
+    # Тело — единственный способ передать токен, который работает всегда.
+    # Таймер Yandex Cloud ни заголовков, ни пути задать не даёт, только
+    # произвольную строку в поле «Данные». А заголовок `x-internal-token`,
+    # как выяснилось 21.09.2026, до контейнера просто не доезжает: его
+    # срезают по дороге, и приложение видит запрос без него. Поэтому ищем
+    # токен в теле целиком: угадать 256 бит всё равно нельзя, а разбирать
+    # чужой формат обёртки, который может измениться, — лишняя точка отказа.
+    if body is None:
+        # Starlette тело кэширует, так что повторное чтение безопасно.
+        body = (await request.body()).decode("utf-8", errors="replace")
     return bool(body) and expected in body
 
 
@@ -78,7 +83,7 @@ async def _run_scheduled() -> dict:
 @router.post("/internal/reports/dialogs")
 async def send_dialog_reports(request: Request):
     """Прогон задач по расписанию вручную — этим адресом удобно проверять."""
-    if not _authorized(request):
+    if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
     return await _run_scheduled()
 
@@ -97,7 +102,7 @@ def _hide_token(text: str) -> str:
 @router.post("/internal/telegram/ping")
 async def telegram_ping(request: Request):
     """Проверка связи: пишет тестовое сообщение в чат заказов."""
-    if not _authorized(request):
+    if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
 
     chat_id = settings.telegram_orders_chat_id or None
@@ -126,7 +131,7 @@ async def telegram_ping(request: Request):
 @router.post("/internal/ozon/sync")
 async def sync_ozon_catalog(request: Request):
     """Догрузить каталог пунктов Ozon вручную, не дожидаясь таймера."""
-    if not _authorized(request):
+    if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
     result = await ozon_catalog.sync()
     result["всего в базе"] = await ozon_catalog.count()
@@ -142,7 +147,7 @@ async def quote_ozon(request: Request):
     скриптом с ноутбука нельзя. Поэтому проверяем изнутри контейнера:
     `?city=Москва&point=Тверская&weight=400&value=1500`.
     """
-    if not _authorized(request):
+    if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
 
     params = request.query_params
@@ -201,7 +206,7 @@ async def ozon_posting(request: Request):
     лишнее отправление надо уметь убрать, не заходя в кабинет.
     `?number=<номер отправления>&cancel=1`
     """
-    if not _authorized(request):
+    if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
 
     number = (request.query_params.get("number") or "").strip()
@@ -221,7 +226,7 @@ async def ozon_posting(request: Request):
 @router.post("/internal/cdek/check")
 async def check_cdek_orders(request: Request):
     """Только сверка заказов с СДЭКом, без рассылки отчётов."""
-    if not _authorized(request):
+    if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
     result = await cdek_watch.check_pending_orders()
     logger.info("Проверка заказов СДЭК: %s", result)
@@ -241,7 +246,7 @@ async def trigger_entrypoint(request: Request):
     доступа одна на оба случая.
     """
     raw = (await request.body()).decode("utf-8", errors="replace")
-    if not _authorized(request, raw):
+    if not await _authorized(request, raw):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
 
     try:
