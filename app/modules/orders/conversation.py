@@ -19,6 +19,7 @@ from app.modules.dialog import (
     telegram_client,
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
+from app.modules.orders import order_chat
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
 from app.modules.orders.state import OrderDraft
@@ -787,8 +788,20 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     cdek_uuid = await _register_in_cdek(peer_id, draft) if is_cdek else None
     ozon_posting = await _register_in_ozon(peer_id, draft) if is_ozon else None
 
+    # Карточку в чат заказов отправляем прямо здесь — всем, кроме заказов
+    # СДЭКа. У СДЭКа ответ асинхронный: он говорит «заявку принял», а
+    # состоится ли заказ, выясняет сверка по таймеру, она и пишет в чат с
+    # номером накладной. У Ozon номер отправления известен сразу, ждать
+    # нечего — а заказ, уехавший в чат через неизвестно сколько (или не
+    # уехавший вовсе, если тик расписания не отработал), менеджеру
+    # бесполезен.
+    reported = "confirmed" if is_cdek else order_chat.STATUS_SENT
     try:
-        await orders_repository.save_order(peer_id, draft, cdek_uuid, ozon_posting)
+        order = await orders_repository.save_order(
+            peer_id, draft, cdek_uuid, ozon_posting, status=reported
+        )
+        if not is_cdek:
+            await order_chat.send(order, order_chat.card(order))
     except Exception:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 

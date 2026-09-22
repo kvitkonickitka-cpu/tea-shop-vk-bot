@@ -1,6 +1,7 @@
 import hmac
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
@@ -20,6 +21,10 @@ router = APIRouter(tags=["internal"])
 # Сколько секунд тянуть каталог, когда выгрузку дёрнули руками. У контейнера
 # на запрос 60, и кроме выгрузки в нём ничего не происходит.
 _MANUAL_SYNC_SECONDS = 45
+
+# Сколько секунд тик расписания считает своими. Меньше отведённых контейнеру
+# 60: остаток нужен на то, чтобы задачи успели дописать результат в базу.
+_TICK_BUDGET_SECONDS = 50
 
 
 async def _authorized(request: Request, body: str | None = None) -> bool:
@@ -76,12 +81,30 @@ async def _run_task(name: str, coro) -> dict:
 
 
 async def _run_scheduled() -> dict:
-    """Всё, что делается по таймеру, а не в ответ на сообщение клиента."""
-    return {
-        "reports": await _run_task("Отчёты по диалогам", reports_service.send_pending_reports()),
+    """Всё, что делается по таймеру, а не в ответ на сообщение клиента.
+
+    Порядок не случайный. Контейнеру на весь тик отведено 60 секунд, и если
+    первая задача их выберет, до остальных дело не дойдёт вовсе — запрос
+    просто убьют. Поэтому впереди идёт то, что дороже потерять.
+
+    Сверка заказов первая: она решает, узнает ли менеджер о заказе. Каталог
+    второй и берёт остаток бюджета. Отчёты по диалогам последние — они самые
+    дорогие (обращение к Claude на каждый диалог) и легче всего переносят
+    задержку: выжимка разговора нужна не в ту же минуту.
+    """
+    started = time.monotonic()
+    result = {
         "cdek_orders": await _run_task("Проверка заказов СДЭК", cdek_watch.check_pending_orders()),
-        "ozon_catalog": await _run_task("Каталог Ozon", ozon_catalog.sync()),
     }
+
+    left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
+    result["ozon_catalog"] = await _run_task(
+        "Каталог Ozon", ozon_catalog.sync(budget_seconds=max(5, min(20, int(left))))
+    )
+    result["reports"] = await _run_task(
+        "Отчёты по диалогам", reports_service.send_pending_reports()
+    )
+    return result
 
 
 @router.post("/internal/reports/dialogs")

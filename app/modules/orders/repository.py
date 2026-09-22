@@ -8,7 +8,8 @@ async def save_order(
     draft: OrderDraft,
     cdek_uuid: str | None = None,
     ozon_posting: str | None = None,
-) -> None:
+    status: str = "confirmed",
+) -> Order:
     session_factory = get_session_factory()
     total = draft.items_total + (draft.delivery_cost or 0)
 
@@ -20,9 +21,12 @@ async def save_order(
             delivery_method=draft.delivery_method,
             delivery_cost=draft.delivery_cost,
             total=total,
-            status="confirmed",
+            status=status,
             cdek_uuid=cdek_uuid,
             ozon_posting=ozon_posting,
         )
         session.add(order)
         await session.commit()
+    # Возвращаем сам заказ: у него есть номер, а карточку в чат заказов
+    # отправляет вызывающий — сразу, не дожидаясь сверки по таймеру.
+    return order
