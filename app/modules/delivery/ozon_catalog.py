@@ -96,7 +96,20 @@ async def _save_points(
 
 async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
     """Дотянуть каталог, сколько успеем за отведённое время."""
-    result = {"pages": 0, "points": 0, "finished": False, "gone": 0, "skipped": None}
+    # Кроме «сколько сделали за заход», отвечаем, где находится обход целиком.
+    # Без этого по числу пунктов в базе не понять главного: каталог ещё не
+    # докачался или он весь такой. Растущий номер прохода и заполненная дата
+    # последнего полного обхода означают второе.
+    result = {
+        "pages": 0,
+        "points": 0,
+        "finished": False,
+        "gone": 0,
+        "проход": 0,
+        "полный обход завершался": None,
+        "осталось с прошлого захода": False,
+        "skipped": None,
+    }
 
     if not ozon_client.is_configured():
         result["skipped"] = "ключи Ozon не заданы"
@@ -162,6 +175,11 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
 
         state.cursor = cursor or None
         state.seen = seen
+        result["проход"] = state.pass_number or 1
+        result["полный обход завершался"] = (
+            state.completed_at.strftime("%d.%m.%Y %H:%M") if state.completed_at else "ни разу"
+        )
+        result["осталось с прошлого захода"] = bool(cursor)
         await session.commit()
 
     return result
