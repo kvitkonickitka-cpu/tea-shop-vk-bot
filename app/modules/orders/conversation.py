@@ -584,8 +584,11 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 f"список: все пункты города видно на карте {OZON_POINTS_MAP_URL} "
                 "— пусть выберет удобный и назовёт адрес, ты его найдёшь. "
                 "ВАЖНО: пункт выдачи ещё НЕ выбран, не говори клиенту, что он "
-                "уже выбран. Получив адрес, вызови set_delivery_method ещё раз "
-                "с тем же городом и этим адресом в pickup_point."
+                "уже выбран. И цену называй как предварительную («около», "
+                "«примерно»): она посчитана по одному из пунктов города, а "
+                "после выбора пересчитается по нужному и может отличаться на "
+                "рубль-другой. Получив адрес, вызови set_delivery_method ещё "
+                "раз с тем же городом и этим адресом в pickup_point."
             )
         else:
             draft.details["ozon_point_id"] = point.id
@@ -613,7 +616,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         f"{item['name']} × {item['quantity']}" for item in draft.items
     ) or "—"
 
-    head = f"Способ доставки зафиксирован: {draft.delivery_label}, {draft.delivery_cost} руб"
+    # Пока пункт не выбран, сумма предварительная: считали её по одному из
+    # пунктов города, а цена у Ozon от пункта зависит. В Уфе разница между
+    # «каким-то» пунктом и выбранным вышла в рубль — мелочь, но клиент видит
+    # два разных числа подряд и справедливо спрашивает, где потерялся рубль.
+    fixed = "Предварительная стоимость доставки" if ozon_options else "Способ доставки зафиксирован"
+    head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} руб"
     head += f", срок {period}\n" if period else ".\n"
     head += f"Состав заказа (перечисли клиенту названия и количество, а не "
     head += f"только сумму): {items_line} — {draft.items_total} руб.\n"
