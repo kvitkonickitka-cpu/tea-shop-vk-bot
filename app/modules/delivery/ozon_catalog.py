@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -129,31 +130,51 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
         seen = state.seen if cursor else 0
         pass_number = state.pass_number or 1
 
-        # Цикл с проверкой в конце, а не в начале: иначе заход, у которого
-        # бюджет съели подготовка или медленная база, не сделает ни одной
-        # страницы — и выгрузка не сдвинется никогда.
-        while True:
+        # Первую страницу берём до цикла: дальше каждая следующая едет
+        # одновременно с адресами текущей.
+        try:
+            page, next_cursor = await ozon_client.delivery_point_ids(cursor=cursor)
+        except Exception:
+            logger.exception("Не получили страницу каталога Ozon")
+            page, next_cursor = [], cursor
+
+        while page:
+            ids = [p.get("delivery_point_id") for p in page if p.get("delivery_point_id")]
+
+            # Следующую страницу просим, не дожидаясь адресов текущей. Оба
+            # запроса идут к Ozon примерно по полторы секунды, и заход, делая
+            # их по очереди, половину времени просто ждал.
+            ahead = (
+                asyncio.create_task(ozon_client.delivery_point_ids(cursor=next_cursor))
+                if next_cursor
+                else None
+            )
+
             try:
-                page, next_cursor = await ozon_client.delivery_point_ids(cursor=cursor)
+                details = await ozon_client.delivery_points_info(ids[:_INFO_BATCH]) if ids else []
             except Exception:
-                logger.exception("Не получили страницу каталога Ozon")
+                logger.exception("Не получили адреса пунктов Ozon")
+                if ahead is not None:
+                    ahead.cancel()
                 break
 
-            ids = [p.get("delivery_point_id") for p in page if p.get("delivery_point_id")]
-            if ids:
-                try:
-                    details = await ozon_client.delivery_points_info(ids[:_INFO_BATCH])
-                except Exception:
-                    logger.exception("Не получили адреса пунктов Ozon")
-                    break
+            if details:
                 await _save_points(session, details, pass_number)
                 seen += len(details)
                 result["points"] += len(details)
-
             result["pages"] += 1
-            cursor = next_cursor
 
-            if not next_cursor or not page:
+            cursor = next_cursor
+            # Фиксируем после каждой страницы, а не в конце захода. У
+            # контейнера 60 секунд на весь тик расписания, и когда отчёты с
+            # проверкой заказов съедали остаток, выгрузку убивали на середине
+            # — вместе со всем, что она успела, потому что коммит был один и
+            # в самом конце. Каждый следующий тик начинал с того же места.
+            state.cursor = cursor or None
+            state.seen = seen
+            await session.commit()
+
+            if not cursor:
                 # Дошли до конца: следующий проход начнём сначала, чтобы
                 # подхватить новые и закрывшиеся пункты.
                 #
@@ -162,19 +183,32 @@ async def sync(budget_seconds: int = _BUDGET_SECONDS) -> dict:
                 # заметить это можно единственным способом: сверить, кто
                 # встретился за полный проход. Прерванный проход для этого не
                 # годится — погасили бы всё, до чего не дошли.
-                result["gone"] = await _deactivate_missing(session, pass_number)
+                #
+                # Пустой проход тоже не годится: если Ozon разом отдаст пустой
+                # каталог, мы погасим вообще всё и останемся без пунктов.
+                if seen:
+                    result["gone"] = await _deactivate_missing(session, pass_number)
+                    state.pass_number = pass_number + 1
+                else:
+                    logger.warning("Каталог Ozon пуст за весь проход — ничего не гасим")
                 state.completed_at = datetime.now(timezone.utc)
-                state.pass_number = pass_number + 1
-                cursor = ""
+                state.seen = 0
                 seen = 0
+                await session.commit()
                 result["finished"] = True
                 break
 
             if time.monotonic() - started >= budget_seconds:
+                if ahead is not None:
+                    ahead.cancel()
                 break
 
-        state.cursor = cursor or None
-        state.seen = seen
+            try:
+                page, next_cursor = await ahead
+            except Exception:
+                logger.exception("Не получили страницу каталога Ozon")
+                break
+
         result["проход"] = state.pass_number or 1
         result["полный обход завершался"] = (
             state.completed_at.strftime("%d.%m.%Y %H:%M") if state.completed_at else "ни разу"

@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["internal"])
 
+# Сколько секунд тянуть каталог, когда выгрузку дёрнули руками. У контейнера
+# на запрос 60, и кроме выгрузки в нём ничего не происходит.
+_MANUAL_SYNC_SECONDS = 45
+
 
 async def _authorized(request: Request, body: str | None = None) -> bool:
     # Адрес контейнера открыт всему интернету, так что служебные эндпоинты
@@ -133,7 +137,9 @@ async def sync_ozon_catalog(request: Request):
     """Догрузить каталог пунктов Ozon вручную, не дожидаясь таймера."""
     if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
-    result = await ozon_catalog.sync()
+    # Бюджет больше, чем у выгрузки по таймеру: там в том же тике работают
+    # отчёты и проверка заказов, а здесь запрос делает только это.
+    result = await ozon_catalog.sync(budget_seconds=_MANUAL_SYNC_SECONDS)
     result["всего в базе"] = await ozon_catalog.count()
     logger.info("Каталог Ozon: %s", result)
     return result
