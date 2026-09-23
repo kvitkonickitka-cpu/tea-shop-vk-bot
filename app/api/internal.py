@@ -168,6 +168,16 @@ async def sync_ozon_catalog(request: Request):
     return result
 
 
+@router.post("/internal/ozon/stats")
+async def ozon_stats(request: Request):
+    """Что уже лежит в каталоге, без запуска выгрузки."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    result = await ozon_catalog.stats()
+    logger.info("Каталог Ozon, состав: %s", result)
+    return result
+
+
 @router.post("/internal/ozon/quote")
 async def quote_ozon(request: Request):
     """Проверка подбора пункта и цены Ozon — тем же кодом, что и в диалоге.

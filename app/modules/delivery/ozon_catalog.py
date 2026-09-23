@@ -298,6 +298,53 @@ async def count_matching(query: str) -> int:
     return int(total or 0)
 
 
+_KIND_LABELS = {"pvz": "пункты выдачи", "postamat": "постаматы", "unknown": "тип не определён"}
+
+
+async def stats() -> dict:
+    """Что лежит в каталоге: сколько пунктов, каких и сколько из них закрытых.
+
+    Отдельно от `sync`, чтобы посмотреть можно было не запуская выгрузку.
+    """
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return {"error": "база недоступна"}
+
+    from sqlalchemy import func as sql_func
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(
+                    OzonDeliveryPoint.kind,
+                    OzonDeliveryPoint.is_active,
+                    sql_func.count(),
+                ).group_by(OzonDeliveryPoint.kind, OzonDeliveryPoint.is_active)
+            )
+        ).all()
+        state = await session.get(OzonSyncState, 1)
+
+    result: dict = {"всего": 0, "из них закрытых": 0}
+    for kind, is_active, amount in rows:
+        # Колонка с типом появилась позже самой выгрузки, так что у строк,
+        # записанных до неё, тип пустой. Отдельной графой — по ней видно,
+        # какая часть каталога ещё не обновлялась с тех пор.
+        label = _KIND_LABELS.get(kind or "", "выгружены до появления типа")
+        result[label] = result.get(label, 0) + amount
+        result["всего"] += amount
+        if is_active is False:
+            result["из них закрытых"] += amount
+
+    result["проход"] = (state.pass_number if state else 1) or 1
+    result["полный обход завершался"] = (
+        state.completed_at.strftime("%d.%m.%Y %H:%M")
+        if state and state.completed_at
+        else "ни разу"
+    )
+    return result
+
+
 async def count() -> int:
     """Сколько пунктов уже выгружено — для диагностики."""
     try:
