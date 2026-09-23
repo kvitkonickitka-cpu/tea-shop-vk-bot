@@ -2,6 +2,7 @@ import hashlib
 
 from fastapi import APIRouter, Request
 
+from app.core import heartbeat
 from app.core.config import settings
 from app.core.database import is_available
 
@@ -39,7 +40,7 @@ def _received_header(request: Request) -> str:
 
 
 @router.get("/health")
-async def health_check(request: Request) -> dict[str, str]:
+async def health_check(request: Request) -> dict:
     # Кроме «жив», отвечаем какая ревизия крутится и видна ли база. Без
     # первого невозможно понять, доехал ли деплой: свежий эндпоинт отвечает
     # 404 и когда его нет в коде, и когда контейнер ещё на старой ревизии.
@@ -54,4 +55,7 @@ async def health_check(request: Request) -> dict[str, str]:
         # пути. Своё значение вызывающий и так знает, так что его отпечаток
         # ему ничего не открывает.
         "header": _received_header(request),
+        # Когда задачи по расписанию отрабатывали в последний раз. Пусто
+        # означает, что триггер не сработал ни разу с момента выкатки.
+        "по расписанию": await heartbeat.describe() or "отметок нет",
     }

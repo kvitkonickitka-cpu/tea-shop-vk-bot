@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
+from app.core import heartbeat
 from app.core.config import settings
 from app.modules import events
 from app.modules.dialog import telegram_client
@@ -104,6 +105,9 @@ async def _run_scheduled() -> dict:
     result["reports"] = await _run_task(
         "Отчёты по диалогам", reports_service.send_pending_reports()
     )
+    # Отметка после всех задач: по ней видно, дошёл ли тик до конца или его
+    # убили на середине — и firing ли триггер вообще.
+    await heartbeat.note("расписание")
     return result
 
 

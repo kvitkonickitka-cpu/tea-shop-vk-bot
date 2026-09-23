@@ -95,6 +95,7 @@ async def init_models() -> None:
     from app.modules.dialog import models as dialog_models  # noqa: F401
     from app.modules.orders import models as orders_models  # noqa: F401
     from app.modules.delivery import models as delivery_models  # noqa: F401
+    from app.core import heartbeat as heartbeat_models  # noqa: F401
 
     try:
         async with _engine.begin() as conn:
