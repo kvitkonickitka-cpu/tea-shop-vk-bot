@@ -290,6 +290,15 @@ async def trigger_entrypoint(request: Request):
     """
     raw = (await request.body()).decode("utf-8", errors="replace")
     if not await _authorized(request, raw):
+        # Громко, с именем: отказ на этом адресе означает, что расписание не
+        # выполняется вообще, а выглядит это как тишина. Токен живёт в трёх
+        # местах — .env, секрет GitHub и поле «Данные» самого триггера, — и
+        # третью копию при смене забыли, отчего тик молча отваливался.
+        logger.error(
+            "Триггер постучался, но токен не подошёл: расписание не выполнено. "
+            "Проверь поле «Данные» у таймерного триггера — там своя копия "
+            "INTERNAL_API_TOKEN, и при смене её надо обновлять отдельно."
+        )
         return Response(content="forbidden", media_type="text/plain", status_code=403)
 
     try:
