@@ -68,6 +68,15 @@ _ORDER_FLOW_PROMPT = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8").replace
     "{map_url}", CDEK_OFFICES_MAP_URL
 )
 
+# Способы доставки, которые бот вправе предложить. Почта России выключена
+# настройкой: считать её по-настоящему мы не умеем, а плоский тариф — это
+# цифра из воздуха. Список собирается здесь, чтобы включение было настройкой,
+# а не правкой схемы инструмента.
+DELIVERY_METHODS = ["cdek_pvz", "cdek_courier", "ozon_pvz"] + (
+    ["russian_post"] if settings.russian_post_enabled else []
+)
+_OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russian_post_enabled else ""
+
 TOOLS = [
     {
         "name": "propose_order",
@@ -116,7 +125,7 @@ TOOLS = [
             "properties": {
                 "method": {
                     "type": "string",
-                    "enum": ["cdek_pvz", "cdek_courier", "ozon_pvz", "russian_post"],
+                    "enum": DELIVERY_METHODS,
                 },
                 "address": {
                     "type": "string",
@@ -331,7 +340,8 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
         "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
         "Ozon — он заметно дешевле, клиент забирает посылку сам. Если нужно "
         "быстрее, предложи пункт выдачи СДЭК: дороже, но идёт в полтора-два "
-        "раза меньше. Курьер СДЭК до двери и Почта России — тоже можно. "
+        "раза меньше. Курьер СДЭК до двери — тоже можно. "
+        f"{_OTHER_METHODS_HINT}"
         "Для любого расчёта спроси город клиента: без него стоимость не "
         "посчитать. Дальше нужен адрес пункта выдачи — если клиент не знает "
         f"ближайший, предложи карту: у Ozon {OZON_POINTS_MAP_URL}, у СДЭКа "
@@ -413,6 +423,15 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         )
 
     method = tool_input.get("method")
+    # Схема инструмента уже ограничивает выбор, но модель может назвать способ
+    # и мимо неё — а исполнитель до сих пор брал бы его из файла тарифов и
+    # спокойно оформил доставку, которой у нас нет.
+    if method not in DELIVERY_METHODS:
+        return ToolExecution(
+            f"Способом «{method}» мы сейчас не отправляем. Скажи об этом клиенту "
+            "и предложи пункт выдачи Ozon или СДЭК."
+        )
+
     period = ""
     ask_for_point = False
     ozon_options = ""
@@ -747,6 +766,42 @@ async def _register_in_ozon(peer_id: int, draft: OrderDraft) -> str | None:
     return posting.posting_number
 
 
+async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> None:
+    """Передать менеджеру заказ, который нужно довести до оплаты.
+
+    Пока кассы нет, бот на этом шаге говорил «ссылка скоро будет» — и на том
+    всё заканчивалось: клиент ждал ссылку, которую никто не собирался
+    присылать, а менеджер о нём не знал. Поэтому подтверждённый заказ уходит
+    обычной эскалацией, той же, что и любой вопрос, которого бот не тянет.
+
+    Эскалацию открываем даже если по этому клиенту уже открыта другая: вопрос
+    оплаты не сливается с предыдущим, и потерять его дороже, чем написать
+    менеджеру второй раз.
+    """
+    items = ", ".join(
+        f"{item.get('name', 'товар')} × {item.get('quantity', 1)}" for item in draft.items
+    )
+    total = draft.items_total + (draft.delivery_cost or 0)
+    question = (
+        f"Заказ {'№' + str(order_id) if order_id else ''} на {total} руб. подтверждён, "
+        f"нужна ссылка на оплату. Состав: {items}. Доставка: "
+        f"{draft.delivery_label or '—'}."
+    )
+    reason = "Модуль оплаты не подключён — ссылку на оплату выставляет менеджер."
+
+    await escalation_state.mark_open(peer_id)
+    try:
+        await escalation_log.record_escalation(peer_id, question, reason)
+    except Exception:
+        logger.exception("Не записали эскалацию по оплате для peer_id=%s", peer_id)
+
+    message = (
+        f"<b>💳 Нужна ссылка на оплату</b>\n{html.escape(question)}\n\n"
+        f"{html.escape(reason)}\n\n{vk_client.dialog_link(peer_id)}"
+    )
+    await _notify_manager(peer_id, message)
+
+
 async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
@@ -796,6 +851,7 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     # уехавший вовсе, если тик расписания не отработал), менеджеру
     # бесполезен.
     reported = "confirmed" if is_cdek else order_chat.STATUS_SENT
+    order = None
     try:
         order = await orders_repository.save_order(
             peer_id, draft, cdek_uuid, ozon_posting, status=reported
@@ -805,7 +861,16 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     except Exception:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
-    payment_message = await payment_service.generate_payment_link(draft)
+    if settings.payments_enabled:
+        payment_message = await payment_service.generate_payment_link(draft)
+    else:
+        # Кассы пока нет, поэтому оплату доводит человек — и узнаёт он об
+        # этом сразу, а не из отчёта через полчаса.
+        await _escalate_for_payment(peer_id, draft, getattr(order, "id", None))
+        payment_message = (
+            "Менеджер пришлёт ссылку на оплату — я уже передала ему ваш заказ."
+        )
+
     await state.clear_draft(peer_id)
 
     # Текст подтверждения полностью определён здесь и клиенту его можно
