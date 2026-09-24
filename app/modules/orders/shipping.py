@@ -18,7 +18,8 @@ from dataclasses import dataclass
 
 from app.core.config import settings
 from app.modules.delivery import cdek_client, ozon_client
-from app.modules.dialog import telegram_client, vk_client
+from app.messages import manager as manager_messages
+from app.modules.dialog import vk_client
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +50,15 @@ async def _warn_manager(peer_id: int, carrier: str) -> None:
         f"⚠️ Заказ оплачен, но в {carrier} не уехал — завести руками.\n"
         f"Диалог: {vk_client.dialog_link(peer_id)}"
     )
-    try:
-        # Всё, что про заказы, идёт в свой чат; пусто — значит менеджеру.
-        await telegram_client.send_message(
-            text, chat_id=settings.telegram_orders_chat_id or None
-        )
-    except Exception:
-        logger.exception("Не смогли предупредить менеджера про заказ peer_id=%s", peer_id)
+    # Через очередь: оплаченный заказ, о котором менеджер не узнал, — это
+    # посылка, которую никто не отправит. Потерять такое уведомление из-за
+    # таймаута телеграма нельзя.
+    await manager_messages.notify(
+        manager_messages.CARRIER_FAILED,
+        text,
+        peer_id=peer_id,
+        chat_id=settings.telegram_orders_chat_id or None,
+    )
 
 
 async def register(

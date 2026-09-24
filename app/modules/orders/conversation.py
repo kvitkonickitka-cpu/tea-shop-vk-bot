@@ -10,6 +10,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
+from app.messages import manager as manager_messages
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -17,7 +18,6 @@ from app.modules.dialog import (
     escalation_state,
     vk_client,
     history as dialog_history,
-    telegram_client,
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import order_chat
@@ -1005,11 +1005,21 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
     return ToolExecution(reply, client_reply=reply)
 
 
-async def _notify_manager(peer_id: int, message: str, chat_id: str | None = None) -> None:
-    try:
-        await telegram_client.send_message(message, chat_id=chat_id)
-    except Exception:
-        logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
+async def _notify_manager(
+    peer_id: int,
+    message: str,
+    chat_id: str | None = None,
+    kind: str = manager_messages.ESCALATION,
+) -> bool:
+    """Передать уведомление менеджеру через очередь.
+
+    Возвращает, сохранено ли оно. Отправка может не удаться — телеграм
+    отвечает не всегда, — но сохранённое уведомление дошлёт следующий тик
+    расписания. Раньше здесь была одна попытка с таймаутом в две секунды: не
+    успел телеграм — и вопрос клиента исчезал, хотя ему уже сказали
+    «уточню у менеджера».
+    """
+    return await manager_messages.notify(kind, message, peer_id=peer_id, chat_id=chat_id)
 
 
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
@@ -1040,15 +1050,21 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     except Exception:
         logger.exception("Failed to record escalation in database for peer_id=%s", peer_id)
 
-    # Уведомление менеджеру ждём здесь же, но недолго: таймаут у клиента
-    # Telegram теперь 2 секунды, а не 10, и весь бюджет VK он больше съесть
-    # не может.
+    # Уведомление сначала попадает в очередь и только потом уходит в
+    # телеграм. Клиенту мы обещаем «уточню у менеджера» после того, как
+    # запись сохранена: не ушло сразу — уйдёт со следующим тиком.
     #
-    # Отправляли это в фон — не сработало: на serverless инстанс засыпает
-    # сразу после ответа, и задача умирала, не дойдя до сети. В логах не
-    # оставалось ни успеха, ни ошибки. Ограниченный по времени вызов в общем
-    # пути хуже по задержке, но он хотя бы случается и оставляет след.
-    await _notify_manager(peer_id, message)
+    # В фон это отправлять нельзя: на serverless инстанс засыпает сразу
+    # после ответа, и задача умирала, не дойдя до сети. В логах не
+    # оставалось ни успеха, ни ошибки.
+    stored = await _notify_manager(peer_id, message)
+    if not stored:
+        # База недоступна: обещание всё равно даём — вопрос уже отмечен
+        # открытым, и менеджер увидит его в отчёте, — но в логе это
+        # критическая запись, а не рядовая.
+        logger.critical(
+            "Вопрос клиента peer_id=%s нигде не сохранён: база недоступна", peer_id
+        )
 
     return ToolExecution(
         tool_result=(

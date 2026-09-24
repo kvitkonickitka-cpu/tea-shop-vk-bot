@@ -12,7 +12,8 @@ from __future__ import annotations
 import logging
 
 from app.core.config import settings
-from app.modules.dialog import telegram_client, vk_client
+from app.messages import manager as manager_messages
+from app.modules.dialog import vk_client
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,16 @@ def card(order: Order, cdek_number: str | None = None) -> str:
 
 
 async def send(order: Order, text: str) -> bool:
-    """Отправить в чат заказов. False — если не дошло."""
-    try:
-        await telegram_client.send_message(text, chat_id=chat_id())
-        return True
-    except Exception:
-        logger.exception("Не смогли написать в чат заказов про заказ %s", order.id)
-        return False
+    """Отправить в чат заказов через очередь уведомлений.
+
+    False означает «нигде не сохранено» — такое бывает только при
+    недоступной базе. Обычная неудача отправки False не даёт: уведомление
+    лежит в очереди, и его дошлёт следующий тик расписания.
+    """
+    return await manager_messages.notify(
+        manager_messages.ORDER_CARD,
+        text,
+        order_id=order.id,
+        peer_id=order.peer_id,
+        chat_id=chat_id(),
+    )

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, Response
 
 from app.core import heartbeat
 from app.core.config import settings
+from app.messages import manager as manager_messages
 from app.modules import events
 from app.modules.catalog import vk_market
 from app.modules.dialog import telegram_client
@@ -98,7 +99,12 @@ async def _run_scheduled() -> dict:
     """
     started = time.monotonic()
     result = {
-        # Платежи первыми: потерянное уведомление означает оплаченный заказ,
+        # Очередь уведомлений первой и дешёвой: в ней лежит то, что уже
+        # обещано клиенту, — вопрос менеджеру, карточка оплаченного заказа.
+        "manager_outbox": await _run_task(
+            "Очередь уведомлений менеджеру", manager_messages.flush()
+        ),
+        # Платежи следом: потерянное уведомление означает оплаченный заказ,
         # который иначе не уедет никогда.
         "payments": await _run_task("Проверка платежей", payment_watch.check_pending()),
         "cdek_orders": await _run_task("Проверка заказов СДЭК", cdek_watch.check_pending_orders()),
@@ -110,6 +116,9 @@ async def _run_scheduled() -> dict:
     )
     result["reports"] = await _run_task(
         "Отчёты по диалогам", reports_service.send_pending_reports()
+    )
+    result["undelivered"] = await _run_task(
+        "Отчёт о недоставленном менеджеру", reports_service.report_undelivered()
     )
     # Отметка после всех задач: по ней видно, дошёл ли тик до конца или его
     # убили на середине — и firing ли триггер вообще.

@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 
+from app.core import heartbeat
 from app.core.config import settings
 from app.core.database import get_session_factory
+from app.messages import manager as manager_messages
 from app.modules.dialog import claude_client, history as dialog_history, telegram_client, vk_client
 from app.modules.dialog.models import (
     Conversation,
@@ -179,3 +181,51 @@ async def _mark_reported(session_factory, peer_id: int) -> None:
     async with session_factory() as session:
         await session.merge(DialogReport(peer_id=peer_id, reported_at=datetime.now(timezone.utc)))
         await session.commit()
+
+
+# Отчёт о недоставленных уведомлениях: не чаще раза в сутки, иначе он уйдёт
+# с каждым тиком расписания — то есть двенадцать раз в час.
+_UNDELIVERED_REPORT_EVERY = timedelta(hours=20)
+_UNDELIVERED_HEARTBEAT = "отчёт о недоставленном менеджеру"
+
+
+async def report_undelivered() -> dict:
+    """Отдельным блоком: что так и не дошло до менеджера.
+
+    Уведомление, которое очередь не смогла доставить за десять попыток,
+    дальше своими силами не доедет — телеграм недоступен, чат не тот или
+    бота выгнали. Такое нужно увидеть человеку, а не только в логе.
+    """
+    result: dict = {"undelivered": 0, "sent": False}
+
+    if not settings.telegram_reports_chat_id:
+        result["skipped"] = "чат отчётов не настроен"
+        return result
+
+    rows = await manager_messages.undelivered()
+    result["undelivered"] = len(rows)
+    if not rows:
+        return result
+
+    last = await heartbeat.last_run(_UNDELIVERED_HEARTBEAT)
+    now = datetime.now(timezone.utc)
+    if last is not None and now - last < _UNDELIVERED_REPORT_EVERY:
+        result["skipped"] = "уже сообщали за последние сутки"
+        return result
+
+    lines = [f"🚨 <b>Не доставлено менеджеру: {len(rows)}</b>"]
+    for row in rows:
+        when = row.created_at.strftime("%d.%m %H:%M")
+        lines.append(
+            f"— {when} UTC, {row.kind}"
+            + (f", заказ №{row.order_id}" if row.order_id else "")
+            + f"\n  {(row.last_error or 'причина не записана')[:200]}"
+        )
+    lines.append("Тексты лежат в таблице manager_notifications.")
+
+    await telegram_client.send_message(
+        "\n".join(lines), chat_id=settings.telegram_reports_chat_id
+    )
+    await heartbeat.note(_UNDELIVERED_HEARTBEAT)
+    result["sent"] = True
+    return result

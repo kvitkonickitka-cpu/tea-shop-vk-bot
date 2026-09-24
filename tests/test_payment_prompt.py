@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.messages import manager as manager_messages
 from app.modules.orders import conversation
 from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service
@@ -46,7 +47,7 @@ async def test_escalation_names_the_real_reason(clean, monkeypatch, reason):
     async def fake_send(text, chat_id=None):
         sent.append(text)
 
-    monkeypatch.setattr(conversation.telegram_client, "send_message", fake_send)
+    monkeypatch.setattr(manager_messages.telegram_client, "send_message", fake_send)
 
     draft = OrderDraft(
         items=[{"name": "Те Гуань Инь", "quantity": 1, "price": 800}],
@@ -71,7 +72,7 @@ async def test_escalation_reason_defaults_to_kassa_state(clean, monkeypatch):
     async def fake_send(text, chat_id=None):
         sent.append(text)
 
-    monkeypatch.setattr(conversation.telegram_client, "send_message", fake_send)
+    monkeypatch.setattr(manager_messages.telegram_client, "send_message", fake_send)
     monkeypatch.setattr(payment_service, "is_enabled", lambda: True)
 
     draft = OrderDraft(items=[], items_total=0.0, stage="confirmed")

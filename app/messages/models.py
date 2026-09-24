@@ -30,3 +30,33 @@ class ClientNotice(Base):
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
+class ManagerNotification(Base):
+    """Уведомление менеджеру, которое нельзя потерять.
+
+    Раньше уведомление жило только в попытке отправки: таймаут телеграма в
+    две секунды — и вопрос клиента исчезал, хотя ему уже сказали «уточню у
+    менеджера». Теперь оно сначала пишется сюда и коммитится, а отправка —
+    вторым шагом. Не ушло сразу — уйдёт со следующим тиком расписания.
+    """
+
+    __tablename__ = "manager_notifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Про что уведомление: эскалация, карточка заказа, отказ перевозчика.
+    kind: Mapped[str] = mapped_column(String, index=True)
+    order_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    peer_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Готовый текст: собирать его заново при повторе значило бы зависеть от
+    # данных, которые к тому моменту уже изменились.
+    payload: Mapped[str] = mapped_column(String)
+    # Чат телеграма. Пусто — чат менеджера по умолчанию.
+    chat_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
