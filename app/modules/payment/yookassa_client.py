@@ -71,6 +71,12 @@ def is_configured() -> bool:
     return bool(settings.yookassa_shop_id and settings.yookassa_secret_key)
 
 
+# Сколько цифр в телефоне по E.164: от восьми (короткие национальные) до
+# пятнадцати. Российский номер — одиннадцать, и с него же начинается счёт.
+_PHONE_MIN_DIGITS = 11
+_PHONE_MAX_DIGITS = 15
+
+
 def normalize_phone(raw: str) -> str:
     """Телефон цифрами, как требует ITU-T E.164: `79001234567`.
 
@@ -81,6 +87,41 @@ def normalize_phone(raw: str) -> str:
     if digits.startswith("8") and len(digits) == 11:
         digits = "7" + digits[1:]
     return digits
+
+
+def phone_is_valid(raw: str) -> bool:
+    """Годится ли телефон для чека.
+
+    Проверяем у себя, а не узнаём из отказа ЮKassa: её ошибка приходит в
+    момент выставления счёта — когда клиент уже сказал «оформляйте», — и
+    выглядит для него как поломка вместо простого «уточните номер».
+    """
+    digits = normalize_phone(raw)
+    return _PHONE_MIN_DIGITS <= len(digits) <= _PHONE_MAX_DIGITS
+
+
+def receipt_customer(*, full_name: str, email: str, phone: str) -> dict:
+    """Кому выписан чек.
+
+    По 54-ФЗ электронный чек можно отправить на почту **или** на телефон, и
+    ЮKassa принимает любой из контактов. Раньше бот требовал почту, считая,
+    что чек доставляется только письмом, и клиент без почты не мог оформить
+    заказ вовсе.
+
+    Контакт кладём один: почту, если она есть, иначе телефон. Оба сразу не
+    нужны — чек уйдёт по одному, а лишние данные в фискальном документе не
+    нужны ни клиенту, ни нам.
+    """
+    customer: dict = {}
+    if full_name:
+        customer["full_name"] = full_name[:256]
+    if email:
+        customer["email"] = email[:254]
+        return customer
+    digits = normalize_phone(phone)
+    if digits:
+        customer["phone"] = digits
+    return customer
 
 
 def idempotence_key(order_key: str) -> str:
@@ -215,14 +256,11 @@ async def create_payment(
     rows = receipt_items(items, delivery_cost, delivery_label)
     total = sum(float(row["amount"]["value"]) for row in rows)
 
-    customer: dict = {}
-    if full_name:
-        customer["full_name"] = full_name[:256]
-    if email:
-        customer["email"] = email[:254]
-    phone_digits = normalize_phone(phone)
-    if phone_digits:
-        customer["phone"] = phone_digits
+    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
+    if not customer.get("email") and not customer.get("phone"):
+        raise YooKassaError(
+            "в чеке нет ни почты, ни телефона — ЮKassa такой платёж не примет"
+        )
 
     payload = {
         "amount": _money(total),

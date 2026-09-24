@@ -13,6 +13,11 @@
         Создать платёж на сумму с чеком на указанную почту. Печатает ссылку
         на оплату — её можно открыть и заплатить тестовой картой.
 
+    python scripts/yookassa_probe.py 1250 --phone
+        То же, но чек **только с телефоном**, без почты: проверка того, что
+        по 54-ФЗ достаточно одного контакта и ЮKassa такой чек принимает.
+        Ответ печатается целиком — в нём видно, что ушло в receipt.
+
     python scripts/yookassa_probe.py --payment <идентификатор>
         Что стало с платежом и зарегистрировался ли чек.
 
@@ -92,7 +97,7 @@ async def whoami() -> None:
     print(f"Фискализация: {fiscal if fiscal else 'нет данных в ответе'}")
 
 
-async def create_payment(amount: float, email: str) -> None:
+async def create_payment(amount: float, email: str, phone: str = "79001234567") -> None:
     """Создать платёж тем же кодом, которым это делает бот.
 
     Намеренно через `yookassa_client`, а не своим запросом: песочница
@@ -107,7 +112,7 @@ async def create_payment(amount: float, email: str) -> None:
             delivery_cost=0,
             delivery_label="",
             email=email,
-            phone="79001234567",
+            phone=phone,
             full_name="Иванов Иван Иванович",
             description="Проверка интеграции",
         )
@@ -124,6 +129,16 @@ async def create_payment(amount: float, email: str) -> None:
     print(f"Сумма:      {payment.amount} руб")
     print(f"Контур:     {'тестовый' if payment.test else 'БОЕВОЙ'}")
     print(f"Чек:        {payment.receipt_registration or 'поле не пришло'}")
+    customer = yookassa_client.receipt_customer(
+        full_name="Иванов Иван Иванович", email=email, phone=phone
+    )
+    print(f"Кому чек:   {customer}")
+    if not email:
+        print(
+            "Чек ушёл с одним телефоном. Как покупатель его получит — СМС или\n"
+            "только ссылка ОФД — из ответа ЮKassa не видно: она лишь передаёт\n"
+            "данные кассе. Смотреть в кабинете, в чеке по этому платежу."
+        )
     if payment.confirmation_url:
         print(f"\nСсылка на оплату: {payment.confirmation_url}")
         print("Открой её и заплати тестовой картой, потом посмотри состояние:")
@@ -153,6 +168,9 @@ async def main() -> int:
         await whoami()
     elif args[0] == "--payment" and len(args) > 1:
         await payment_state(args[1])
+    elif len(args) >= 2 and args[1] == "--phone":
+        # Чек без почты: проверка того, что телефона достаточно.
+        await create_payment(float(args[0]), email="")
     elif len(args) >= 2:
         await create_payment(float(args[0]), args[1])
     else:

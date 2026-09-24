@@ -10,7 +10,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
-from app.messages import manager as manager_messages
+from app.messages import manager as manager_messages, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -73,8 +73,10 @@ _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / 
 _PAYMENT_STEP_WITH_KASSA = (
     "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
     "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
-    "обещай. Посылка уезжает к перевозчику только после оплаты, поэтому не "
-    "говори, что заказ уже отправлен или передан в доставку."
+    "обещай. Чек придёт на почту, если клиент её дал, иначе по номеру "
+    "телефона — почта для оформления необязательна. Посылка уезжает к "
+    "перевозчику только после оплаты, поэтому не говори, что заказ уже "
+    "отправлен или передан в доставку."
 )
 _PAYMENT_STEP_WITHOUT_KASSA = (
     "Ссылку на оплату бот не выставляет: её пришлёт менеджер, инструмент сам "
@@ -125,8 +127,9 @@ _OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russi
 # ключей в ревизии бот спрашивал бы у клиента почту, а оплату всё равно
 # уводил менеджеру. Так ошибка настройки становилась видна клиенту.
 _EMAIL_TOOL_HINT = (
-    "Вместе с ними спроси электронную почту — на неё придёт чек, без неё "
-    "оплату не выставить."
+    "Почта необязательна: спроси её одной фразой — «если хотите получить чек "
+    "на почту, напишите её, иначе чек придёт по номеру телефона» — и не "
+    "возвращайся к этому вопросу второй раз."
     if payment_service.is_enabled()
     else ""
 )
@@ -218,9 +221,9 @@ TOOLS = [
                 "email": {
                     "type": "string",
                     "description": (
-                        "Электронная почта клиента — на неё придёт чек. "
-                        "Спрашивай вместе с ФИО и телефоном и объясняй, что "
-                        "она нужна именно для чека."
+                        "Электронная почта клиента — необязательная. Если её "
+                        "нет, чек уйдёт по номеру телефона, и заказ всё равно "
+                        "оформляется. Спроси один раз и не настаивай."
                     ),
                 },
             },
@@ -343,8 +346,9 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         lines.append(f"Получатель записан: {name}, {phone}.")
         if payment_service.is_enabled():
             lines.append(
-                f"Почта для чека: {email}." if email
-                else "Почта для чека ещё НЕ записана — без неё оплату не выставить."
+                f"Чек уйдёт на почту: {email}." if email
+                else "Почты нет — чек уйдёт по номеру телефона. Это нормально, "
+                     "второй раз про почту не спрашивай."
             )
     elif draft.delivery_method in ("cdek_pvz", "cdek_courier", "ozon_pvz"):
         lines.append(
@@ -746,6 +750,16 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
     if not name or not phone:
         return "Нужны и ФИО получателя, и телефон. Спроси у клиента то, чего не хватает."
 
+    # Телефон проверяем здесь, а не узнаём из отказа ЮKassa: её ошибка
+    # приходит на выставлении счёта, когда клиент уже сказал «оформляйте», и
+    # выглядит поломкой вместо простого «уточните номер».
+    if not yookassa_client.phone_is_valid(phone):
+        return (
+            f"Телефон «{phone}» не похож на настоящий: нужны 11 цифр, как "
+            "+7 900 123-45-67. Попроси клиента назвать номер целиком и вызови "
+            "инструмент ещё раз — остальное уже записано."
+        )
+
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone
     if email:
@@ -754,13 +768,14 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
     written = f"Получатель записан: {name}, {phone}"
     written += f", {email}." if email else "."
-    if payment_service.is_enabled() and not draft.details.get("recipient_email"):
-        # Без почты платёж не выставить, и узнать об этом лучше здесь, а не
-        # на подтверждении, когда клиент уже сказал «оформляйте».
+    if payment_service.is_enabled() and not email:
+        # Почта необязательна: чек уйдёт по телефону. Но спросить один раз
+        # стоит — письмо удобнее, — и важно не зациклиться на этом вопросе.
         return (
-            written + " Осталась электронная почта — на неё придёт чек, без "
-            "неё оплату не выставить. Спроси её и вызови set_recipient ещё "
-            "раз, вместе с ФИО и телефоном."
+            written + " Почты нет — чек уйдёт по номеру телефона, и этого "
+            "достаточно для оформления. Спроси один раз: «если хотите чек на "
+            "почту, напишите её» — и, получив ответ или отказ, вызывай "
+            "confirm_order, если клиент согласился оформить заказ."
         )
     return written + " Если клиент уже согласился оформить заказ, вызывай confirm_order."
 
@@ -877,11 +892,16 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
             "Если не называл — спроси."
         )
 
-    if payment_service.is_enabled() and not draft.details.get("recipient_email"):
+    # Почта здесь не проверяется намеренно: чек по 54-ФЗ можно отправить и
+    # на телефон, ЮKassa принимает любой контакт. Требование почты не давало
+    # оформить заказ клиенту, который её не дал, — и упиралось это в наше
+    # собственное заблуждение, а не в закон.
+    if payment_service.is_enabled() and not yookassa_client.phone_is_valid(
+        draft.details.get("recipient_phone", "")
+    ):
         return ToolExecution(
-            "Для оплаты нужна электронная почта клиента — на неё придёт чек. "
-            "Спроси её и вызови set_recipient с ФИО, телефоном и почтой, а "
-            "потом confirm_order."
+            "Для чека нужен телефон получателя целиком — 11 цифр. Попроси "
+            "клиента назвать номер и вызови set_recipient, а потом confirm_order."
         )
 
     draft.stage = "confirmed"
@@ -1000,8 +1020,11 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
 
     await state.clear_draft(peer_id)
 
+    where = templates.receipt_destination(
+        draft.details.get("recipient_email", ""), draft.details.get("recipient_phone", "")
+    )
     reply = f"Заказ оформлен. Оплатить: {payment.confirmation_url}"
-    reply += "\nПосле оплаты пришлём чек на почту и передадим заказ в доставку."
+    reply += f"\nПосле оплаты пришлём чек на {where} и передадим заказ в доставку."
     return ToolExecution(reply, client_reply=reply)
 
 
