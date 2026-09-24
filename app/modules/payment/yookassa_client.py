@@ -240,3 +240,29 @@ async def create_payment(
 async def get_payment(payment_id: str) -> Payment:
     """Состояние платежа. Им же проверяется подлинность уведомления."""
     return _to_payment(await _call("GET", f"/payments/{payment_id}"))
+
+
+@dataclass(frozen=True)
+class Refund:
+    """Возврат денег клиенту. Его заводит менеджер в кабинете, не бот."""
+
+    id: str
+    payment_id: str
+    status: str
+    amount: float
+
+
+async def get_refund(refund_id: str) -> Refund:
+    """Состояние возврата.
+
+    Нужен, потому что уведомление `refund.succeeded` приносит объект
+    возврата, а не платежа: спрашивать по его идентификатору `/payments/…`
+    значит получить 404 и заставить ЮKassa повторять уведомление сутки.
+    """
+    data = await _call("GET", f"/refunds/{refund_id}")
+    return Refund(
+        id=data.get("id", ""),
+        payment_id=data.get("payment_id", ""),
+        status=data.get("status", ""),
+        amount=float((data.get("amount") or {}).get("value") or 0),
+    )

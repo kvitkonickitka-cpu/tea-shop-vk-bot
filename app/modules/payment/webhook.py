@@ -25,13 +25,24 @@ logger = logging.getLogger(__name__)
 # отвечать ошибкой на неизвестное событие значит получать его сутки подряд.
 EVENT_SUCCEEDED = "payment.succeeded"
 EVENT_CANCELED = "payment.canceled"
+EVENT_REFUNDED = "refund.succeeded"
+
+# Статус заказа, по которому деньги вернули.
+STATUS_REFUNDED = "refunded"
 
 
 async def handle(body: dict) -> dict:
     """Разобрать уведомление. Исключения наружу — чтобы ЮKassa повторила."""
     event = str(body.get("event") or "")
-    payment_id = str(((body.get("object") or {}).get("id")) or "")
+    object_id = str(((body.get("object") or {}).get("id")) or "")
 
+    # События возврата приносят объект ВОЗВРАТА, а не платежа: его
+    # идентификатор нельзя спрашивать у `/payments/…` — будет 404, ответ
+    # ошибкой и повтор уведомления сутки подряд.
+    if event.startswith("refund."):
+        return await _on_refund(object_id)
+
+    payment_id = object_id
     if not payment_id:
         logger.warning("Уведомление ЮKassa без идентификатора платежа: %s", str(body)[:200])
         return {"ignored": "нет идентификатора платежа"}
@@ -54,8 +65,19 @@ async def handle(body: dict) -> dict:
             )
         return {"платёж": payment_id, "статус": payment.status}
 
-    # pending или waiting_for_capture: ждать нечего, придёт следующее
-    # уведомление. Отвечаем успехом, иначе ЮKassa будет повторять это сутки.
+    if payment.status == "waiting_for_capture":
+        # Такого быть не должно: платежи создаются с `capture: true`, то есть
+        # списываются сразу. Если всё же случилось — деньги заморожены у
+        # клиента и сами не спишутся, о чём менеджер должен узнать.
+        logger.warning(
+            "Платёж %s ждёт подтверждения, хотя создавался с capture=true — "
+            "деньги заморожены, нужен ручной разбор",
+            payment_id,
+        )
+        return {"платёж": payment_id, "статус": payment.status, "действий": "нужен разбор"}
+
+    # pending: ждать нечего, придёт следующее уведомление. Отвечаем успехом,
+    # иначе ЮKassa будет повторять это сутки.
     return {"платёж": payment_id, "статус": payment.status, "действий": "нет"}
 
 
@@ -98,6 +120,35 @@ async def _on_paid(payment: yookassa_client.Payment) -> dict:
         "заказ": order.id,
         "отправление": registered.cdek_uuid or registered.ozon_posting or "не заведено",
     }
+
+
+async def _on_refund(refund_id: str) -> dict:
+    """Менеджер вернул деньги клиенту — отметить заказ и сказать в чат."""
+    if not refund_id:
+        return {"ignored": "нет идентификатора возврата"}
+
+    refund = await yookassa_client.get_refund(refund_id)
+    logger.info(
+        "Возврат %s по платежу %s: статус %s, сумма %s",
+        refund.id, refund.payment_id, refund.status, refund.amount,
+    )
+    if refund.status != "succeeded" or not refund.payment_id:
+        return {"возврат": refund.id, "статус": refund.status, "действий": "нет"}
+
+    order = await orders_repository.by_payment(refund.payment_id)
+    if order is None:
+        logger.info("Возврат %s: заказа с таким платежом у нас нет", refund.id)
+        return {"возврат": refund.id, "действий": "нет, заказ не найден"}
+
+    if order.status == STATUS_REFUNDED:
+        return {"возврат": refund.id, "действий": "нет, уже отмечен"}
+
+    await orders_repository.set_state(order.id, status=STATUS_REFUNDED)
+    await order_chat.send(
+        order,
+        f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order),
+    )
+    return {"возврат": refund.id, "заказ": order.id}
 
 
 def _paid_card(order, payment: yookassa_client.Payment) -> str:
