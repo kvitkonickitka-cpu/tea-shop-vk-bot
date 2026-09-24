@@ -20,7 +20,7 @@ from app.core.config import settings
 from app.core.database import get_session_factory
 from app.modules.delivery import cdek_client
 from app.modules.dialog import vk_client
-from app.modules.orders import order_chat
+from app.modules.orders import order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,29 @@ def _is_rejected(data: dict) -> bool:
         request.get("state") == "INVALID"
         for request in data.get("requests") or []
     )
+
+
+# Страница отслеживания СДЭКа — по номеру накладной.
+CDEK_TRACKING_URL = "https://www.cdek.ru/ru/tracking"
+
+
+async def _tell_client_number(order: Order, number: str | None) -> None:
+    """Дослать клиенту номер накладной, когда СДЭК его выдал.
+
+    Только оплаченным: при оплате клиенту обещано, что трек придёт сюда, и
+    это обещание надо выполнить. Заказ, за который ещё не заплатили, ведёт
+    менеджер — ему туда с трек-номером вперёд клиента незачем.
+    """
+    if not number or order.payment_status != orders_repository.PAID:
+        return
+    try:
+        await vk_client.send_message(
+            order.peer_id,
+            f"Посылка по заказу №{order.id} передана в СДЭК.\n"
+            f"Трек-номер: {number}\nОтследить: {CDEK_TRACKING_URL}",
+        )
+    except Exception:
+        logger.exception("Не сказали клиенту трек-номер по заказу %s", order.id)
 
 
 async def _warn_manager(order: Order, what: str, details: str) -> None:
@@ -151,6 +174,7 @@ async def check_pending_orders() -> dict:
                 number = (data.get("entity") or {}).get("cdek_number")
                 logger.info("Заказ %s подтверждён СДЭКом, номер %s", order.id, number)
                 await order_chat.send(order, order_chat.card(order, number))
+                await _tell_client_number(order, number)
                 continue
 
             # Ни «создан», ни «отклонён» — значит всё ещё висит в обработке.

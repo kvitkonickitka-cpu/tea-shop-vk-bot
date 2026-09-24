@@ -50,6 +50,10 @@ async def by_payment(payment_id: str) -> Order | None:
         ).scalars().first()
 
 
+# Статус платежа у ЮKassa, означающий «деньги у нас».
+PAID = "succeeded"
+
+
 async def claim_paid(payment_id: str, payment_status: str, receipt_status: str) -> Order | None:
     """Пометить заказ оплаченным — ровно один раз.
 
@@ -59,16 +63,22 @@ async def claim_paid(payment_id: str, payment_status: str, receipt_status: str) 
     не спасает — между ними успевает влезть второй обработчик, и отправление
     заведётся дважды, то есть уедут две настоящие посылки.
 
-    Поэтому переход делается одним `UPDATE ... WHERE status <> 'paid'`: кто
-    получил строку в ответе, тот и заводит отправление. Остальным вернётся
-    None, и это не ошибка.
+    Поэтому переход делается одним `UPDATE ... WHERE`: кто получил строку в
+    ответе, тот и заводит отправление. Остальным вернётся None, и это не
+    ошибка.
+
+    Условие смотрит на `payment_status`, а не на `status`. `status` после
+    оплаты живёт своей жизнью — у заказа СДЭКом он уходит в «ждём ответа
+    перевозчика», и заказ снова стал бы годен для повторного уведомления,
+    то есть уехали бы две настоящие посылки. `payment_status` меняется
+    ровно здесь и ровно один раз.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
         row = (
             await session.execute(
                 update(Order)
-                .where(Order.payment_id == payment_id, Order.status != "paid")
+                .where(Order.payment_id == payment_id, Order.payment_status != PAID)
                 .values(status="paid", payment_status=payment_status, receipt_status=receipt_status)
                 .returning(Order)
             )

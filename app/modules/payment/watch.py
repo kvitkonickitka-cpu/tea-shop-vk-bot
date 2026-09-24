@@ -74,8 +74,11 @@ async def check_pending() -> dict:
                     Order.created_at > now - _GIVE_UP_AFTER,
                     or_(
                         Order.status == payment_service.STATUS_AWAITING_PAYMENT,
-                        # Оплачен, но чек ещё не зарегистрирован.
-                        (Order.status == payment_service.STATUS_PAID)
+                        # Оплачен, но чек ещё не зарегистрирован. Смотрим на
+                        # статус платежа, а не заказа: у заказа СДЭКом после
+                        # оплаты в `status` лежит состояние доставки, и по
+                        # нему чек потерялся бы из виду.
+                        (Order.payment_status == orders_repository.PAID)
                         & (Order.receipt_status.notin_(["succeeded", RECEIPT_STUCK])),
                     ),
                 )

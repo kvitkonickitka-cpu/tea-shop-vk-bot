@@ -17,7 +17,12 @@ from __future__ import annotations
 import logging
 
 from app.modules.dialog import vk_client
-from app.modules.orders import order_chat, repository as orders_repository, shipping
+from app.modules.orders import (
+    cdek_watch,
+    order_chat,
+    repository as orders_repository,
+    shipping,
+)
 from app.modules.payment import yookassa_client
 
 logger = logging.getLogger(__name__)
@@ -107,6 +112,12 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
     fields = {}
     if registered.cdek_uuid:
         fields["cdek_uuid"] = registered.cdek_uuid
+        # СДЭК отвечает на создание заявки «принял», а состоялся ли заказ,
+        # выясняет сверка по таймеру — она и узнаёт номер накладной, и
+        # замечает отказ. Ищет она заказы в этом статусе, поэтому оплаченный
+        # заказ надо ей вернуть: со статусом «оплачен» он не проверялся
+        # вовсе, и накладная не появлялась ни у клиента, ни в чате заказов.
+        fields["status"] = cdek_watch.STATUS_NEW
     if registered.ozon_posting:
         fields["ozon_posting"] = registered.ozon_posting
     if fields:
