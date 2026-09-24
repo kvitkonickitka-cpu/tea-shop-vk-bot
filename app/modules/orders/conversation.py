@@ -419,7 +419,7 @@ async def _cdek_delivery(
 
 async def _ozon_points(
     draft: OrderDraft, city: str, hint: str = ""
-) -> tuple[list, int, int]:
+) -> ozon_quote.Picked:
     """Пункты Ozon под то, что назвал клиент, и счётчики вокруг них."""
     return await ozon_quote.points_for(
         city,
@@ -551,32 +551,28 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         hint = (tool_input.get("pickup_point") or "").strip()
         not_found_note = ""
         try:
-            points, found, total_points = await _ozon_points(draft, city, hint)
+            picked = await _ozon_points(draft, city, hint)
         except Exception:
             logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
-            points, found, total_points = [], 0, 0
+            picked = ozon_quote.Picked([], 0, 0, False)
 
-        if not points and hint:
+        points, found, total_points = picked.points, picked.found, picked.total
+
+        if hint and not picked.hint_matched:
             # Адрес с карты Ozon может не найтись у нас: копия каталога
             # неполная. Возвращаться к клиенту с «не нашёлся» и тупиком нельзя
-            # — показываем, что есть в городе, и просим выбрать из этого.
+            # — каталог в таком случае отдаёт пункты города, а мы говорим,
+            # что нужного среди них нет.
             logger.info(
                 "Пункт Ozon «%s» в городе %s не нашёлся, показываем что есть", hint, city
             )
-            try:
-                points, found, total_points = await _ozon_points(draft, city)
-            except Exception:
-                logger.exception("Не подобрали пункты Ozon в «%s»", city)
-                points, found, total_points = [], 0, 0
             if points:
                 not_found_note = (
                     f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом "
                     "клиенту и предложи выбрать из тех, что есть, или назвать "
                     "адрес иначе. "
                 )
-                hint = ""
-            else:
-                not_found_note = ""
+            hint = ""
 
         if not points:
             if found:

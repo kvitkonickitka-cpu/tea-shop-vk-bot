@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from app.core.config import settings
 from app.modules.delivery import ozon_catalog, ozon_client
@@ -17,6 +18,19 @@ logger = logging.getLogger(__name__)
 
 # Сколько пунктов показываем клиенту. Больше — это уже не выбор, а список.
 _MAX_OPTIONS = 6
+
+
+@dataclass(frozen=True)
+class Picked:
+    """Подобранные пункты и то, что вокруг них нужно знать диалогу."""
+
+    points: list
+    # Сколько нашлось до проверки доступности нашим методом доставки.
+    found: int
+    # Сколько всего подходит под запрос в нашей копии каталога.
+    total: int
+    # Сошёлся ли названный клиентом адрес, или это просто пункты города.
+    hint_matched: bool
 
 
 def is_ready() -> bool:
@@ -31,8 +45,8 @@ async def points_for(
     weight_grams: int,
     declared_value: float,
     limit: int = _MAX_OPTIONS,
-) -> tuple[list, int, int]:
-    """Пункты под то, что назвал клиент, и два счётчика вокруг них.
+) -> Picked:
+    """Пункты под то, что назвал клиент, и всё, что о них нужно сказать.
 
     Поиска по адресу у Ozon нет — каталог отдаётся целиком, — поэтому ищем по
     своей копии. А вот обслуживает ли пункт наш метод доставки, знает только
@@ -44,17 +58,20 @@ async def points_for(
     разговоры с клиентом. `total` — сколько всего подходит под запрос, без
     ограничения по количеству: показать пять адресов из сорока и выдать их за
     весь список значит выбирать за клиента.
-    """
-    query = f"{city} {hint}".strip()
-    rows = await ozon_catalog.find(query, limit=limit)
-    if not rows:
-        return [], 0, 0
 
-    total = await ozon_catalog.count_matching(query)
+    Названный адрес ищем в том же заходе, что и город: каталог сам
+    возвращает пункты города, когда адрес не сошёлся, и говорит об этом
+    признаком `hint_matched`. Раньше это стоило второго круга — повторного
+    поиска и повторной проверки доступности у Ozon, — а у вебхука ВК на всё
+    про всё около восьми секунд.
+    """
+    found = await ozon_catalog.search(city, hint, limit=limit)
+    if not found.points:
+        return Picked([], 0, 0, False)
 
     try:
         allowed = await ozon_client.available_points(
-            delivery_point_ids=[row.id for row in rows],
+            delivery_point_ids=[row.id for row in found.points],
             shipment_method_id=settings.ozon_shipment_method_id,
             weight_grams=weight_grams,
             length_mm=settings.ozon_default_length_mm,
@@ -66,9 +83,14 @@ async def points_for(
         # Проверка не прошла — отдаём что нашли: цену всё равно считает
         # следующий вызов, и он же откажет, если пункт не подходит.
         logger.exception("Не проверили доступность пунктов Ozon в «%s»", city)
-        return list(rows), len(rows), total
+        return Picked(list(found.points), len(found.points), found.total, found.hint_matched)
 
-    return [row for row in rows if row.id in allowed], len(rows), total
+    return Picked(
+        [row for row in found.points if row.id in allowed],
+        len(found.points),
+        found.total,
+        found.hint_matched,
+    )
 
 
 async def price_for(

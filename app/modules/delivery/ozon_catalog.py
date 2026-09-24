@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
@@ -38,14 +39,64 @@ _NOISE_WORDS = {
     "переулок", "пер", "шоссе", "ш", "бульвар", "б-р", "проезд",
     "микрорайон", "мкр", "корпус", "корп", "к", "строение", "стр",
     "округ", "внутригородской",
+    # Клиент описывает пункт словами, которых в адресе нет: «пвз на
+    # Ставропольской», «постамат Озон». Оставь их в запросе — и они либо
+    # ничего не найдут, либо наберут очков на чужом адресе.
+    "пвз", "пункт", "пункты", "выдача", "выдачи", "постамат", "озон", "ozon",
 }
 
 
 def normalize(text: str) -> str:
     """Значимые слова адреса: без пунктуации и без «улица», «дом», «край»."""
     cleaned = "".join(ch if ch.isalnum() else " " for ch in (text or "").lower())
-    words = [w for w in cleaned.split() if w and w not in _NOISE_WORDS]
+    words = [
+        w
+        for w in cleaned.split()
+        # Одинокие буквы — всегда остаток сокращения: «пр-т» превращается в
+        # «пр» и «т», и второе ничего не значит. Цифры в одиночку значат
+        # (дом 5), их оставляем.
+        if w and w not in _NOISE_WORDS and (len(w) > 1 or w.isdigit())
+    ]
     return " ".join(words)
+
+
+# Падежные окончания, от длинных к коротким: срезаем ровно одно, самое
+# длинное подходящее. «-ов» и «-ев» сюда намеренно не входят — с ними
+# «Ростов» превратился бы в «рост», а улица Кирова и так сходится с «Киров».
+_ENDINGS = (
+    "ого", "его", "ому", "ему", "ыми", "ими",
+    "ая", "яя", "ое", "ее", "ые", "ие", "ый", "ий", "ой", "ей", "ем", "ом",
+    "ах", "ях", "ам", "ям", "ую", "юю", "ью", "ия", "ья", "ье",
+    "а", "я", "о", "е", "у", "ю", "ы", "и", "ь", "й",
+)
+
+
+def stem(word: str) -> str:
+    """Слово без падежного окончания.
+
+    Клиент пишет «на Ставропольской», в каталоге стоит «Ставропольская» —
+    по буквам это разные строки. Сравнение по основе сводит формы одного
+    слова вместе.
+
+    И оно же разводит то, что сводить нельзя. Город — «краснодар», а
+    прилагательное края — «краснодарский» → «краснодарск»: основы разные, и
+    пункт в Анапе больше не отвечает на запрос про Краснодар. Поиск по
+    вхождению подстроки этого не различал — с него и начались Анапа с
+    Армавиром в списке краснодарских пунктов.
+
+    Остаток короче двух букв не режем, иначе от «Уфы» остаётся «у».
+    """
+    if not word or word[0].isdigit():
+        return word
+    for ending in _ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 2:
+            return word[: -len(ending)]
+    return word
+
+
+def stems(text: str) -> list[str]:
+    """Основы значимых слов строки."""
+    return [stem(word) for word in normalize(text).split()]
 
 
 async def _load_state(session) -> OzonSyncState:
@@ -240,62 +291,104 @@ async def _deactivate_missing(session, pass_number: int) -> int:
     return gone
 
 
-def _matching(query: str):
-    """Запрос по значимым словам адреса, или None, если искать нечего.
+@dataclass(frozen=True)
+class Found:
+    """Что нашлось по названному клиентом городу и адресу.
 
-    Клиент пишет адрес как придётся, поэтому сравниваем по словам: берём
-    строки, где встречаются все слова запроса. Закрытые пункты не показываем
-    никогда — это дорога к запертой двери.
+    `hint_matched` — сошёлся ли адрес. Без этого признака нельзя различить
+    «вот пункты на нужной улице» и «улицу не нашли, вот что есть в городе»,
+    а клиенту это две разные новости.
     """
-    words = normalize(query).split()
-    if not words:
-        return None
 
+    points: list
+    total: int
+    hint_matched: bool
+
+
+# Сколько строк города вытаскиваем из базы на отбор. Точный отбор идёт уже у
+# нас: в SQL уходит грубый фильтр по вхождению основы, и он захватывает
+# лишнее (на «краснодар» — весь Краснодарский край).
+_CANDIDATE_LIMIT = 1000
+
+
+def _candidates(city_stems: list[str]):
+    """Грубая выборка по городу: всё, где основы города вообще встречаются.
+
+    Закрытые пункты не показываем никогда — это дорога к запертой двери.
+    """
     statement = select(OzonDeliveryPoint).where(OzonDeliveryPoint.is_active.isnot(False))
-    for word in words[:5]:
-        statement = statement.where(OzonDeliveryPoint.search_text.contains(word))
-    return statement
+    for part in city_stems[:3]:
+        statement = statement.where(OzonDeliveryPoint.search_text.contains(part))
+    return statement.limit(_CANDIDATE_LIMIT)
 
 
-async def find(query: str, limit: int = 5) -> list[OzonDeliveryPoint]:
-    """Пункты, подходящие под то, что назвал клиент."""
-    statement = _matching(query)
-    if statement is None:
-        return []
+def _hint_score(row_words: list[str], row_stems: list[str], hint: list[str]) -> int:
+    """Насколько адрес пункта похож на то, что назвал клиент.
 
-    try:
-        session_factory = get_session_factory()
-    except RuntimeError:
-        return []
-
-    async with session_factory() as session:
-        rows = (await session.execute(statement.limit(limit))).scalars().all()
-    return list(rows)
-
-
-async def count_matching(query: str) -> int:
-    """Сколько всего пунктов подходит под запрос.
-
-    Клиенту важно знать, из скольких он выбирает: пять адресов из сорока —
-    это не выбор, а случайная выборка, и предлагать её как весь список
-    нечестно.
+    Считаем совпадения, а не требуем их все. Клиент пишет «пвз на
+    Ставропольской 230», и слова «пвз» в адресе каталога нет — при поиске «по
+    всем словам сразу» такой запрос не находил ничего, хотя нужный пункт
+    лежал в базе. Слово из адреса даёт очко, точное совпадение — два.
     """
-    statement = _matching(query)
-    if statement is None:
-        return 0
+    score = 0
+    for word in hint:
+        base = stem(word)
+        if word in row_words:
+            score += 2
+        elif base and base in row_stems:
+            score += 1
+    return score
+
+
+async def search(city: str, hint: str = "", limit: int = 5) -> Found:
+    """Пункты под названный город и адрес.
+
+    Город обязателен: совпадать должны все его слова, и совпадать основами,
+    иначе в списке краснодарских пунктов оказывается Анапа. Адрес — дело
+    вкуса клиента, поэтому он только выстраивает порядок. Если адрес не
+    сошёлся ни с одним пунктом, отдаём город целиком и честно говорим об
+    этом признаком `hint_matched`.
+    """
+    city_words = normalize(city).split()
+    city_stems = [stem(word) for word in city_words]
+    if not city_stems:
+        return Found([], 0, False)
+
+    hint_words = [word for word in normalize(hint).split() if word not in city_words]
 
     try:
         session_factory = get_session_factory()
     except RuntimeError:
-        return 0
-
-    from sqlalchemy import func as sql_func
+        return Found([], 0, False)
 
     async with session_factory() as session:
-        total = await session.scalar(
-            select(sql_func.count()).select_from(statement.subquery())
-        )
-    return int(total or 0)
+        rows = (await session.execute(_candidates(city_stems))).scalars().all()
+
+    scored: list[tuple[int, int, OzonDeliveryPoint]] = []
+    for row in rows:
+        row_words = (row.search_text or "").split()
+        row_stems = [stem(word) for word in row_words]
+        # Город — условие, а не пожелание: пункт в Армавире клиенту из
+        # Краснодара не годится, как бы похоже ни звучал адрес.
+        if any(part not in row_stems for part in city_stems):
+            continue
+        scored.append((_hint_score(row_words, row_stems, hint_words), len(row_words), row))
+
+    if not scored:
+        return Found([], 0, False)
+
+    best = max(item[0] for item in scored)
+    hint_matched = bool(hint_words) and best > 0
+    # Когда адрес сошёлся, показываем только лучшие совпадения. Клиент,
+    # назвавший «Ставропольская 230», должен получить дом 230, а не всю улицу:
+    # один пункт в ответе бот закрепляет за заказом сам, а из списка просит
+    # выбрать — то есть лишний круг разговора на ровном месте.
+    chosen = [item for item in scored if item[0] == best] if hint_matched else scored
+
+    # Сначала самые похожие, а среди равных — те, где адрес короче: длинные
+    # адреса у Ozon это обычно приписки про этаж и вход.
+    chosen.sort(key=lambda item: (-item[0], item[1], item[2].id))
+    return Found([item[2] for item in chosen[:limit]], len(chosen), hint_matched)
 
 
 _KIND_LABELS = {"pvz": "пункты выдачи", "postamat": "постаматы", "unknown": "тип не определён"}
