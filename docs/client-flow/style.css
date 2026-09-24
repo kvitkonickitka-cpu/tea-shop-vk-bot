@@ -1,0 +1,80 @@
+@page { size: A4; margin: 16mm 14mm 18mm 14mm; }
+
+:root{
+  --ink:#1b1f1d; --muted:#5f6b64; --line:#d9e0da;
+  --accent:#2f6f4e; --accent-soft:#eaf2ec;
+  --warm:#9a5b1e; --warm-soft:#fbf1e4;
+  --red:#a33b34; --red-soft:#fbeceb;
+  --paper:#f7f8f6;
+}
+*{box-sizing:border-box}
+body{
+  font-family:"DejaVu Sans","Liberation Sans",sans-serif;
+  color:var(--ink); font-size:9.6pt; line-height:1.5; margin:0;
+  -webkit-print-color-adjust:exact; print-color-adjust:exact;
+}
+h1{font-size:23pt;line-height:1.15;margin:0 0 6pt}
+h2{font-size:14pt;margin:0 0 8pt;padding-bottom:4pt;border-bottom:2px solid var(--accent);color:var(--accent)}
+h3{font-size:11pt;margin:14pt 0 5pt}
+h4{font-size:9.6pt;margin:10pt 0 3pt;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+p{margin:0 0 6pt}
+ul,ol{margin:0 0 7pt;padding-left:15pt}
+li{margin-bottom:2.5pt}
+code{font-family:"DejaVu Sans Mono",monospace;font-size:8.3pt;background:var(--paper);padding:.5pt 2pt;border-radius:2px}
+a{color:var(--accent);text-decoration:none}
+.section{page-break-before:always}
+.avoid{page-break-inside:avoid}
+
+/* обложка */
+.cover{height:245mm;display:flex;flex-direction:column;justify-content:center}
+.cover .kicker{color:var(--accent);font-size:10pt;letter-spacing:.14em;text-transform:uppercase;margin-bottom:10pt}
+.cover .sub{font-size:12pt;color:var(--muted);margin:10pt 0 26pt;max-width:135mm}
+.cover .meta{border-top:1px solid var(--line);padding-top:10pt;font-size:8.6pt;color:var(--muted);max-width:135mm}
+.cover .meta b{color:var(--ink);font-weight:600}
+
+/* диалог */
+.chat{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:9pt 10pt;margin:7pt 0}
+.chat .turn{display:flex;margin-bottom:6pt;page-break-inside:avoid}
+.chat .turn:last-child{margin-bottom:0}
+.bubble{max-width:82%;padding:5pt 7pt;border-radius:9px;font-size:9pt;line-height:1.45}
+.from-client{justify-content:flex-end}
+.from-client .bubble{background:var(--accent-soft);border:1px solid #cfe1d5;border-bottom-right-radius:2px}
+.from-bot .bubble{background:#fff;border:1px solid var(--line);border-bottom-left-radius:2px}
+.who{display:block;font-size:7.2pt;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:2pt}
+.sys{page-break-inside:avoid;font-size:8pt;color:var(--muted);font-style:italic;margin:4pt 0 4pt 2pt;padding-left:7pt;border-left:2px solid var(--line)}
+.exact .who::after{content:" · дословно из кода";color:var(--accent);font-weight:700}
+.exact .bubble{border-color:var(--accent);border-width:1.4px}
+
+/* врезки */
+.note,.warn,.risk{border-radius:5px;padding:7pt 9pt;margin:7pt 0;font-size:9pt}
+.note{background:var(--accent-soft);border-left:3px solid var(--accent)}
+.warn{background:var(--warm-soft);border-left:3px solid var(--warm)}
+.risk{background:var(--red-soft);border-left:3px solid var(--red)}
+.note b,.warn b,.risk b{display:block;margin-bottom:2pt}
+
+table{width:100%;border-collapse:collapse;font-size:8.4pt;margin:6pt 0}
+th{background:var(--accent);color:#fff;text-align:left;padding:4pt 5pt;font-weight:600}
+td{border-bottom:1px solid var(--line);padding:4pt 5pt;vertical-align:top}
+tr:nth-child(even) td{background:var(--paper)}
+.sev{font-weight:700;white-space:nowrap}
+.sev-high{color:var(--red)} .sev-mid{color:var(--warm)} .sev-low{color:var(--muted)}
+
+.legend{display:flex;gap:12pt;font-size:8.2pt;color:var(--muted);margin:5pt 0 9pt;flex-wrap:wrap}
+.legend span{display:flex;align-items:center;gap:4pt}
+.dot{width:8pt;height:8pt;border-radius:2px;display:inline-block}
+
+figure{margin:8pt 0}
+figcaption{font-size:8pt;color:var(--muted);margin-top:3pt}
+svg{display:block;max-width:100%}
+.toc{font-size:9.4pt}
+.toc div{display:flex;justify-content:space-between;border-bottom:1px dotted var(--line);padding:3.5pt 0}
+.toc b{font-weight:600}
+.cols{display:flex;gap:10pt}
+.cols>div{flex:1}
+.tag{display:inline-block;font-size:7.4pt;padding:1pt 5pt;border-radius:8px;background:var(--accent-soft);color:var(--accent);margin-right:3pt}
+.tag-warm{background:var(--warm-soft);color:var(--warm)}
+.tag-red{background:var(--red-soft);color:var(--red)}
+
+h2,h3,h4{page-break-after:avoid}
+figure,.note,.warn,.risk,.legend{page-break-inside:avoid}
+thead{display:table-header-group}
