@@ -74,6 +74,7 @@ _MISSING_COLUMNS = (
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS receipt_status VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS details JSONB",
 )
 
 

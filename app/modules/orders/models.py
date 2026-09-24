@@ -29,6 +29,10 @@ class Order(Base):
     payment_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     payment_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receipt_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Получатель, код пункта выдачи, тариф — то же, что лежало в черновике.
+    # С оплатой отправление заводится уже после платежа, когда черновика
+    # нет, и без этой копии заводить его было бы нечем.
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

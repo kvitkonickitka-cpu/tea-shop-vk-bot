@@ -20,6 +20,7 @@ from app.modules.dialog import (
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import order_chat
+from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
 from app.modules.orders.state import OrderDraft
@@ -377,8 +378,7 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
 
 
 def _draft_weight_grams(draft: OrderDraft) -> int:
-    quantity = sum(item.get("quantity", 1) for item in draft.items) or 1
-    return settings.cdek_default_package_weight_grams * quantity
+    return shipping.weight_grams(draft.items)
 
 
 async def _cdek_delivery(
@@ -729,78 +729,28 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
 async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
     """Завести заказ в СДЭКе. None — если не вышло: заказ доведёт менеджер."""
-    number = f"vk{peer_id}-{int(time.time())}"
-    try:
-        registered = await cdek_client.register_order(
-            number=number,
-            tariff_code=draft.details["tariff_code"],
-            recipient_name=draft.details["recipient_name"],
-            recipient_phone=draft.details["recipient_phone"],
-            items=draft.items,
-            weight_grams=_draft_weight_grams(draft),
-            to_address=draft.details.get("address"),
-            delivery_point=draft.details.get("delivery_point"),
-            comment=f"Заказ из ВК, диалог {vk_client.dialog_link(peer_id)}",
-        )
-    except Exception:
-        logger.exception("Не завели заказ в СДЭКе для peer_id=%s", peer_id)
-        await _notify_manager(
-            peer_id,
-            f"⚠️ Заказ подтверждён, но в СДЭК не уехал — завести руками.\n"
-            f"Диалог: {vk_client.dialog_link(peer_id)}",
-            # Всё, что про заказы, идёт в свой чат; пусто — значит менеджеру.
-            chat_id=settings.telegram_orders_chat_id or None,
-        )
-        return None
-
-    logger.info("Заказ %s заведён в СДЭКе: uuid=%s", number, registered.uuid)
-    return registered.uuid
+    registered = await shipping.register(
+        peer_id=peer_id,
+        delivery_method=draft.delivery_method,
+        items=draft.items,
+        details=draft.details,
+        items_total=draft.items_total,
+        delivery_cost=draft.delivery_cost,
+    )
+    return registered.cdek_uuid
 
 
 async def _register_in_ozon(peer_id: int, draft: OrderDraft) -> str | None:
-    """Завести отправление в Ozon. None — если не вышло: доведёт менеджер.
-
-    Ответ у Ozon синхронный, в отличие от СДЭКа: номер отправления приходит
-    сразу, и догляда за «а приняли ли заявку» не нужно.
-    """
-    external_id = f"vk{peer_id}-{int(time.time())}"
-    try:
-        posting = await ozon_client.create_order(
-            external_id=external_id,
-            shipment_method_id=settings.ozon_shipment_method_id,
-            delivery_point_id=int(draft.details["ozon_point_id"]),
-            recipient_name=draft.details["recipient_name"],
-            phone_number=draft.details["recipient_phone"],
-            items=draft.items,
-            weight_grams=_draft_weight_grams(draft),
-            length_mm=settings.ozon_default_length_mm,
-            width_mm=settings.ozon_default_width_mm,
-            height_mm=settings.ozon_default_height_mm,
-            declared_value=draft.items_total,
-        )
-    except Exception:
-        logger.exception("Не завели заказ в Ozon для peer_id=%s", peer_id)
-        await _notify_manager(
-            peer_id,
-            f"⚠️ Заказ подтверждён, но в Ozon не уехал — завести руками.\n"
-            f"Диалог: {vk_client.dialog_link(peer_id)}",
-            chat_id=settings.telegram_orders_chat_id or None,
-        )
-        return None
-
-    # Цену сверяем с тем, что назвали клиенту: Ozon считает заново на
-    # создании, и разойтись она может — например, если пункт выбрали другой.
-    if draft.delivery_cost is not None and abs(posting.total - draft.delivery_cost) > 1:
-        logger.warning(
-            "Ozon посчитал доставку иначе, чем мы назвали клиенту: %s против %s (отправление %s)",
-            posting.total, draft.delivery_cost, posting.posting_number,
-        )
-
-    logger.info(
-        "Заказ %s заведён в Ozon: отправление %s, доставка %s руб",
-        external_id, posting.posting_number, posting.total,
+    """Завести отправление в Ozon. None — если не вышло: доведёт менеджер."""
+    registered = await shipping.register(
+        peer_id=peer_id,
+        delivery_method=draft.delivery_method,
+        items=draft.items,
+        details=draft.details,
+        items_total=draft.items_total,
+        delivery_cost=draft.delivery_cost,
     )
-    return posting.posting_number
+    return registered.ozon_posting
 
 
 async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> None:
