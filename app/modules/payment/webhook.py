@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 
+from app.modules.dialog import vk_client
 from app.modules.orders import order_chat, repository as orders_repository, shipping
 from app.modules.payment import yookassa_client
 
@@ -115,11 +116,62 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         order.ozon_posting = registered.ozon_posting or order.ozon_posting
 
     await order_chat.send(order, _paid_card(order, payment))
+    await _tell_client(order, registered)
     return {
         "платёж": payment.id,
         "заказ": order.id,
         "отправление": registered.cdek_uuid or registered.ozon_posting or "не заведено",
     }
+
+
+def client_message(order, registered: shipping.Registered) -> str:
+    """Что клиент получает в ВК, когда оплата прошла.
+
+    Текст собираем здесь и не зовём Claude: клиента в диалоге в этот момент
+    нет — уведомление приходит от ЮKassa, когда он уже ушёл из переписки, — и
+    формулировать тут нечего, все данные известны.
+    """
+    # :g — чтобы в сообщении клиенту не было «917.0 руб».
+    lines = ["✅ Оплата получена, спасибо!", f"Заказ №{order.id} на {order.total:g} руб."]
+
+    email = (order.details or {}).get("recipient_email")
+    if email:
+        lines.append(f"Чек придёт на {email}.")
+
+    if registered.ozon_posting:
+        # Клиенту важно не столько само отправление, сколько что делать
+        # дальше: номер он увидит в приложении Ozon и там же будет следить
+        # за доставкой, без нас и без менеджера.
+        lines.append(
+            f"Отправление Ozon: {registered.ozon_posting} — по нему посылку видно "
+            "в приложении и на сайте Ozon, там же отслеживается доставка."
+        )
+    elif registered.cdek_uuid:
+        lines.append(
+            "Передаём посылку в СДЭК. Трек-номер пришлём сюда, как только "
+            "СДЭК его выдаст."
+        )
+    else:
+        # Перевозчик не принял отправление (или заказ вообще без него).
+        # Пугать клиента нечем: менеджера мы уже предупредили.
+        lines.append("Заказ передан в работу, менеджер свяжется с вами по отправке.")
+
+    return "\n".join(lines)
+
+
+async def _tell_client(order, registered: shipping.Registered) -> None:
+    """Сказать клиенту, что деньги дошли.
+
+    Раньше об оплате узнавал только менеджер: карточка уходила в телеграм, а
+    клиент оставался с ссылкой на оплату и тишиной — заплатил и не знает,
+    увидели ли это.
+    """
+    try:
+        await vk_client.send_message(order.peer_id, client_message(order, registered))
+    except Exception:
+        # Отправление уже заведено, и заказ оплачен: молчать об ошибке нельзя,
+        # но и повторять всю обработку из-за неё тоже — ЮKassa получит 200.
+        logger.exception("Не сказали клиенту про оплату заказа %s", order.id)
 
 
 async def _on_refund(refund_id: str) -> dict:
