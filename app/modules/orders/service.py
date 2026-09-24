@@ -14,7 +14,8 @@
 import logging
 from typing import Any
 
-from app.modules.dialog import telegram_client, vk_client
+from app.messages import manager as manager_messages
+from app.modules.dialog import vk_client
 from app.modules.orders import order_chat, state, vk_orders_client
 from app.modules.orders.state import OrderDraft
 
@@ -53,14 +54,13 @@ def _items_of(raw_items: list[dict]) -> list[dict]:
 
 
 async def _tell_manager(order_id: int, user_id: int, text: str) -> None:
-    try:
-        await telegram_client.send_message(
-            f"🛒 <b>Заказ из витрины №{order_id}</b>\n{text}\n\n"
-            f"{vk_client.dialog_link(user_id)}",
-            chat_id=order_chat.chat_id(),
-        )
-    except Exception:
-        logger.exception("Не сказали менеджеру про витринный заказ %s", order_id)
+    await manager_messages.notify(
+        manager_messages.STOREFRONT_ORDER,
+        f"🛒 <b>Заказ из витрины №{order_id}</b>\n{text}\n\n"
+        f"{vk_client.dialog_link(user_id)}",
+        peer_id=user_id,
+        chat_id=order_chat.chat_id(),
+    )
 
 
 async def handle_new_order(order_event: dict[str, Any]) -> None:

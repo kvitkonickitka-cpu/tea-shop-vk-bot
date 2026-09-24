@@ -75,6 +75,16 @@ _MISSING_COLUMNS = (
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS receipt_status VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS details JSONB",
+    # Напоминания о неоплаченном счёте: по одной отметке на касание, иначе
+    # клиент получал бы их каждые пять минут вместе с тиком расписания.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_1_sent_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_2_sent_at TIMESTAMPTZ",
+    # Контроль ответа на вопрос клиента: напоминание менеджеру и сообщение
+    # клиенту уходят по одному разу, и отметки об этом нужны именно здесь.
+    "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS reping_sent_at TIMESTAMPTZ",
+    "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS client_ping_sent_at TIMESTAMPTZ",
+    # Резервный канал для недоставленных уведомлений менеджеру.
+    "ALTER TABLE manager_notifications ADD COLUMN IF NOT EXISTS fallback_sent_at TIMESTAMPTZ",
 )
 
 
@@ -100,6 +110,7 @@ async def init_models() -> None:
     from app.modules.orders import models as orders_models  # noqa: F401
     from app.modules.delivery import models as delivery_models  # noqa: F401
     from app.core import heartbeat as heartbeat_models  # noqa: F401
+    from app.messages import models as message_models  # noqa: F401
 
     try:
         async with _engine.begin() as conn:

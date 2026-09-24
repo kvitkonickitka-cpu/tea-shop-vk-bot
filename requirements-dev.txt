@@ -1,0 +1,5 @@
+# Для тестов и ручных проверок. В образ не попадает: Dockerfile ставит
+# только requirements.txt.
+-r requirements.txt
+pytest
+pytest-asyncio

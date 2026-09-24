@@ -60,10 +60,21 @@ class Payment:
     receipt_registration: str
     test: bool
     amount: float
+    # Кто и почему отменил платёж. От этого зависит, что сказать клиенту:
+    # отказ банка — повод предложить другую карту, истёкший срок клиент уже
+    # знает от нас, а отмену магазином объясняет менеджер сам.
+    cancellation_party: str = ""
+    cancellation_reason: str = ""
 
 
 def is_configured() -> bool:
     return bool(settings.yookassa_shop_id and settings.yookassa_secret_key)
+
+
+# Сколько цифр в телефоне по E.164: от восьми (короткие национальные) до
+# пятнадцати. Российский номер — одиннадцать, и с него же начинается счёт.
+_PHONE_MIN_DIGITS = 11
+_PHONE_MAX_DIGITS = 15
 
 
 def normalize_phone(raw: str) -> str:
@@ -78,13 +89,53 @@ def normalize_phone(raw: str) -> str:
     return digits
 
 
-def idempotence_key(order_key: str) -> str:
-    """Ключ, выведенный из заказа, а не случайный.
+def phone_is_valid(raw: str) -> bool:
+    """Годится ли телефон для чека.
 
-    Случайный ключ на повторной попытке создал бы второй платёж — то есть
-    списал бы с клиента дважды. Один и тот же заказ обязан давать один ключ.
+    Проверяем у себя, а не узнаём из отказа ЮKassa: её ошибка приходит в
+    момент выставления счёта — когда клиент уже сказал «оформляйте», — и
+    выглядит для него как поломка вместо простого «уточните номер».
     """
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-order:{order_key}"))
+    digits = normalize_phone(raw)
+    return _PHONE_MIN_DIGITS <= len(digits) <= _PHONE_MAX_DIGITS
+
+
+def receipt_customer(*, full_name: str, email: str, phone: str) -> dict:
+    """Кому выписан чек.
+
+    По 54-ФЗ электронный чек можно отправить на почту **или** на телефон, и
+    ЮKassa принимает любой из контактов. Раньше бот требовал почту, считая,
+    что чек доставляется только письмом, и клиент без почты не мог оформить
+    заказ вовсе.
+
+    Контакт кладём один: почту, если она есть, иначе телефон. Оба сразу не
+    нужны — чек уйдёт по одному, а лишние данные в фискальном документе не
+    нужны ни клиенту, ни нам.
+    """
+    customer: dict = {}
+    if full_name:
+        customer["full_name"] = full_name[:256]
+    if email:
+        customer["email"] = email[:254]
+        return customer
+    digits = normalize_phone(phone)
+    if digits:
+        customer["phone"] = digits
+    return customer
+
+
+def idempotence_key(order_key: str, attempt: int = 1) -> str:
+    """Ключ, выведенный из заказа и номера попытки, а не случайный.
+
+    Случайный ключ на повторе создал бы второй платёж — то есть списал бы с
+    клиента дважды. Поэтому одна попытка обязана давать один ключ.
+
+    А вот **новая** попытка обязана давать новый: первый счёт мог истечь или
+    не пройти, и тогда нужен именно второй платёж. Номер заказа при этом не
+    меняется — меняется только номер попытки.
+    """
+    suffix = f"#{attempt}" if attempt and attempt > 1 else ""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-order:{order_key}{suffix}"))
 
 
 def _money(value: float) -> dict:
@@ -145,6 +196,7 @@ def _describe_failure(response: httpx.Response) -> str:
 
 
 def _to_payment(data: dict) -> Payment:
+    cancellation = data.get("cancellation_details") or {}
     return Payment(
         id=data.get("id", ""),
         status=data.get("status", ""),
@@ -154,6 +206,8 @@ def _to_payment(data: dict) -> Payment:
         receipt_registration=data.get("receipt_registration", ""),
         test=bool(data.get("test")),
         amount=float((data.get("amount") or {}).get("value") or 0),
+        cancellation_party=str(cancellation.get("party") or ""),
+        cancellation_reason=str(cancellation.get("reason") or ""),
     )
 
 
@@ -197,6 +251,7 @@ async def create_payment(
     phone: str,
     full_name: str,
     description: str,
+    attempt: int = 1,
 ) -> Payment:
     """Создать платёж вместе с данными чека.
 
@@ -207,14 +262,11 @@ async def create_payment(
     rows = receipt_items(items, delivery_cost, delivery_label)
     total = sum(float(row["amount"]["value"]) for row in rows)
 
-    customer: dict = {}
-    if full_name:
-        customer["full_name"] = full_name[:256]
-    if email:
-        customer["email"] = email[:254]
-    phone_digits = normalize_phone(phone)
-    if phone_digits:
-        customer["phone"] = phone_digits
+    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
+    if not customer.get("email") and not customer.get("phone"):
+        raise YooKassaError(
+            "в чеке нет ни почты, ни телефона — ЮKassa такой платёж не примет"
+        )
 
     payload = {
         "amount": _money(total),
@@ -228,13 +280,31 @@ async def create_payment(
         "receipt": {"customer": customer, "items": rows},
     }
 
-    data = await _call("POST", "/payments", payload, key=idempotence_key(order_key))
+    data = await _call(
+        "POST", "/payments", payload, key=idempotence_key(order_key, attempt)
+    )
     payment = _to_payment(data)
     logger.info(
         "ЮKassa: платёж %s на %s руб, статус %s, чек %s",
         payment.id, payment.amount, payment.status, payment.receipt_registration or "—",
     )
     return payment
+
+
+async def cancel_payment(payment_id: str) -> Payment:
+    """Отменить платёж, который клиент так и не оплатил.
+
+    Работает не всегда: отменить можно платёж, ждущий подтверждения, а
+    `pending` ЮKassa закрывает сама по истечении срока и на запрос отвечает
+    отказом. Поэтому вызывающий обязан быть готов к `YooKassaError` — это
+    штатный исход, а не поломка.
+
+    Ключ идемпотентности выводим из идентификатора платежа: повторная
+    попытка отменить то же самое не должна считаться новой операцией.
+    """
+    key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-cancel:{payment_id}"))
+    data = await _call("POST", f"/payments/{payment_id}/cancel", {}, key=key)
+    return _to_payment(data)
 
 
 async def get_payment(payment_id: str) -> Payment:
@@ -270,10 +340,53 @@ async def get_refund(refund_id: str) -> Refund:
     возврата, а не платежа: спрашивать по его идентификатору `/payments/…`
     значит получить 404 и заставить ЮKassa повторять уведомление сутки.
     """
-    data = await _call("GET", f"/refunds/{refund_id}")
+    return _to_refund(await _call("GET", f"/refunds/{refund_id}"))
+
+
+def _to_refund(data: dict) -> Refund:
     return Refund(
         id=data.get("id", ""),
         payment_id=data.get("payment_id", ""),
         status=data.get("status", ""),
         amount=float((data.get("amount") or {}).get("value") or 0),
     )
+
+
+async def create_refund(
+    *,
+    payment_id: str,
+    amount: float,
+    items: list[dict],
+    delivery_cost: float,
+    delivery_label: str,
+    email: str,
+    phone: str,
+    full_name: str,
+) -> Refund:
+    """Вернуть деньги клиенту — с чеком возврата.
+
+    Нужен там, где бот обязан вернуть сам: клиент заплатил по счёту дважды
+    (например, по старой ссылке, которую ЮKassa всё ещё принимает). Держать
+    у себя вторые деньги нельзя, а ждать менеджера — значит держать.
+
+    Чек возврата обязателен на фискализированном магазине: иначе в ОФД
+    останется приход без расхода. Позиции те же, что и в чеке платежа.
+
+    Ключ идемпотентности выводим из платежа: повторное уведомление не
+    должно возвращать деньги дважды.
+    """
+    rows = receipt_items(items, delivery_cost, delivery_label)
+    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
+    payload = {
+        "payment_id": payment_id,
+        "amount": _money(amount),
+        "receipt": {"customer": customer, "items": rows},
+    }
+    key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-refund:{payment_id}"))
+    data = await _call("POST", "/refunds", payload, key=key)
+    refund = _to_refund(data)
+    logger.info(
+        "ЮKassa: возврат %s по платежу %s на %s руб, статус %s",
+        refund.id, payment_id, refund.amount, refund.status,
+    )
+    return refund

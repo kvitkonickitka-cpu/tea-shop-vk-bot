@@ -16,15 +16,14 @@ from __future__ import annotations
 
 import logging
 
-from app.modules.dialog import vk_client
+from app.messages import client as client_messages, templates
 from app.modules.orders import (
     cdek_watch,
-    client_notice,
     order_chat,
     repository as orders_repository,
     shipping,
 )
-from app.modules.payment import yookassa_client
+from app.modules.payment import service as payment_service, yookassa_client
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +35,6 @@ EVENT_REFUNDED = "refund.succeeded"
 
 # Статус заказа, по которому деньги вернули.
 STATUS_REFUNDED = "refunded"
-# Статус заказа, счёт по которому отменён.
-STATUS_CANCELED = "payment_canceled"
 
 
 async def handle(body: dict) -> dict:
@@ -67,16 +64,7 @@ async def handle(body: dict) -> dict:
         return await handle_paid(payment)
 
     if payment.status == "canceled":
-        order = await orders_repository.by_payment(payment_id)
-        if order is not None and order.status != STATUS_CANCELED:
-            await orders_repository.set_state(
-                order.id, status=STATUS_CANCELED, payment_status=payment.status
-            )
-            # Клиент видел ссылку на оплату и ждёт. Не сказать, что счёт
-            # отменён, значит оставить его гадать, дошли деньги или нет.
-            # Статус проверяем до записи: уведомление может прийти дважды.
-            await client_notice.tell(order, client_notice.payment_canceled(order))
-        return {"платёж": payment_id, "статус": payment.status}
+        return await _on_canceled(payment)
 
     if payment.status == "waiting_for_capture":
         # Такого быть не должно: платежи создаются с `capture: true`, то есть
@@ -94,18 +82,78 @@ async def handle(body: dict) -> dict:
     return {"платёж": payment_id, "статус": payment.status, "действий": "нет"}
 
 
+async def _on_canceled(payment: yookassa_client.Payment) -> dict:
+    """Платёж отменён. Что сказать клиенту — зависит от того, кто отменил.
+
+    ЮKassa кладёт это в `cancellation_details`. Отказ банка — повод
+    предложить другую карту; истёкший срок клиент уже знает от нас, и второе
+    сообщение было бы про то же; отмену магазином объясняет менеджер.
+    """
+    order = await orders_repository.by_payment(payment.id)
+    if order is None:
+        return {"платёж": payment.id, "действий": "нет, заказа не нашли"}
+
+    decision = payment_service.decide_on_cancel(
+        payment.cancellation_party, payment.cancellation_reason
+    )
+    logger.info(
+        "Платёж %s отменён: кто «%s», почему «%s» — решение «%s»",
+        payment.id, payment.cancellation_party or "—",
+        payment.cancellation_reason or "—", decision,
+    )
+
+    if order.status == payment_service.STATUS_UNPAID:
+        # Счёт уже закрыт — например, догляд успел раньше уведомления.
+        return {"платёж": payment.id, "действий": "нет, счёт уже закрыт"}
+
+    notice = templates.PAYMENT_DECLINED if decision == payment_service.ON_CANCEL_DECLINED else None
+    await payment_service.close_invoice(order, payment, notice=notice)
+    return {"платёж": payment.id, "статус": payment.status, "решение": decision}
+
+
 async def handle_paid(payment: yookassa_client.Payment) -> dict:
-    """Деньги пришли: заводим отправление и показываем заказ менеджеру."""
+    """Деньги пришли: заводим отправление и показываем заказ менеджеру.
+
+    Платёж может оказаться **старым** — по счёту, который мы уже закрыли.
+    Отменить pending у ЮKassa нельзя, она закрывает его сама и не сразу, так
+    что клиент вполне может заплатить по прежней ссылке. Если заказ ещё не
+    оплачен, такие деньги принимаются как обычные: они настоящие.
+
+    А вот вторые деньги по уже оплаченному заказу принимать нельзя — их
+    возвращаем сами, не дожидаясь менеджера.
+    """
+    known = await orders_repository.by_payment(payment.id)
+    if known is None:
+        logger.info("Платёж %s: заказа с таким платежом у нас нет", payment.id)
+        return {"платёж": payment.id, "действий": "нет, заказа не нашли"}
+
+    # Был ли этот счёт уже закрыт с нашей стороны — нужно менеджеру: заказ
+    # он видел закрытым, а деньги пришли.
+    attempt_row = await orders_repository.payment_of(payment.id)
+    was_closed = bool(attempt_row and attempt_row.closed_at)
+
     order = await orders_repository.claim_paid(
-        payment.id, payment.status, payment.receipt_registration
+        payment.id, payment.status, payment.receipt_registration, order_id=known.id
     )
     if order is None:
-        # Либо заказа с таким платежом у нас нет (чужое или поддельное
-        # уведомление), либо его уже обработали — повтор от ЮKassa.
-        logger.info("Платёж %s: заказ не найден или уже обработан", payment.id)
+        # Заказ уже оплачен. Либо это повтор уведомления по тому же платежу
+        # (ничего не делаем), либо деньги пришли вторым платежом — и тогда
+        # их надо вернуть.
+        fresh = await orders_repository.by_payment(payment.id)
+        if fresh is not None and fresh.payment_id != payment.id:
+            return await _refund_double_payment(fresh, payment)
+        logger.info("Платёж %s: заказ уже обработан", payment.id)
         return {"платёж": payment.id, "действий": "нет, уже обработан"}
 
-    logger.info("Заказ %s оплачен, заводим отправление", order.id)
+    # Остальные счёта по этому заказу больше не наши: пометим закрытыми,
+    # чтобы оплата по ним попала в ветку возврата, а не завела вторую
+    # посылку. Попытку отмены ЮKassa для pending обычно отклоняет.
+    await _close_other_payments(order.id, payment.id)
+
+    logger.info(
+        "Заказ %s оплачен%s, заводим отправление",
+        order.id, " по закрытому счёту" if was_closed else "",
+    )
     registered = await shipping.register(
         peer_id=order.peer_id,
         delivery_method=order.delivery_method,
@@ -133,48 +181,86 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         order.cdek_uuid = registered.cdek_uuid or order.cdek_uuid
         order.ozon_posting = registered.ozon_posting or order.ozon_posting
 
-    await order_chat.send(order, _paid_card(order, payment))
+    await order_chat.send(order, _paid_card(order, payment, was_closed=was_closed))
     await _tell_client(order, registered)
     return {
         "платёж": payment.id,
         "заказ": order.id,
+        "оплачен закрытый счёт": was_closed,
         "отправление": registered.cdek_uuid or registered.ozon_posting or "не заведено",
     }
 
 
-def client_message(order, registered: shipping.Registered) -> str:
-    """Что клиент получает в ВК, когда оплата прошла.
+async def _close_other_payments(order_id: int, paid_payment_id: str) -> None:
+    """Закрыть прочие счёта заказа: оплачен один, остальные не нужны."""
+    for row in await orders_repository.payments_of(order_id):
+        if row.payment_id == paid_payment_id or row.closed_at is not None:
+            continue
+        await orders_repository.close_payment(row.payment_id)
+        try:
+            await yookassa_client.cancel_payment(row.payment_id)
+        except Exception as error:
+            # Ожидаемо: pending ЮKassa отменять отказывается. Отметка у нас
+            # уже стоит, и оплата по такому счёту уйдёт в возврат.
+            logger.info("Счёт %s ЮKassa не отменила — %s", row.payment_id, error)
 
-    Текст собираем здесь и не зовём Claude: клиента в диалоге в этот момент
-    нет — уведомление приходит от ЮKassa, когда он уже ушёл из переписки, — и
-    формулировать тут нечего, все данные известны.
+
+async def _refund_double_payment(order, payment: yookassa_client.Payment) -> dict:
+    """Клиент заплатил дважды: вернуть вторые деньги и сказать об этом.
+
+    Такое случается, когда клиент платит по старой ссылке уже после того,
+    как оплатил новую: ЮKassa принимает оба платежа, потому что закрыть
+    pending по нашему запросу нельзя. Держать вторые деньги у себя нельзя,
+    и ждать с этим менеджера тоже: возврат делается сразу, с чеком.
     """
-    # :g — чтобы в сообщении клиенту не было «917.0 руб».
-    lines = ["✅ Оплата получена, спасибо!", f"Заказ №{order.id} на {order.total:g} руб."]
+    details = order.details or {}
+    logger.warning(
+        "Заказ %s: пришла вторая оплата платежом %s на %s руб — возвращаем",
+        order.id, payment.id, payment.amount,
+    )
 
-    email = (order.details or {}).get("recipient_email")
-    if email:
-        lines.append(f"Чек придёт на {email}.")
-
-    if registered.ozon_posting:
-        # Клиенту важно не столько само отправление, сколько что делать
-        # дальше: номер он увидит в приложении Ozon и там же будет следить
-        # за доставкой, без нас и без менеджера.
-        lines.append(
-            f"Отправление Ozon: {registered.ozon_posting} — по нему посылку видно "
-            "в приложении и на сайте Ozon, там же отслеживается доставка."
+    try:
+        refund = await yookassa_client.create_refund(
+            payment_id=payment.id,
+            amount=payment.amount,
+            items=order.items or [],
+            delivery_cost=float(order.delivery_cost or 0),
+            delivery_label=order.delivery_method or "",
+            email=details.get("recipient_email", ""),
+            phone=details.get("recipient_phone", ""),
+            full_name=details.get("recipient_name", ""),
         )
-    elif registered.cdek_uuid:
-        lines.append(
-            "Передаём посылку в СДЭК. Трек-номер пришлём сюда, как только "
-            "СДЭК его выдаст."
+    except Exception as error:
+        logger.exception("Не вернули вторую оплату по заказу %s", order.id)
+        await order_chat.send(
+            order, templates.manager_double_payment_stuck(order, payment, str(error)[:300])
         )
-    else:
-        # Перевозчик не принял отправление (или заказ вообще без него).
-        # Пугать клиента нечем: менеджера мы уже предупредили.
-        lines.append("Заказ передан в работу, менеджер свяжется с вами по отправке.")
+        await client_messages.send(
+            peer_id=order.peer_id,
+            ref=f"{client_messages.order_ref(order.id)}:{payment.id}",
+            event_type=templates.DOUBLE_PAYMENT_STUCK,
+            text=templates.double_payment_stuck(order),
+        )
+        return {"платёж": payment.id, "действий": "возврат не удался"}
 
-    return "\n".join(lines)
+    # Помечаем возврат у попытки: по этой отметке обработчик `refund.*`
+    # поймёт, что возврат наш, и не станет объявлять заказ возвращённым —
+    # заказ оплачен, посылка едет.
+    await orders_repository.close_payment(payment.id, refund_id=refund.id)
+
+    await order_chat.send(order, templates.manager_double_payment(order, payment, refund))
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=f"{client_messages.order_ref(order.id)}:{payment.id}",
+        event_type=templates.DOUBLE_PAYMENT,
+        text=templates.double_payment(order, payment.amount),
+    )
+    return {
+        "платёж": payment.id,
+        "заказ": order.id,
+        "возврат": refund.id,
+        "статус возврата": refund.status,
+    }
 
 
 async def _tell_client(order, registered: shipping.Registered) -> None:
@@ -184,12 +270,31 @@ async def _tell_client(order, registered: shipping.Registered) -> None:
     клиент оставался с ссылкой на оплату и тишиной — заплатил и не знает,
     увидели ли это.
     """
-    try:
-        await vk_client.send_message(order.peer_id, client_message(order, registered))
-    except Exception:
-        # Отправление уже заведено, и заказ оплачен: молчать об ошибке нельзя,
-        # но и повторять всю обработку из-за неё тоже — ЮKassa получит 200.
-        logger.exception("Не сказали клиенту про оплату заказа %s", order.id)
+    details = order.details or {}
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.PAID,
+        text=templates.paid(
+            order,
+            email=details.get("recipient_email", ""),
+            phone=details.get("recipient_phone", ""),
+            posting=registered.ozon_posting or "",
+            cdek=bool(registered.cdek_uuid),
+        ),
+        on_failure=_client_unreachable(order, templates.PAID),
+    )
+
+
+def _client_unreachable(order, event_type: str):
+    """Обработчик отказа ВК: клиент новость не получил, скажем менеджеру."""
+
+    async def report(error: str) -> None:
+        await order_chat.send(
+            order, templates.manager_client_unreachable(order, event_type, error)
+        )
+
+    return report
 
 
 async def _on_refund(refund_id: str) -> dict:
@@ -210,6 +315,14 @@ async def _on_refund(refund_id: str) -> dict:
         logger.info("Возврат %s: заказа с таким платежом у нас нет", refund.id)
         return {"возврат": refund.id, "действий": "нет, заказ не найден"}
 
+    # Наш собственный возврат второй оплаты: заказ при этом оплачен и
+    # посылка едет. Объявить его возвращённым значило бы остановить
+    # доставку и сказать клиенту про возврат дважды.
+    attempt_row = await orders_repository.payment_of(refund.payment_id)
+    if attempt_row is not None and attempt_row.refund_id == refund.id:
+        logger.info("Возврат %s — наш, по второй оплате заказа %s", refund.id, order.id)
+        return {"возврат": refund.id, "действий": "нет, это возврат второй оплаты"}
+
     if order.status == STATUS_REFUNDED:
         return {"возврат": refund.id, "действий": "нет, уже отмечен"}
 
@@ -219,13 +332,25 @@ async def _on_refund(refund_id: str) -> dict:
         f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order),
     )
     # Возврат делает менеджер в кабинете ЮKassa, и клиент об этом узнаёт
-    # только от банка — через неизвестно сколько. Скажем сами.
-    await client_notice.tell(order, client_notice.refunded(order, refund.amount))
+    # только от банка — через неизвестно сколько. Скажем сами. Сумма — та,
+    # что вернули: возврат бывает частичным, и сумма заказа тут соврала бы.
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.REFUNDED,
+        text=templates.refunded(order, refund.amount),
+        on_failure=_client_unreachable(order, templates.REFUNDED),
+    )
     return {"возврат": refund.id, "заказ": order.id}
 
 
-def _paid_card(order, payment: yookassa_client.Payment) -> str:
-    card = "💰 <b>Оплачено</b>\n" + order_chat.card(order)
+def _paid_card(order, payment: yookassa_client.Payment, *, was_closed: bool = False) -> str:
+    head = "💰 <b>Оплачено</b>"
+    if was_closed:
+        # Менеджер видел этот заказ закрытым: деньги пришли по счёту, про
+        # который мы клиенту уже сказали «срок истёк».
+        head = "💰 <b>Оплачено — по закрытому счёту</b>"
+    card = head + "\n" + order_chat.card(order)
     if payment.receipt_registration and payment.receipt_registration != "succeeded":
         # Чек регистрирует касса с ОФД, уже после платежа. Пока не
         # зарегистрирован — это не повод дёргать клиента, но менеджер должен

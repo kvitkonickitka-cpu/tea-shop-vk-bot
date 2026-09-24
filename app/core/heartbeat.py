@@ -60,6 +60,26 @@ async def note(name: str) -> None:
         logger.exception("Не записали отметку задачи %s", name)
 
 
+async def last_run(name: str) -> datetime | None:
+    """Когда названная задача отметилась в последний раз."""
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return None
+
+    try:
+        async with session_factory() as session:
+            row = await session.get(Heartbeat, name)
+    except Exception:
+        logger.exception("Не прочитали отметку задачи %s", name)
+        return None
+
+    if row is None:
+        return None
+    moment = row.last_run_at
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+
+
 async def describe() -> dict:
     """Что и когда отрабатывало — для /health."""
     try:

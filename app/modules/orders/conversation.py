@@ -10,6 +10,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
+from app.messages import manager as manager_messages, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -17,7 +18,6 @@ from app.modules.dialog import (
     escalation_state,
     vk_client,
     history as dialog_history,
-    telegram_client,
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import order_chat
@@ -73,24 +73,41 @@ _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / 
 _PAYMENT_STEP_WITH_KASSA = (
     "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
     "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
-    "обещай. Посылка уезжает к перевозчику только после оплаты, поэтому не "
-    "говори, что заказ уже отправлен или передан в доставку."
+    "обещай. Чек придёт на почту, если клиент её дал, иначе по номеру "
+    "телефона — почта для оформления необязательна. Посылка уезжает к "
+    "перевозчику только после оплаты, поэтому не говори, что заказ уже "
+    "отправлен или передан в доставку."
 )
 _PAYMENT_STEP_WITHOUT_KASSA = (
     "Ссылку на оплату бот не выставляет: её пришлёт менеджер, инструмент сам "
     "передаст ему заказ. Не обещай клиенту оплату «сейчас» и не придумывай ссылок."
 )
 
-# Ссылку подставляем из кода, а не пишем в промпт руками: иначе она разъедется
-# с той, что возвращают инструменты, и бот начнёт слать две разные.
-_ORDER_FLOW_PROMPT = (
-    _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
-    .replace("{map_url}", CDEK_OFFICES_MAP_URL)
-    .replace(
-        "{payment_step}",
-        _PAYMENT_STEP_WITH_KASSA if payment_service.is_enabled() else _PAYMENT_STEP_WITHOUT_KASSA,
+_ORDER_FLOW_TEMPLATE = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def order_flow_prompt() -> str:
+    """Инструкция по оформлению заказа под текущие настройки.
+
+    Собирается на каждый ход, а не один раз при импорте: шаг оплаты зависит
+    от того, подключена ли касса, и зафиксированный при загрузке модуля
+    текст переживал бы смену настройки — ровно так инструкция и разошлась с
+    кодом, обещая клиенту ссылку от менеджера при работающей кассе.
+
+    Ссылки на карты подставляем из кода, а не пишем в промпт руками: иначе
+    они разъедутся с теми, что возвращают инструменты, и бот начнёт слать
+    две разные.
+    """
+    return (
+        _ORDER_FLOW_TEMPLATE
+        .replace("{map_url}", CDEK_OFFICES_MAP_URL)
+        .replace(
+            "{payment_step}",
+            _PAYMENT_STEP_WITH_KASSA
+            if payment_service.is_enabled()
+            else _PAYMENT_STEP_WITHOUT_KASSA,
+        )
     )
-)
 
 # Способы доставки, которые бот вправе предложить. Почта России выключена
 # настройкой: считать её по-настоящему мы не умеем, а плоский тариф — это
@@ -110,8 +127,9 @@ _OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russi
 # ключей в ревизии бот спрашивал бы у клиента почту, а оплату всё равно
 # уводил менеджеру. Так ошибка настройки становилась видна клиенту.
 _EMAIL_TOOL_HINT = (
-    "Вместе с ними спроси электронную почту — на неё придёт чек, без неё "
-    "оплату не выставить."
+    "Почта необязательна: спроси её одной фразой — «если хотите получить чек "
+    "на почту, напишите её, иначе чек придёт по номеру телефона» — и не "
+    "возвращайся к этому вопросу второй раз."
     if payment_service.is_enabled()
     else ""
 )
@@ -203,9 +221,9 @@ TOOLS = [
                 "email": {
                     "type": "string",
                     "description": (
-                        "Электронная почта клиента — на неё придёт чек. "
-                        "Спрашивай вместе с ФИО и телефоном и объясняй, что "
-                        "она нужна именно для чека."
+                        "Электронная почта клиента — необязательная. Если её "
+                        "нет, чек уйдёт по номеру телефона, и заказ всё равно "
+                        "оформляется. Спроси один раз и не настаивай."
                     ),
                 },
             },
@@ -328,8 +346,9 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         lines.append(f"Получатель записан: {name}, {phone}.")
         if payment_service.is_enabled():
             lines.append(
-                f"Почта для чека: {email}." if email
-                else "Почта для чека ещё НЕ записана — без неё оплату не выставить."
+                f"Чек уйдёт на почту: {email}." if email
+                else "Почты нет — чек уйдёт по номеру телефона. Это нормально, "
+                     "второй раз про почту не спрашивай."
             )
     elif draft.delivery_method in ("cdek_pvz", "cdek_courier", "ozon_pvz"):
         lines.append(
@@ -731,6 +750,16 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
     if not name or not phone:
         return "Нужны и ФИО получателя, и телефон. Спроси у клиента то, чего не хватает."
 
+    # Телефон проверяем здесь, а не узнаём из отказа ЮKassa: её ошибка
+    # приходит на выставлении счёта, когда клиент уже сказал «оформляйте», и
+    # выглядит поломкой вместо простого «уточните номер».
+    if not yookassa_client.phone_is_valid(phone):
+        return (
+            f"Телефон «{phone}» не похож на настоящий: нужны 11 цифр, как "
+            "+7 900 123-45-67. Попроси клиента назвать номер целиком и вызови "
+            "инструмент ещё раз — остальное уже записано."
+        )
+
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone
     if email:
@@ -739,13 +768,14 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
     written = f"Получатель записан: {name}, {phone}"
     written += f", {email}." if email else "."
-    if payment_service.is_enabled() and not draft.details.get("recipient_email"):
-        # Без почты платёж не выставить, и узнать об этом лучше здесь, а не
-        # на подтверждении, когда клиент уже сказал «оформляйте».
+    if payment_service.is_enabled() and not email:
+        # Почта необязательна: чек уйдёт по телефону. Но спросить один раз
+        # стоит — письмо удобнее, — и важно не зациклиться на этом вопросе.
         return (
-            written + " Осталась электронная почта — на неё придёт чек, без "
-            "неё оплату не выставить. Спроси её и вызови set_recipient ещё "
-            "раз, вместе с ФИО и телефоном."
+            written + " Почты нет — чек уйдёт по номеру телефона, и этого "
+            "достаточно для оформления. Спроси один раз: «если хотите чек на "
+            "почту, напишите её» — и, получив ответ или отказ, вызывай "
+            "confirm_order, если клиент согласился оформить заказ."
         )
     return written + " Если клиент уже согласился оформить заказ, вызывай confirm_order."
 
@@ -776,13 +806,21 @@ async def _register_in_ozon(peer_id: int, draft: OrderDraft) -> str | None:
     return registered.ozon_posting
 
 
-async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> None:
+async def _escalate_for_payment(
+    peer_id: int, draft: OrderDraft, order_id, reason: str = ""
+) -> None:
     """Передать менеджеру заказ, который нужно довести до оплаты.
 
     Пока кассы нет, бот на этом шаге говорил «ссылка скоро будет» — и на том
     всё заканчивалось: клиент ждал ссылку, которую никто не собирался
     присылать, а менеджер о нём не знал. Поэтому подтверждённый заказ уходит
     обычной эскалацией, той же, что и любой вопрос, которого бот не тянет.
+
+    С включённой кассой сюда попадают только отказы: ЮKassa не ответила или
+    отказала, заказ не записался. Причину передаёт вызывающий — менеджеру
+    нужен текст ошибки, а не догадка. Раньше здесь стояло «Модуль оплаты не
+    подключён» намертво, и после включения кассы человек читал в телеграме
+    неправду: касса работает, а сорвался конкретный платёж.
 
     Эскалацию открываем даже если по этому клиенту уже открыта другая: вопрос
     оплаты не сливается с предыдущим, и потерять его дороже, чем написать
@@ -797,7 +835,12 @@ async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> No
         f"нужна ссылка на оплату. Состав: {items}. Доставка: "
         f"{draft.delivery_label or '—'}."
     )
-    reason = "Модуль оплаты не подключён — ссылку на оплату выставляет менеджер."
+    if not reason:
+        reason = (
+            "Оплата не подключена — ссылку на оплату выставляет менеджер."
+            if not payment_service.is_enabled()
+            else "Счёт не выставлен, причина не записана — смотреть лог контейнера."
+        )
 
     await escalation_state.mark_open(peer_id)
     try:
@@ -805,9 +848,16 @@ async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> No
     except Exception:
         logger.exception("Не записали эскалацию по оплате для peer_id=%s", peer_id)
 
+    # Подсказка с командой: у менеджера есть способ выставить счёт самому,
+    # и напоминать про него надо ровно там, где он понадобился.
+    how = (
+        f"\n\nВыставить счёт: <code>scripts/api.sh orders/{order_id}/invoice</code>"
+        if order_id
+        else "\n\nЗаказ в базу не попал — оформлять вручную."
+    )
     message = (
         f"<b>💳 Нужна ссылка на оплату</b>\n{html.escape(question)}\n\n"
-        f"{html.escape(reason)}\n\n{vk_client.dialog_link(peer_id)}"
+        f"{html.escape(reason)}{how}\n\n{vk_client.dialog_link(peer_id)}"
     )
     await _notify_manager(peer_id, message)
 
@@ -849,11 +899,16 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
             "Если не называл — спроси."
         )
 
-    if payment_service.is_enabled() and not draft.details.get("recipient_email"):
+    # Почта здесь не проверяется намеренно: чек по 54-ФЗ можно отправить и
+    # на телефон, ЮKassa принимает любой контакт. Требование почты не давало
+    # оформить заказ клиенту, который её не дал, — и упиралось это в наше
+    # собственное заблуждение, а не в закон.
+    if payment_service.is_enabled() and not yookassa_client.phone_is_valid(
+        draft.details.get("recipient_phone", "")
+    ):
         return ToolExecution(
-            "Для оплаты нужна электронная почта клиента — на неё придёт чек. "
-            "Спроси её и вызови set_recipient с ФИО, телефоном и почтой, а "
-            "потом confirm_order."
+            "Для чека нужен телефон получателя целиком — 11 цифр. Попроси "
+            "клиента назвать номер и вызови set_recipient, а потом confirm_order."
         )
 
     draft.stage = "confirmed"
@@ -904,6 +959,27 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     return ToolExecution(reply, client_reply=reply)
 
 
+async def _save_unpaid(peer_id: int, draft: OrderDraft, order_id) -> int | None:
+    """Сохранить заказ, счёт по которому выставить не удалось.
+
+    Без номера заказа менеджеру нечего выставлять: служебная команда работает
+    по номеру. Раньше в этой ветке заказ не сохранялся вовсе — оставались
+    только текст эскалации и черновик у клиента.
+    """
+    try:
+        if order_id:
+            return int(order_id)
+        order = await orders_repository.save_order(
+            peer_id, draft, status=payment_service.STATUS_PAYMENT_FAILED
+        )
+        draft.details["order_id"] = order.id
+        await state.set_draft(peer_id, draft)
+        return order.id
+    except Exception:
+        logger.exception("Не сохранили заказ без счёта для peer_id=%s", peer_id)
+        return None
+
+
 async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecution:
     """Подтверждение, когда оплата подключена: счёт вместо отправления.
 
@@ -922,22 +998,40 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
         draft.details["order_key"] = order_key
         await state.set_draft(peer_id, draft)
 
+    # Повторное подтверждение после закрытого счёта — это тот же заказ,
+    # вторая попытка оплаты. Номер заказа сохраняется, новым становится
+    # только ключ идемпотентности, выведенный из номера попытки.
+    order_id = draft.details.get("order_id")
+    attempt = 1
+    if order_id:
+        try:
+            attempt = await orders_repository.next_attempt(int(order_id))
+        except Exception:
+            logger.exception("Не узнали номер попытки оплаты заказа %s", order_id)
+
     try:
-        payment = await payment_service.create_payment(draft, order_key)
-    except yookassa_client.YooKassaUnknown:
+        payment = await payment_service.create_payment(draft, order_key, attempt)
+    except yookassa_client.YooKassaUnknown as error:
         # Ответа нет, и счёт мог создаться. Повторять нельзя — спишется
         # дважды; выставлять «не получилось» тоже нельзя, это может быть
         # неправдой. Поэтому зовём человека и оставляем черновик как есть.
         logger.exception("ЮKassa не ответила по заказу %s", order_key)
-        await _escalate_for_payment(peer_id, draft, None)
+        await _escalate_for_payment(
+            peer_id, draft, await _save_unpaid(peer_id, draft, order_id),
+            f"ЮKassa не дала точного ответа, счёт мог создаться — проверить в "
+            f"кабинете, прежде чем выставлять новый. {str(error)[:300]}",
+        )
         reply = (
             "Заказ подтверждён. Со ссылкой на оплату вышла заминка — менеджер "
             "пришлёт её сам, я уже передала ему ваш заказ."
         )
         return ToolExecution(reply, client_reply=reply)
-    except Exception:
+    except Exception as error:
         logger.exception("Не выставили счёт по заказу %s", order_key)
-        await _escalate_for_payment(peer_id, draft, None)
+        await _escalate_for_payment(
+            peer_id, draft, await _save_unpaid(peer_id, draft, order_id),
+            f"Счёт выставить не удалось: {type(error).__name__}: {str(error)[:300]}",
+        )
         reply = (
             "Заказ подтверждён, но выставить оплату не получилось — этим "
             "займётся менеджер, я уже передала ему ваш заказ."
@@ -945,31 +1039,62 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
         return ToolExecution(reply, client_reply=reply)
 
     try:
-        await orders_repository.save_order(
-            peer_id,
-            draft,
-            status=payment_service.STATUS_AWAITING_PAYMENT,
-            payment_id=payment.id,
-            payment_status=payment.status,
+        order = None
+        if order_id:
+            order = await orders_repository.reopen_for_payment(
+                int(order_id), draft, payment.id, payment.status
+            )
+        if order is None:
+            order = await orders_repository.save_order(
+                peer_id,
+                draft,
+                status=payment_service.STATUS_AWAITING_PAYMENT,
+                payment_id=payment.id,
+                payment_status=payment.status,
+            )
+        # Попытку записываем отдельно: по истёкшему счёту клиент всё ещё
+        # может заплатить (отменить pending у ЮKassa нельзя), и уведомление
+        # по нему должно находить заказ.
+        await orders_repository.register_payment(
+            order.id, payment.id,
+            attempt=attempt, status=payment.status, amount=payment.amount,
         )
-    except Exception:
+    except Exception as error:
         # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
         # у нас не будет. Зовём человека, пока клиент ещё в диалоге.
         logger.exception("Не сохранили заказ %s после выставления счёта", order_key)
-        await _escalate_for_payment(peer_id, draft, None)
+        await _escalate_for_payment(
+            peer_id, draft, None,
+            f"Счёт {payment.id} выставлен, но заказ не записался в базу — "
+            f"деньги придут, а следа у нас нет. {type(error).__name__}: "
+            f"{str(error)[:300]}",
+        )
 
     await state.clear_draft(peer_id)
 
+    where = templates.receipt_destination(
+        draft.details.get("recipient_email", ""), draft.details.get("recipient_phone", "")
+    )
     reply = f"Заказ оформлен. Оплатить: {payment.confirmation_url}"
-    reply += "\nПосле оплаты пришлём чек на почту и передадим заказ в доставку."
+    reply += f"\nПосле оплаты пришлём чек на {where} и передадим заказ в доставку."
     return ToolExecution(reply, client_reply=reply)
 
 
-async def _notify_manager(peer_id: int, message: str, chat_id: str | None = None) -> None:
-    try:
-        await telegram_client.send_message(message, chat_id=chat_id)
-    except Exception:
-        logger.exception("Failed to notify manager via Telegram for peer_id=%s", peer_id)
+async def _notify_manager(
+    peer_id: int,
+    message: str,
+    chat_id: str | None = None,
+    kind: str = manager_messages.ESCALATION,
+) -> bool:
+    """Передать уведомление менеджеру через очередь.
+
+    Возвращает, сохранено ли оно. Отправка может не удаться — телеграм
+    отвечает не всегда, — но сохранённое уведомление дошлёт следующий тик
+    расписания. Раньше здесь была одна попытка с таймаутом в две секунды: не
+    успел телеграм — и вопрос клиента исчезал, хотя ему уже сказали
+    «уточню у менеджера».
+    """
+    return await manager_messages.notify(kind, message, peer_id=peer_id, chat_id=chat_id)
 
 
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
@@ -1000,15 +1125,21 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     except Exception:
         logger.exception("Failed to record escalation in database for peer_id=%s", peer_id)
 
-    # Уведомление менеджеру ждём здесь же, но недолго: таймаут у клиента
-    # Telegram теперь 2 секунды, а не 10, и весь бюджет VK он больше съесть
-    # не может.
+    # Уведомление сначала попадает в очередь и только потом уходит в
+    # телеграм. Клиенту мы обещаем «уточню у менеджера» после того, как
+    # запись сохранена: не ушло сразу — уйдёт со следующим тиком.
     #
-    # Отправляли это в фон — не сработало: на serverless инстанс засыпает
-    # сразу после ответа, и задача умирала, не дойдя до сети. В логах не
-    # оставалось ни успеха, ни ошибки. Ограниченный по времени вызов в общем
-    # пути хуже по задержке, но он хотя бы случается и оставляет след.
-    await _notify_manager(peer_id, message)
+    # В фон это отправлять нельзя: на serverless инстанс засыпает сразу
+    # после ответа, и задача умирала, не дойдя до сети. В логах не
+    # оставалось ни успеха, ни ошибки.
+    stored = await _notify_manager(peer_id, message)
+    if not stored:
+        # База недоступна: обещание всё равно даём — вопрос уже отмечен
+        # открытым, и менеджер увидит его в отчёте, — но в логе это
+        # критическая запись, а не рядовая.
+        logger.critical(
+            "Вопрос клиента peer_id=%s нигде не сохранён: база недоступна", peer_id
+        )
 
     return ToolExecution(
         tool_result=(
@@ -1127,7 +1258,7 @@ async def _handle_turn(
     system_prompt = _BASE_SYSTEM_PROMPT
     if catalog_context:
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
-    system_prompt += f"\n\n{_ORDER_FLOW_PROMPT}"
+    system_prompt += f"\n\n{order_flow_prompt()}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
 
     if attached and attached.notes:
