@@ -122,19 +122,22 @@ async def test_manager_reply_closes_the_question(clean, channels, always_working
     assert (await escalation_watch.check_open_questions())["checked"] == 0
 
 
-async def test_days_off_do_not_count_as_waiting(clean, channels, monkeypatch):
-    """Пункт 4 ревью: выходной менеджера — не рабочее время."""
+def test_working_window_is_ten_to_eleven_pm():
+    """Менеджеры отвечают все семь дней, с 10:00 до 23:00 по Москве."""
     from datetime import datetime as dt
 
-    monkeypatch.setattr(escalation_watch.settings, "manager_days_off", [6])
+    def at(hour: int, minute: int = 0, day: int = 27):
+        # 27.09.2026 — воскресенье: выходных у менеджера нет.
+        return dt(2026, 9, day, hour, minute, tzinfo=worktime.MSK)
 
-    # Воскресенье, полдень: рабочих минут не набегает.
-    sunday = dt(2026, 9, 27, 12, 0, tzinfo=worktime.MSK)
-    assert worktime.is_day_off(sunday) is True
-    assert worktime.is_working(sunday) is False
-    assert worktime.working_day_phrase(sunday) == "в ближайший рабочий день"
+    assert worktime.is_working(at(9, 59)) is False
+    assert worktime.is_working(at(10)) is True
+    assert worktime.is_working(at(22, 59)) is True
+    assert worktime.is_working(at(23)) is False
 
-    # Суббота 19:00 → понедельник 11:00: два рабочих часа, воскресенье не в счёт.
-    saturday = dt(2026, 9, 26, 19, 0, tzinfo=worktime.MSK)
-    monday = dt(2026, 9, 28, 11, 0, tzinfo=worktime.MSK)
-    assert worktime.working_minutes_between(saturday, monday) == 120
+    # Воскресенье считается рабочим днём, как и любой другой.
+    assert worktime.working_day_phrase(at(12)) == "сегодня"
+    assert worktime.working_day_phrase(at(23, 30)) == "в ближайший рабочий день"
+
+    # Вечер воскресенья и утро понедельника: час до 23:00 плюс час после 10:00.
+    assert worktime.working_minutes_between(at(22), at(11, 0, day=28)) == 120
