@@ -9,6 +9,8 @@ async def save_order(
     cdek_uuid: str | None = None,
     ozon_posting: str | None = None,
     status: str = "confirmed",
+    payment_id: str | None = None,
+    payment_status: str | None = None,
 ) -> Order:
     session_factory = get_session_factory()
     total = draft.items_total + (draft.delivery_cost or 0)
@@ -24,6 +26,8 @@ async def save_order(
             status=status,
             cdek_uuid=cdek_uuid,
             ozon_posting=ozon_posting,
+            payment_id=payment_id,
+            payment_status=payment_status,
         )
         session.add(order)
         await session.commit()

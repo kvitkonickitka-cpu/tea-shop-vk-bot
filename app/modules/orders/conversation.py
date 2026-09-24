@@ -24,6 +24,7 @@ from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
 from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service
+from app.modules.payment import yookassa_client
 
 logger = logging.getLogger(__name__)
 
@@ -883,6 +884,10 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
         )
 
     draft.stage = "confirmed"
+
+    if payment_service.is_enabled():
+        return await _confirm_with_payment(peer_id, draft)
+
     cdek_uuid = await _register_in_cdek(peer_id, draft) if is_cdek else None
     ozon_posting = await _register_in_ozon(peer_id, draft) if is_ozon else None
 
@@ -904,15 +909,10 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     except Exception:
         logger.exception("Failed to persist order to database for peer_id=%s", peer_id)
 
-    if settings.payments_enabled:
-        payment_message = await payment_service.generate_payment_link(draft)
-    else:
-        # Кассы пока нет, поэтому оплату доводит человек — и узнаёт он об
-        # этом сразу, а не из отчёта через полчаса.
-        await _escalate_for_payment(peer_id, draft, getattr(order, "id", None))
-        payment_message = (
-            "Менеджер пришлёт ссылку на оплату — я уже передала ему ваш заказ."
-        )
+    # Кассы пока нет, поэтому оплату доводит человек — и узнаёт он об этом
+    # сразу, а не из отчёта через полчаса.
+    await _escalate_for_payment(peer_id, draft, getattr(order, "id", None))
+    payment_message = "Менеджер пришлёт ссылку на оплату — я уже передала ему ваш заказ."
 
     await state.clear_draft(peer_id)
 
@@ -928,6 +928,67 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
         )
     else:
         reply = f"Заказ подтверждён. {payment_message}"
+    return ToolExecution(reply, client_reply=reply)
+
+
+async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecution:
+    """Подтверждение, когда оплата подключена: счёт вместо отправления.
+
+    Отправление у перевозчика здесь НЕ заводится — оно создаётся после
+    того, как пришли деньги. Иначе каждый клиент, получивший ссылку и
+    передумавший, оставлял бы за собой настоящий заказ в кабинете СДЭКа или
+    Ozon, который кто-то должен удалять руками.
+
+    Номер заказа кладём в черновик до обращения к ЮKassa: из него выводится
+    ключ идемпотентности, и повторная попытка (очередь принесла событие
+    дважды) обязана вернуть тот же счёт, а не выставить второй.
+    """
+    order_key = draft.details.get("order_key")
+    if not order_key:
+        order_key = f"vk{peer_id}-{int(time.time())}"
+        draft.details["order_key"] = order_key
+        await state.set_draft(peer_id, draft)
+
+    try:
+        payment = await payment_service.create_payment(draft, order_key)
+    except yookassa_client.YooKassaUnknown:
+        # Ответа нет, и счёт мог создаться. Повторять нельзя — спишется
+        # дважды; выставлять «не получилось» тоже нельзя, это может быть
+        # неправдой. Поэтому зовём человека и оставляем черновик как есть.
+        logger.exception("ЮKassa не ответила по заказу %s", order_key)
+        await _escalate_for_payment(peer_id, draft, None)
+        reply = (
+            "Заказ подтверждён. Со ссылкой на оплату вышла заминка — менеджер "
+            "пришлёт её сам, я уже передала ему ваш заказ."
+        )
+        return ToolExecution(reply, client_reply=reply)
+    except Exception:
+        logger.exception("Не выставили счёт по заказу %s", order_key)
+        await _escalate_for_payment(peer_id, draft, None)
+        reply = (
+            "Заказ подтверждён, но выставить оплату не получилось — этим "
+            "займётся менеджер, я уже передала ему ваш заказ."
+        )
+        return ToolExecution(reply, client_reply=reply)
+
+    try:
+        await orders_repository.save_order(
+            peer_id,
+            draft,
+            status=payment_service.STATUS_AWAITING_PAYMENT,
+            payment_id=payment.id,
+            payment_status=payment.status,
+        )
+    except Exception:
+        # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
+        # у нас не будет. Зовём человека, пока клиент ещё в диалоге.
+        logger.exception("Не сохранили заказ %s после выставления счёта", order_key)
+        await _escalate_for_payment(peer_id, draft, None)
+
+    await state.clear_draft(peer_id)
+
+    reply = f"Заказ оформлен. Оплатить: {payment.confirmation_url}"
+    reply += "\nПосле оплаты пришлём чек на почту и передадим заказ в доставку."
     return ToolExecution(reply, client_reply=reply)
 
 

@@ -24,6 +24,11 @@ class Order(Base):
     # номеру отправления: по нему смотрят статус, печатают этикетку и
     # отменяют.
     ozon_posting: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Платёж в ЮKassa: идентификатор, его статус и статус регистрации чека.
+    # Чек регистрирует касса с ОФД, уже после платежа, поэтому статусы два.
+    payment_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payment_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receipt_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
