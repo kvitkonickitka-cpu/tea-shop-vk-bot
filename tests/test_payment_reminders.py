@@ -123,7 +123,7 @@ async def test_second_reminder_names_the_deadline(clean, sent, daytime):
 
     kind = await watch._remind(order, payment(), now)
     assert kind == templates.REMINDER_2
-    assert "перестанет работать в" in sent[-1]
+    assert "действителен до" in sent[-1]
     assert worktime.hhmm(watch.expires_at(order)) in sent[-1]
 
 
@@ -179,11 +179,12 @@ async def test_expired_invoice_closes_and_returns_the_draft(clean, sent, monkeyp
     assert draft.delivery_method == "ozon_pvz" and draft.delivery_cost == 117
     assert draft.details["recipient_name"] == "Иванов Иван"
     assert draft.details["ozon_point_id"] == 42
-    # Номер заказа сброшен: иначе повторное подтверждение вернуло бы тот же
-    # закрытый платёж по ключу идемпотентности.
-    assert "order_key" not in draft.details
+    # Номер заказа сохранён: повторное подтверждение — это тот же заказ,
+    # вторая попытка оплаты. Новым будет ключ идемпотентности.
+    assert draft.details["order_key"] == "vk4100-1"
+    assert draft.details["order_id"] == order.id
 
-    assert "Счёт по заказу" in sent[-1] and "новую ссылку" in sent[-1]
+    assert "Срок счёта по заказу" in sent[-1] and "новую ссылку" in sent[-1]
 
 
 async def test_expired_invoice_keeps_a_newer_draft(clean, sent, monkeypatch):
@@ -223,7 +224,7 @@ async def test_client_hears_about_closing_only_once(clean, sent, monkeypatch):
         order, payment(status="canceled"), notice=templates.PAYMENT_EXPIRED
     )
 
-    assert len([text for text in sent if "Счёт по заказу" in text]) == 1
+    assert len([text for text in sent if "Срок счёта" in text]) == 1
     async with clean() as session:
         row = await session.get(ClientNotice, (f"order:{order.id}", templates.PAYMENT_EXPIRED))
     assert row is not None and row.sent_at is not None

@@ -29,6 +29,8 @@ RECEIPT_DELAYED = "receipt_delayed"
 REMINDER_1 = "payment_reminder_1"
 REMINDER_2 = "payment_reminder_2"
 ESCALATION_WAITING = "escalation_waiting"
+DOUBLE_PAYMENT = "double_payment"
+DOUBLE_PAYMENT_STUCK = "double_payment_stuck"
 
 
 def amount(value) -> str:
@@ -110,10 +112,34 @@ def payment_declined(order) -> str:
 
 
 def payment_expired(order) -> str:
+    """Срок счёта истёк.
+
+    Про ссылку намеренно не говорим «перестала работать»: отменить
+    pending-платёж у ЮKassa нельзя, она закрывает его сама и не сразу — то
+    есть ссылка какое-то время ещё принимает оплату. Обещать обратное
+    значит врать; если клиент всё же заплатит по ней, оплату мы примем.
+    """
     return (
-        f"Счёт по заказу №{order.id} закрыт — ссылка больше не работает.\n"
+        f"Срок счёта по заказу №{order.id} истёк.\n"
         "Если заказ актуален, напишите сюда: пришлю новую ссылку, состав и "
         "доставка сохранились."
+    )
+
+
+def double_payment(order, refunded_amount) -> str:
+    return (
+        f"По заказу №{order.id} пришла повторная оплата — вернули "
+        f"{amount(refunded_amount)} ₽.\n"
+        "Заказ оплачен один раз и уже в работе, ничего делать не нужно. "
+        "Срок зачисления возврата зависит от вашего банка."
+    )
+
+
+def double_payment_stuck(order) -> str:
+    return (
+        f"По заказу №{order.id} пришла повторная оплата.\n"
+        "Разбираемся с возвратом — менеджер свяжется с вами "
+        f"{worktime.working_day_phrase()}. Заказ оплачен один раз и уже в работе."
     )
 
 
@@ -142,12 +168,16 @@ def reminder_1(order, link: str) -> str:
 
 
 def reminder_2(order, link: str, expires_at) -> str:
-    """Последнее напоминание: скоро ссылка перестанет работать."""
+    """Последнее напоминание: скоро срок счёта истечёт.
+
+    «Счёт действителен до», а не «ссылка перестанет работать»: закрыть
+    ссылку у ЮKassa мы не можем, она закрывается сама и не по нашим часам.
+    """
     return (
-        f"Ссылка на оплату заказа №{order.id} перестанет работать в "
-        f"{worktime.hhmm(expires_at)} по Москве.\n"
+        f"Счёт по заказу №{order.id} действителен до {worktime.hhmm(expires_at)} "
+        "по Москве.\n"
         f"Оплатить: {link}\n"
-        "Если не успеете — ничего страшного, напишите, и я пришлю новую."
+        "Если не успеете — ничего страшного, напишите, и я пришлю новую ссылку."
     )
 
 
@@ -188,4 +218,22 @@ def manager_escalation_reping(question: str, reason: str, waited_minutes: int, l
     return (
         f"⏰ Вопрос клиента ждёт ответа {waited_minutes // 60} ч рабочего времени\n"
         f"{question}\n\nПочему передано: {reason}\n\n{link}"
+    )
+
+
+def manager_double_payment(order, payment, refund) -> str:
+    return (
+        f"↩️ <b>Заказ №{order.id}: повторная оплата возвращена</b>\n"
+        f"Платёж {payment.id} на {amount(payment.amount)} руб — возврат "
+        f"{refund.id}, статус «{refund.status}».\n"
+        "Заказ оплачен один раз, отправление в работе. Клиенту сказали."
+    )
+
+
+def manager_double_payment_stuck(order, payment, error: str) -> str:
+    return (
+        f"🚨 <b>Заказ №{order.id}: повторная оплата НЕ возвращена</b>\n"
+        f"Платёж {payment.id} на {amount(payment.amount)} руб.\n"
+        f"ЮKassa отказала: {error}\n"
+        "Вернуть вручную в кабинете ЮKassa — деньги клиента у нас."
     )

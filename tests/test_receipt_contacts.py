@@ -59,8 +59,9 @@ async def test_confirm_order_goes_through_without_email(clean, monkeypatch):
     """Главное изменение задачи: без почты заказ оформляется."""
     created: dict = {}
 
-    async def fake_create(draft, order_key):
+    async def fake_create(draft, order_key, attempt=1):
         created["order_key"] = order_key
+        created["attempt"] = attempt
         created["email"] = draft.details.get("recipient_email", "")
         created["phone"] = draft.details.get("recipient_phone", "")
         return yookassa_client.Payment(

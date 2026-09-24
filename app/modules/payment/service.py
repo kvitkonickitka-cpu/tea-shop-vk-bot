@@ -31,11 +31,14 @@ def is_enabled() -> bool:
     return settings.payments_enabled and yookassa_client.is_configured()
 
 
-async def create_payment(draft: OrderDraft, order_key: str) -> yookassa_client.Payment:
+async def create_payment(
+    draft: OrderDraft, order_key: str, attempt: int = 1
+) -> yookassa_client.Payment:
     """Выставить счёт по черновику. Исключения разбирает вызывающий."""
     details = draft.details
     return await yookassa_client.create_payment(
         order_key=order_key,
+        attempt=attempt,
         items=draft.items,
         delivery_cost=draft.delivery_cost or 0,
         delivery_label=draft.delivery_label or "",
@@ -91,11 +94,14 @@ async def close_invoice(order, payment, *, notice: str | None) -> None:
     )
 
     if payment.status == "pending":
+        # Отметка «закрыт» ставится у себя всегда, а отмену у ЮKassa она
+        # обычно отклоняет: pending закрывает сама и не по нашим часам.
+        # Поэтому счёт какое-то время ещё принимает оплату — и если клиент
+        # заплатит, `webhook.handle_paid` эти деньги примет, а не потеряет.
+        await orders_repository.close_payment(order.payment_id)
         try:
             await yookassa_client.cancel_payment(order.payment_id)
         except Exception as error:
-            # Штатный исход: `pending` ЮKassa закрывает сама и на запрос
-            # отвечает отказом. Заказ у нас уже закрыт, и это главное.
             logger.info("Заказ %s: ЮKassa не отменила платёж — %s", order.id, error)
 
     await restore_draft(order)
@@ -119,9 +125,10 @@ async def close_invoice(order, payment, *, notice: str | None) -> None:
 async def restore_draft(order) -> None:
     """Вернуть черновик на подтверждение, ничего не потеряв.
 
-    Номер заказа из деталей убираем намеренно: из него выводится ключ
-    идемпотентности ЮKassa, и с прежним номером повторное подтверждение
-    вернуло бы тот же — уже закрытый — платёж вместо нового счёта.
+    Номер заказа остаётся тем же: клиент видел его в переписке, и менять
+    номер из-за неудачной оплаты незачем. Новую попытку различает номер
+    попытки — из него выводится ключ идемпотентности ЮKassa, и повторное
+    подтверждение создаёт новый платёж, а не возвращает прежний.
 
     Если клиент успел собрать новый заказ, его черновик не трогаем: он
     важнее старого.
@@ -132,7 +139,10 @@ async def restore_draft(order) -> None:
         return
 
     details = dict(order.details or {})
-    details.pop("order_key", None)
+    # Номер заказа и его ключ сохраняем: при повторном подтверждении это
+    # тот же заказ, просто вторая попытка оплаты. Новым будет только ключ
+    # идемпотентности — он выводится из номера попытки.
+    details["order_id"] = order.id
     await state.set_draft(
         order.peer_id,
         OrderDraft(

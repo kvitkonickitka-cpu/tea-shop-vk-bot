@@ -970,8 +970,19 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
         draft.details["order_key"] = order_key
         await state.set_draft(peer_id, draft)
 
+    # Повторное подтверждение после закрытого счёта — это тот же заказ,
+    # вторая попытка оплаты. Номер заказа сохраняется, новым становится
+    # только ключ идемпотентности, выведенный из номера попытки.
+    order_id = draft.details.get("order_id")
+    attempt = 1
+    if order_id:
+        try:
+            attempt = await orders_repository.next_attempt(int(order_id))
+        except Exception:
+            logger.exception("Не узнали номер попытки оплаты заказа %s", order_id)
+
     try:
-        payment = await payment_service.create_payment(draft, order_key)
+        payment = await payment_service.create_payment(draft, order_key, attempt)
     except yookassa_client.YooKassaUnknown as error:
         # Ответа нет, и счёт мог создаться. Повторять нельзя — спишется
         # дважды; выставлять «не получилось» тоже нельзя, это может быть
@@ -1000,12 +1011,25 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
         return ToolExecution(reply, client_reply=reply)
 
     try:
-        await orders_repository.save_order(
-            peer_id,
-            draft,
-            status=payment_service.STATUS_AWAITING_PAYMENT,
-            payment_id=payment.id,
-            payment_status=payment.status,
+        order = None
+        if order_id:
+            order = await orders_repository.reopen_for_payment(
+                int(order_id), draft, payment.id, payment.status
+            )
+        if order is None:
+            order = await orders_repository.save_order(
+                peer_id,
+                draft,
+                status=payment_service.STATUS_AWAITING_PAYMENT,
+                payment_id=payment.id,
+                payment_status=payment.status,
+            )
+        # Попытку записываем отдельно: по истёкшему счёту клиент всё ещё
+        # может заплатить (отменить pending у ЮKassa нельзя), и уведомление
+        # по нему должно находить заказ.
+        await orders_repository.register_payment(
+            order.id, payment.id,
+            attempt=attempt, status=payment.status, amount=payment.amount,
         )
     except Exception as error:
         # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
