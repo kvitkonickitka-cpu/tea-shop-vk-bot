@@ -78,6 +78,7 @@
 - `app/modules/delivery/cdek_client.py` — тарифы, пункты выдачи, заказы СДЭК
 - `scripts/` — ручные проверки СДЭКа и Ozon, в деплое не участвуют;
   `scripts/api.sh <путь>` дёргает служебные эндпоинты, взяв адрес и токен из `.env`
+  `scripts/yookassa_probe.py` — разведка ЮKassa: чьи ключи, платёж, чек
 - `app/core/database.py` — подключение к базе и резервный режим
 - `app/core/diagnostics.py` — диагностика сети при недоступной базе
 
