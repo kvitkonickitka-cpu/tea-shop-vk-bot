@@ -32,6 +32,7 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.config import settings  # noqa: E402
+from app.modules.payment import yookassa_client  # noqa: E402
 
 _TIMEOUT_SECONDS = 30
 
@@ -92,38 +93,41 @@ async def whoami() -> None:
 
 
 async def create_payment(amount: float, email: str) -> None:
-    payload = {
-        "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-        "confirmation": {
-            "type": "redirect",
-            "return_url": settings.yookassa_return_url or "https://vk.com",
-        },
-        "capture": True,
-        "description": "Проверка интеграции, чай",
-        "metadata": {"проверка": "yookassa_probe"},
-        "receipt": {
-            "customer": {"email": email},
-            "items": [
-                {
-                    "description": "Те Гуань Инь, 100 г",
-                    "quantity": 1,
-                    "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-                    "vat_code": settings.yookassa_vat_code,
-                    "payment_mode": "full_prepayment",
-                    "payment_subject": "commodity",
-                    "measure": "piece",
-                }
-            ],
-        },
-    }
-    data = await _call("POST", "/payments", payload)
-    _show("Созданный платёж", data)
+    """Создать платёж тем же кодом, которым это делает бот.
 
-    url = (data.get("confirmation") or {}).get("confirmation_url")
-    if url:
-        print(f"Ссылка на оплату: {url}")
-    print(f"Идентификатор платежа: {data.get('id')}")
-    print(f"Регистрация чека: {data.get('receipt_registration', 'поле не пришло')}")
+    Намеренно через `yookassa_client`, а не своим запросом: песочница
+    проверяет формат, и проверять надо формат боевого кода, а не черновика
+    из скрипта.
+    """
+    items = [{"name": "Те Гуань Инь, 100 г", "quantity": 1, "price": amount}]
+    try:
+        payment = await yookassa_client.create_payment(
+            order_key=f"проверка-{uuid.uuid4().hex[:8]}",
+            items=items,
+            delivery_cost=0,
+            delivery_label="",
+            email=email,
+            phone="79001234567",
+            full_name="Иванов Иван Иванович",
+            description="Проверка интеграции",
+        )
+    except yookassa_client.YooKassaUnknown as error:
+        print(f"Ответа нет, платёж мог создаться: {error}")
+        print("Проверь историю платежей в кабинете, прежде чем пробовать снова.")
+        return
+    except yookassa_client.YooKassaError as error:
+        print(f"Отказ: {error}")
+        return
+
+    print(f"Платёж:     {payment.id}")
+    print(f"Статус:     {payment.status}, оплачен: {payment.paid}")
+    print(f"Сумма:      {payment.amount} руб")
+    print(f"Контур:     {'тестовый' if payment.test else 'БОЕВОЙ'}")
+    print(f"Чек:        {payment.receipt_registration or 'поле не пришло'}")
+    if payment.confirmation_url:
+        print(f"\nСсылка на оплату: {payment.confirmation_url}")
+        print("Открой её и заплати тестовой картой, потом посмотри состояние:")
+        print(f"  scripts/yookassa_probe.py --payment {payment.id}")
 
 
 async def payment_state(payment_id: str) -> None:
@@ -132,6 +136,8 @@ async def payment_state(payment_id: str) -> None:
     print(f"Статус: {data.get('status')}, оплачен: {data.get('paid')}")
     print(f"Регистрация чека: {data.get('receipt_registration', 'поле не пришло')}")
 
+    # В песочнице чек не формируется вовсе — там проверяется только формат
+    # данных. Пустой список здесь не поломка, а ожидаемое поведение.
     receipts = await _call("GET", f"/receipts?payment_id={payment_id}")
     _show("Чеки по платежу", receipts)
 
