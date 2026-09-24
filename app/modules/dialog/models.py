@@ -72,6 +72,15 @@ class Escalation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by_admin_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Когда менеджеру напомнили про вопрос и когда клиенту сказали, что он
+    # всё ещё у менеджера. По одному разу на вопрос: напоминание, которое
+    # приходит каждые пять минут, читается как поломка, а не как забота.
+    reping_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    client_ping_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class DialogReport(Base):

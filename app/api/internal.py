@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.messages import manager as manager_messages
 from app.modules import events
 from app.modules.catalog import vk_market
-from app.modules.dialog import telegram_client
+from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import cdek_watch
 from app.modules.payment import watch as payment_watch
@@ -116,6 +116,9 @@ async def _run_scheduled() -> dict:
     )
     result["reports"] = await _run_task(
         "Отчёты по диалогам", reports_service.send_pending_reports()
+    )
+    result["open_questions"] = await _run_task(
+        "Вопросы без ответа", escalation_watch.check_open_questions()
     )
     result["undelivered"] = await _run_task(
         "Отчёт о недоставленном менеджеру", reports_service.report_undelivered()

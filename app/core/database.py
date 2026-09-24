@@ -79,6 +79,10 @@ _MISSING_COLUMNS = (
     # клиент получал бы их каждые пять минут вместе с тиком расписания.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_1_sent_at TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_2_sent_at TIMESTAMPTZ",
+    # Контроль ответа на вопрос клиента: напоминание менеджеру и сообщение
+    # клиенту уходят по одному разу, и отметки об этом нужны именно здесь.
+    "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS reping_sent_at TIMESTAMPTZ",
+    "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS client_ping_sent_at TIMESTAMPTZ",
 )
 
 
