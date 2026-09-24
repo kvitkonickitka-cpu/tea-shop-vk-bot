@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request, Response
 from app.core import heartbeat
 from app.core.config import settings
 from app.modules import events
+from app.modules.catalog import vk_market
 from app.modules.dialog import telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import cdek_watch
@@ -162,6 +163,51 @@ async def telegram_ping(request: Request):
 
     logger.info("Проверка связи: сообщение ушло в %s", where)
     return {"chat": where, "sent": True}
+
+
+@router.post("/internal/catalog/vk")
+async def probe_vk_market(request: Request):
+    """Что лежит в витрине сообщества: разведка перед зеркалом ассортимента.
+
+    Ассортимент бота пока живёт в `catalog.json` внутри образа, а в группе
+    уже есть и цены, и описания, и признак доступности. Прежде чем делать
+    зеркало, надо увидеть живые данные: заведены ли фасовки вариантами,
+    включён ли учёт остатков, у всех ли товаров есть описание.
+
+    Только чтение: `?limit=5` — сколько товаров разобрать подробно,
+    `?raw=1` — добавить сырой ответ первого товара, как его отдал ВК.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    params = request.query_params
+    try:
+        limit = max(1, min(int(params.get("limit") or 5), 20))
+    except ValueError:
+        limit = 5
+
+    try:
+        result = await vk_market.probe(limit=limit)
+    except Exception as error:
+        # Без exception(): в трассировке запроса может оказаться токен
+        # сообщества, а логи читает больше людей, чем стоило бы.
+        safe = _hide_token(str(error))
+        logger.error("Витрину ВК прочитать не вышло: %s", safe)
+        return {"error": safe[:300]}
+
+    if params.get("raw"):
+        try:
+            response = await vk_market.get_items(count=1)
+            result["сырой товар"] = (response.get("items") or [None])[0]
+        except Exception as error:
+            result["сырой товар"] = {"error": _hide_token(str(error))[:300]}
+
+    logger.info(
+        "Витрина ВК: товаров %s, получено %s",
+        result.get("всего товаров в магазине"),
+        result.get("получено за один запрос"),
+    )
+    return result
 
 
 @router.post("/internal/ozon/sync")
