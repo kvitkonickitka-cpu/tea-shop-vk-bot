@@ -13,13 +13,15 @@
 from __future__ import annotations
 
 import logging
+import zlib
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages.models import ManagerNotification
-from app.modules.dialog import telegram_client
+from app.modules.dialog import telegram_client, vk_client
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +145,73 @@ async def _mark_failed(notification_id: int, attempts: int, error: str) -> None:
         row.attempts = attempts
         row.last_error = error[:500]
         row.next_attempt_at = datetime.now(timezone.utc) + _backoff(attempts)
+        payload = row.payload
+        kind = row.kind
+        order_id = row.order_id
+        fallback_done = row.fallback_sent_at is not None
         await session.commit()
-        if attempts >= MAX_ATTEMPTS:
-            logger.error(
-                "Уведомление %s менеджеру не доставлено после %s попыток: %s. "
-                "Дальше нужен человек — запись попадёт в отчёт.",
-                notification_id, attempts, error[:200],
-            )
+
+    if attempts >= MAX_ATTEMPTS:
+        logger.error(
+            "Уведомление %s менеджеру не доставлено после %s попыток: %s. "
+            "Дальше нужен человек — запись попадёт в отчёт.",
+            notification_id, attempts, error[:200],
+        )
+        if not fallback_done:
+            await _fallback_to_admin(notification_id, kind, order_id, payload, error)
+
+
+def _plain(text: str) -> str:
+    """Текст без телеграмной разметки: в ВК теги показываются как есть."""
+    for tag in ("<b>", "</b>", "<i>", "</i>", "<code>", "</code>"):
+        text = text.replace(tag, "")
+    return text
+
+
+async def _fallback_to_admin(
+    notification_id: int, kind: str, order_id: int | None, payload: str, error: str
+) -> None:
+    """Сказать администратору в ВК, что уведомление не дошло.
+
+    Второй канал нужен именно потому, что первый — телеграм. Отчёт о
+    недоставленном тоже уходит в телеграм, то есть при его недоступности не
+    доходит и он. Сообщение от имени сообщества идёт другой дорогой.
+    """
+    admin_id = settings.admin_vk_id
+    if not admin_id:
+        logger.error(
+            "Резервный канал не настроен (ADMIN_VK_ID пуст) — уведомление %s "
+            "останется только в базе и в логе.", notification_id,
+        )
+        return
+
+    about = f", заказ №{order_id}" if order_id else ""
+    text = (
+        "🚨 Уведомление менеджеру не доставлено в телеграм\n"
+        f"Тип: {kind}{about}. Попыток: {MAX_ATTEMPTS}.\n"
+        f"Ошибка: {error[:200]}\n\n"
+        f"Текст уведомления:\n{_plain(payload)[:800]}"
+    )
+    try:
+        await vk_client.send_message(
+            admin_id, text, random_id=zlib.crc32(f"outbox:{notification_id}".encode()) & 0x7FFFFFFF
+        )
+    except Exception:
+        logger.exception(
+            "И резервный канал не сработал: уведомление %s не доставлено никуда",
+            notification_id,
+        )
+        return
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            row = await session.get(ManagerNotification, notification_id)
+            if row is not None:
+                row.fallback_sent_at = datetime.now(timezone.utc)
+                await session.commit()
+    except Exception:
+        logger.exception("Не отметили отправку в резервный канал для %s", notification_id)
 
 
 async def flush(limit: int = _FLUSH_LIMIT) -> dict:

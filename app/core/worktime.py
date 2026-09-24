@@ -58,9 +58,17 @@ def quiet_until(moment: datetime | None = None) -> datetime:
     return target
 
 
-def is_working(moment: datetime | None = None) -> bool:
-    """Рабочие часы менеджера. Дни недели все: магазин работает без выходных."""
+def is_day_off(moment: datetime | None = None) -> bool:
+    """Выходной ли это день у менеджера. Пустой список — без выходных."""
     local = to_msk(moment or now_msk())
+    return local.weekday() in set(settings.manager_days_off or ())
+
+
+def is_working(moment: datetime | None = None) -> bool:
+    """Рабочее ли сейчас время у менеджера: и часы, и день недели."""
+    local = to_msk(moment or now_msk())
+    if is_day_off(local):
+        return False
     return settings.manager_work_hours_start <= local.hour < settings.manager_work_hours_end
 
 
@@ -81,7 +89,14 @@ def working_minutes_between(start: datetime, end: datetime) -> int:
     step = timedelta(minutes=1)
     # Потолок на случай очень старой записи: считать год по минуте незачем.
     limit = 60 * 24 * 14
-    while cursor < right and minutes <= limit:
+    checked = 0
+    while cursor < right and checked <= limit:
+        checked += 1
+        # Выходной день проматываем целиком: минуту за минутой по нему
+        # шагать незачем, а с выходными таких минут набирается много.
+        if is_day_off(cursor):
+            cursor = (cursor + timedelta(days=1)).replace(hour=0, minute=0)
+            continue
         if is_working(cursor):
             minutes += 1
         cursor += step
@@ -100,6 +115,7 @@ def parse_hour(value: int, default: int) -> int:
 __all__ = [
     "MSK",
     "hhmm",
+    "is_day_off",
     "is_quiet",
     "is_working",
     "now_msk",

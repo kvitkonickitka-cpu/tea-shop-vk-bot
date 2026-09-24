@@ -120,3 +120,21 @@ async def test_manager_reply_closes_the_question(clean, channels, always_working
 
     assert await escalation_state.is_open(PEER) is False
     assert (await escalation_watch.check_open_questions())["checked"] == 0
+
+
+async def test_days_off_do_not_count_as_waiting(clean, channels, monkeypatch):
+    """Пункт 4 ревью: выходной менеджера — не рабочее время."""
+    from datetime import datetime as dt
+
+    monkeypatch.setattr(escalation_watch.settings, "manager_days_off", [6])
+
+    # Воскресенье, полдень: рабочих минут не набегает.
+    sunday = dt(2026, 9, 27, 12, 0, tzinfo=worktime.MSK)
+    assert worktime.is_day_off(sunday) is True
+    assert worktime.is_working(sunday) is False
+    assert worktime.working_day_phrase(sunday) == "в ближайший рабочий день"
+
+    # Суббота 19:00 → понедельник 11:00: два рабочих часа, воскресенье не в счёт.
+    saturday = dt(2026, 9, 26, 19, 0, tzinfo=worktime.MSK)
+    monday = dt(2026, 9, 28, 11, 0, tzinfo=worktime.MSK)
+    assert worktime.working_minutes_between(saturday, monday) == 120

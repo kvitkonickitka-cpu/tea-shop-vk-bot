@@ -164,3 +164,68 @@ async def test_undelivered_report_is_sent_once_a_day(clean, telegram, monkeypatc
     # Второй раз в сутки не повторяем.
     second = await reports_service.report_undelivered()
     assert second["sent"] is False and len(reported) == 1
+
+
+async def test_admin_gets_a_vk_message_when_telegram_gives_up(clean, telegram, monkeypatch):
+    """Пункт 2 ревью: второй канал для того, что не дошло в телеграм."""
+    to_admin: list[dict] = []
+
+    async def to_vk(peer_id, text, random_id=None):
+        to_admin.append({"peer_id": peer_id, "text": text, "random_id": random_id})
+
+    monkeypatch.setattr(manager_messages.vk_client, "send_message", to_vk)
+    monkeypatch.setattr(manager_messages.settings, "admin_vk_id", 777001)
+
+    telegram["fail"] = True
+    await manager_messages.notify(
+        manager_messages.ESCALATION, "<b>Вопрос клиента</b>\nЕсть ли опт?", order_id=5, peer_id=9
+    )
+
+    saved = await rows(clean)
+    notification_id = saved[0].id
+
+    # Пока попытки не исчерпаны, администратора не трогаем.
+    assert to_admin == []
+
+    for _ in range(manager_messages.MAX_ATTEMPTS - 1):
+        async with clean() as session:
+            row = await session.get(ManagerNotification, notification_id)
+            row.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            await session.commit()
+        await manager_messages.flush()
+
+    assert len(to_admin) == 1, to_admin
+    assert to_admin[0]["peer_id"] == 777001
+    assert "не доставлено в телеграм" in to_admin[0]["text"]
+    assert "заказ №5" in to_admin[0]["text"]
+    # Разметку телеграма в ВК не показываем.
+    assert "<b>" not in to_admin[0]["text"] and "Вопрос клиента" in to_admin[0]["text"]
+
+    # Отметка стоит — второй раз администратора не будим.
+    async with clean() as session:
+        row = await session.get(ManagerNotification, notification_id)
+    assert row.fallback_sent_at is not None
+
+    async with clean() as session:
+        row = await session.get(ManagerNotification, notification_id)
+        row.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        row.attempts = manager_messages.MAX_ATTEMPTS - 1
+        await session.commit()
+    await manager_messages.flush()
+    assert len(to_admin) == 1
+
+
+async def test_without_admin_id_we_at_least_shout_in_the_log(clean, telegram, monkeypatch, caplog):
+    monkeypatch.setattr(manager_messages.settings, "admin_vk_id", 0)
+    telegram["fail"] = True
+    await manager_messages.notify(manager_messages.ORDER_CARD, "Карточка", order_id=6)
+
+    saved = await rows(clean)
+    for _ in range(manager_messages.MAX_ATTEMPTS - 1):
+        async with clean() as session:
+            row = await session.get(ManagerNotification, saved[0].id)
+            row.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            await session.commit()
+        await manager_messages.flush()
+
+    assert any("ADMIN_VK_ID" in record.message for record in caplog.records)

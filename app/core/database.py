@@ -83,6 +83,8 @@ _MISSING_COLUMNS = (
     # клиенту уходят по одному разу, и отметки об этом нужны именно здесь.
     "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS reping_sent_at TIMESTAMPTZ",
     "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS client_ping_sent_at TIMESTAMPTZ",
+    # Резервный канал для недоставленных уведомлений менеджеру.
+    "ALTER TABLE manager_notifications ADD COLUMN IF NOT EXISTS fallback_sent_at TIMESTAMPTZ",
 )
 
 

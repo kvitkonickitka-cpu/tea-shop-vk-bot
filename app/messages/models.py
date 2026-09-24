@@ -60,3 +60,9 @@ class ManagerNotification(Base):
         DateTime(timezone=True), nullable=True
     )
     last_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Когда о недоставке сказали администратору в ВК. Резервный канал нужен
+    # именно потому, что первый — телеграм: отчёт о недоставленном уходит
+    # туда же и при его недоступности тоже не дойдёт.
+    fallback_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
