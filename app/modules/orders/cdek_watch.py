@@ -20,7 +20,7 @@ from app.core.config import settings
 from app.core.database import get_session_factory
 from app.modules.delivery import cdek_client
 from app.modules.dialog import vk_client
-from app.modules.orders import order_chat, repository as orders_repository
+from app.modules.orders import client_notice, order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,19 @@ async def _tell_client_number(order: Order, number: str | None) -> None:
         logger.exception("Не сказали клиенту трек-номер по заказу %s", order.id)
 
 
+async def _tell_client_trouble(order: Order) -> None:
+    """Сказать клиенту, что посылка не поехала — но только если он заплатил.
+
+    Оплаченный заказ, который перевозчик не принял, для клиента выглядит как
+    молчание после списания денег: карточка с ошибкой уходила менеджеру, а
+    ему — ничего. Неоплаченный заказ ведёт менеджер, и лезть к клиенту с
+    внутренней заминкой незачем.
+    """
+    if order.payment_status != orders_repository.PAID:
+        return
+    await client_notice.tell(order, client_notice.shipment_trouble(order))
+
+
 async def _warn_manager(order: Order, what: str, details: str) -> None:
     text = (
         f"⚠️ Заказ №{order.id} {what}\n"
@@ -158,6 +171,7 @@ async def check_pending_orders() -> dict:
                         f"Состояние узнать не получается: {str(error)[:200]}\n"
                         f"Возможно, заказ удалили в кабинете. uuid {order.cdek_uuid}",
                     )
+                    await _tell_client_trouble(order)
                 continue
 
             if _is_rejected(data):
@@ -166,6 +180,7 @@ async def check_pending_orders() -> dict:
                 result["rejected"] += 1
                 logger.error("СДЭК отклонил заказ %s: %s", order.id, "; ".join(errors))
                 await _warn_manager(order, "отклонён СДЭКом", "\n".join(errors))
+                await _tell_client_trouble(order)
                 continue
 
             if _is_successful(data):
@@ -189,6 +204,7 @@ async def check_pending_orders() -> dict:
                     f"Заявка отправлена {age.total_seconds() // 60:.0f} мин назад, "
                     f"ответа нет. uuid {order.cdek_uuid}",
                 )
+                await _tell_client_trouble(order)
 
         await session.commit()
 

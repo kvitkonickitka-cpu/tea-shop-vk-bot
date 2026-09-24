@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 
 from app.core.database import get_session_factory
-from app.modules.orders import order_chat, repository as orders_repository
+from app.modules.orders import client_notice, order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 from app.modules.payment import service as payment_service, webhook, yookassa_client
 
@@ -111,9 +111,10 @@ async def check_pending() -> dict:
 
             if payment.status == "canceled":
                 await orders_repository.set_state(
-                    order.id, status="payment_canceled", payment_status=payment.status
+                    order.id, status=webhook.STATUS_CANCELED, payment_status=payment.status
                 )
                 result["canceled"] += 1
+                await client_notice.tell(order, client_notice.payment_canceled(order))
                 continue
 
             if age > _UNPAID_AFTER:
@@ -128,6 +129,10 @@ async def check_pending() -> dict:
                         f"Прошло больше суток, платёж в статусе «{payment.status}».",
                     ),
                 )
+                # Ссылка к этому моменту уже не работает, и клиент, который
+                # собирался оплатить завтра, упёрся бы в неё молча. Лучше
+                # сказать прямо и позвать оформить заново.
+                await client_notice.tell(order, client_notice.payment_expired(order))
             continue
 
         # Оплачен: следим за чеком.
@@ -149,5 +154,9 @@ async def check_pending() -> dict:
                     "По документации ЮKassa — обращаться в их поддержку.",
                 ),
             )
+            # Клиент ждёт чек письмом и не знает, что тот застрял на стороне
+            # кассы. Ждать от него вопроса «а где чек» — значит отвечать на
+            # него задним числом.
+            await client_notice.tell(order, client_notice.receipt_delayed(order))
 
     return result

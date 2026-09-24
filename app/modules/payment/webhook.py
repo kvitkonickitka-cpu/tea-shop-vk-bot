@@ -19,6 +19,7 @@ import logging
 from app.modules.dialog import vk_client
 from app.modules.orders import (
     cdek_watch,
+    client_notice,
     order_chat,
     repository as orders_repository,
     shipping,
@@ -35,6 +36,8 @@ EVENT_REFUNDED = "refund.succeeded"
 
 # Статус заказа, по которому деньги вернули.
 STATUS_REFUNDED = "refunded"
+# Статус заказа, счёт по которому отменён.
+STATUS_CANCELED = "payment_canceled"
 
 
 async def handle(body: dict) -> dict:
@@ -65,10 +68,14 @@ async def handle(body: dict) -> dict:
 
     if payment.status == "canceled":
         order = await orders_repository.by_payment(payment_id)
-        if order is not None:
+        if order is not None and order.status != STATUS_CANCELED:
             await orders_repository.set_state(
-                order.id, status="payment_canceled", payment_status=payment.status
+                order.id, status=STATUS_CANCELED, payment_status=payment.status
             )
+            # Клиент видел ссылку на оплату и ждёт. Не сказать, что счёт
+            # отменён, значит оставить его гадать, дошли деньги или нет.
+            # Статус проверяем до записи: уведомление может прийти дважды.
+            await client_notice.tell(order, client_notice.payment_canceled(order))
         return {"платёж": payment_id, "статус": payment.status}
 
     if payment.status == "waiting_for_capture":
@@ -211,6 +218,9 @@ async def _on_refund(refund_id: str) -> dict:
         order,
         f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order),
     )
+    # Возврат делает менеджер в кабинете ЮKassa, и клиент об этом узнаёт
+    # только от банка — через неизвестно сколько. Скажем сами.
+    await client_notice.tell(order, client_notice.refunded(order, refund.amount))
     return {"возврат": refund.id, "заказ": order.id}
 
 
