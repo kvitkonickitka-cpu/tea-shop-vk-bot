@@ -60,6 +60,11 @@ class Payment:
     receipt_registration: str
     test: bool
     amount: float
+    # Кто и почему отменил платёж. От этого зависит, что сказать клиенту:
+    # отказ банка — повод предложить другую карту, истёкший срок клиент уже
+    # знает от нас, а отмену магазином объясняет менеджер сам.
+    cancellation_party: str = ""
+    cancellation_reason: str = ""
 
 
 def is_configured() -> bool:
@@ -145,6 +150,7 @@ def _describe_failure(response: httpx.Response) -> str:
 
 
 def _to_payment(data: dict) -> Payment:
+    cancellation = data.get("cancellation_details") or {}
     return Payment(
         id=data.get("id", ""),
         status=data.get("status", ""),
@@ -154,6 +160,8 @@ def _to_payment(data: dict) -> Payment:
         receipt_registration=data.get("receipt_registration", ""),
         test=bool(data.get("test")),
         amount=float((data.get("amount") or {}).get("value") or 0),
+        cancellation_party=str(cancellation.get("party") or ""),
+        cancellation_reason=str(cancellation.get("reason") or ""),
     )
 
 
@@ -292,4 +300,6 @@ async def get_refund(refund_id: str) -> Refund:
         payment_id=data.get("payment_id", ""),
         status=data.get("status", ""),
         amount=float((data.get("amount") or {}).get("value") or 0),
+        cancellation_party=str(cancellation.get("party") or ""),
+        cancellation_reason=str(cancellation.get("reason") or ""),
     )

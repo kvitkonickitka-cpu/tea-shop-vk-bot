@@ -164,12 +164,12 @@ async def test_expired_invoice_closes_and_returns_the_draft(clean, sent, monkeyp
     monkeypatch.setattr(yookassa_client, "cancel_payment", fake_cancel)
     await state.clear_draft(PEER)
 
-    await watch._close_invoice(order, payment())
+    await payment_service.close_invoice(order, payment(), notice=templates.PAYMENT_EXPIRED)
 
     # Заказ закрыт, отказ ЮKassa в отмене не помешал.
     async with clean() as session:
         fresh = await session.get(Order, order.id)
-    assert fresh.status == watch.STATUS_UNPAID
+    assert fresh.status == payment_service.STATUS_UNPAID
     assert canceled == ["pay-r"]
 
     # Черновик вернулся на подтверждение и всё сохранил.
@@ -196,7 +196,9 @@ async def test_expired_invoice_keeps_a_newer_draft(clean, sent, monkeypatch):
                              items_total=1100.0, stage="collecting")
     await state.set_draft(PEER, fresh_draft)
 
-    await watch._close_invoice(order, payment(status="canceled"))
+    await payment_service.close_invoice(
+        order, payment(status="canceled"), notice=templates.PAYMENT_EXPIRED
+    )
 
     draft = await state.get_draft(PEER)
     assert draft.items[0]["name"] == "Да Хун Пао", "затёрли новый черновик клиента"
@@ -214,8 +216,12 @@ async def test_client_hears_about_closing_only_once(clean, sent, monkeypatch):
     monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
     await state.clear_draft(PEER)
 
-    await watch._close_invoice(order, payment(status="canceled"))
-    await watch._close_invoice(order, payment(status="canceled"))
+    await payment_service.close_invoice(
+        order, payment(status="canceled"), notice=templates.PAYMENT_EXPIRED
+    )
+    await payment_service.close_invoice(
+        order, payment(status="canceled"), notice=templates.PAYMENT_EXPIRED
+    )
 
     assert len([text for text in sent if "Счёт по заказу" in text]) == 1
     async with clean() as session:

@@ -46,7 +46,6 @@ _RECEIPT_STUCK_AFTER = timedelta(days=3)
 _GIVE_UP_AFTER = timedelta(days=7)
 _BATCH = 20
 
-STATUS_UNPAID = "payment_expired"
 RECEIPT_STUCK = "stuck"
 
 
@@ -159,68 +158,6 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
     return None
 
 
-async def _close_invoice(order: Order, payment: yookassa_client.Payment) -> None:
-    """Счёт прожил свой срок: закрыть его и вернуть клиенту черновик.
-
-    Порядок важен. Сначала статус — чтобы тик, пришедший через пять минут,
-    не начал всё заново. Потом отмена платежа у ЮKassa: `pending` она
-    отменять обычно отказывается (закрывает сама), и её отказ здесь
-    нормальный исход, а не поломка. Потом черновик: состав, доставка и
-    получатель сохранились, клиенту достаточно сказать «да».
-    """
-    await orders_repository.set_state(
-        order.id, status=STATUS_UNPAID, payment_status=payment.status
-    )
-
-    if payment.status == "pending":
-        try:
-            await yookassa_client.cancel_payment(order.payment_id)
-        except Exception as error:
-            # Штатный исход: `pending` ЮKassa закрывает сама и на запрос
-            # отвечает отказом. Заказ у нас уже закрыт, и это главное.
-            logger.info("Заказ %s: ЮKassa не отменила платёж — %s", order.id, error)
-
-    await _restore_draft(order)
-
-    await client_messages.send(
-        peer_id=order.peer_id,
-        ref=client_messages.order_ref(order.id),
-        event_type=templates.PAYMENT_EXPIRED,
-        text=templates.payment_expired(order),
-    )
-
-
-async def _restore_draft(order: Order) -> None:
-    """Вернуть черновик на подтверждение, ничего не потеряв.
-
-    Номер заказа из деталей убираем намеренно: из него выводится ключ
-    идемпотентности ЮKassa, и с прежним номером повторное подтверждение
-    вернуло бы тот же — уже закрытый — платёж вместо нового счёта.
-
-    Если клиент успел собрать новый заказ, его черновик не трогаем: он
-    важнее старого.
-    """
-    existing = await state.get_draft(order.peer_id)
-    if existing is not None:
-        logger.info("Заказ %s: у клиента уже есть черновик, старый не возвращаем", order.id)
-        return
-
-    details = dict(order.details or {})
-    details.pop("order_key", None)
-    await state.set_draft(
-        order.peer_id,
-        OrderDraft(
-            items=list(order.items or []),
-            items_total=float(order.items_total or 0),
-            delivery_method=order.delivery_method,
-            delivery_label=(details.get("delivery_label") or order.delivery_method or None),
-            delivery_cost=float(order.delivery_cost) if order.delivery_cost is not None else None,
-            details=details,
-            stage="awaiting_confirmation",
-        ),
-    )
-
-
 async def check_pending() -> dict:
     """Перечитать у ЮKassa всё, что ещё не досчитано."""
     result = {
@@ -286,23 +223,19 @@ async def check_pending() -> dict:
                 continue
 
             if payment.status == "canceled":
-                await orders_repository.set_state(
-                    order.id, status=webhook.STATUS_CANCELED, payment_status=payment.status
-                )
+                # Разбираем тем же кодом, что и уведомление: причина отмены
+                # решает, что сказать клиенту, а закрытие счёта одинаково.
                 result["canceled"] += 1
-                await client_messages.send(
-                    peer_id=order.peer_id,
-                    ref=client_messages.order_ref(order.id),
-                    event_type=templates.PAYMENT_DECLINED,
-                    text=templates.payment_declined(order),
-                )
+                await webhook._on_canceled(payment)
                 continue
 
             if now >= expires_at(order):
                 # Счёт прожил свой срок: закрываем, возвращаем черновик и
                 # говорим об этом обоим — клиенту и менеджеру.
                 result["unpaid"] += 1
-                await _close_invoice(order, payment)
+                await payment_service.close_invoice(
+                    order, payment, notice=templates.PAYMENT_EXPIRED
+                )
                 await order_chat.send(
                     order,
                     templates.manager_unpaid(

@@ -23,7 +23,7 @@ from app.modules.orders import (
     repository as orders_repository,
     shipping,
 )
-from app.modules.payment import yookassa_client
+from app.modules.payment import service as payment_service, yookassa_client
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,6 @@ EVENT_REFUNDED = "refund.succeeded"
 
 # Статус заказа, по которому деньги вернули.
 STATUS_REFUNDED = "refunded"
-# Статус заказа, счёт по которому отменён.
-STATUS_CANCELED = "payment_canceled"
 
 
 async def handle(body: dict) -> dict:
@@ -66,21 +64,7 @@ async def handle(body: dict) -> dict:
         return await handle_paid(payment)
 
     if payment.status == "canceled":
-        order = await orders_repository.by_payment(payment_id)
-        if order is not None and order.status != STATUS_CANCELED:
-            await orders_repository.set_state(
-                order.id, status=STATUS_CANCELED, payment_status=payment.status
-            )
-            # Клиент видел ссылку на оплату и ждёт. Не сказать, что счёт
-            # отменён, значит оставить его гадать, дошли деньги или нет.
-            await client_messages.send(
-                peer_id=order.peer_id,
-                ref=client_messages.order_ref(order.id),
-                event_type=templates.PAYMENT_DECLINED,
-                text=templates.payment_declined(order),
-                on_failure=_client_unreachable(order, templates.PAYMENT_DECLINED),
-            )
-        return {"платёж": payment_id, "статус": payment.status}
+        return await _on_canceled(payment)
 
     if payment.status == "waiting_for_capture":
         # Такого быть не должно: платежи создаются с `capture: true`, то есть
@@ -96,6 +80,35 @@ async def handle(body: dict) -> dict:
     # pending: ждать нечего, придёт следующее уведомление. Отвечаем успехом,
     # иначе ЮKassa будет повторять это сутки.
     return {"платёж": payment_id, "статус": payment.status, "действий": "нет"}
+
+
+async def _on_canceled(payment: yookassa_client.Payment) -> dict:
+    """Платёж отменён. Что сказать клиенту — зависит от того, кто отменил.
+
+    ЮKassa кладёт это в `cancellation_details`. Отказ банка — повод
+    предложить другую карту; истёкший срок клиент уже знает от нас, и второе
+    сообщение было бы про то же; отмену магазином объясняет менеджер.
+    """
+    order = await orders_repository.by_payment(payment.id)
+    if order is None:
+        return {"платёж": payment.id, "действий": "нет, заказа не нашли"}
+
+    decision = payment_service.decide_on_cancel(
+        payment.cancellation_party, payment.cancellation_reason
+    )
+    logger.info(
+        "Платёж %s отменён: кто «%s», почему «%s» — решение «%s»",
+        payment.id, payment.cancellation_party or "—",
+        payment.cancellation_reason or "—", decision,
+    )
+
+    if order.status == payment_service.STATUS_UNPAID:
+        # Счёт уже закрыт — например, догляд успел раньше уведомления.
+        return {"платёж": payment.id, "действий": "нет, счёт уже закрыт"}
+
+    notice = templates.PAYMENT_DECLINED if decision == payment_service.ON_CANCEL_DECLINED else None
+    await payment_service.close_invoice(order, payment, notice=notice)
+    return {"платёж": payment.id, "статус": payment.status, "решение": decision}
 
 
 async def handle_paid(payment: yookassa_client.Payment) -> dict:
