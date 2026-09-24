@@ -77,6 +77,16 @@ DELIVERY_METHODS = ["cdek_pvz", "cdek_courier", "ozon_pvz"] + (
 )
 _OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russian_post_enabled else ""
 
+# Почту спрашиваем только когда подключена оплата: чек ЮKassa доставляет
+# исключительно письмом, и без адреса платёж не выставить. Пока оплаты нет,
+# лишний вопрос клиенту ни к чему.
+_EMAIL_TOOL_HINT = (
+    "Вместе с ними спроси электронную почту — на неё придёт чек, без неё "
+    "оплату не выставить."
+    if settings.payments_enabled
+    else ""
+)
+
 TOOLS = [
     {
         "name": "propose_order",
@@ -153,13 +163,22 @@ TOOLS = [
         "description": (
             "Записать получателя заказа. Без ФИО и телефона отправление не "
             "завести ни у СДЭКа, ни у Ozon. Спрашивай их после того, как "
-            "клиент выбрал доставку и пункт выдачи."
+            "клиент выбрал доставку и пункт выдачи. "
+            + _EMAIL_TOOL_HINT
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "ФИО получателя"},
                 "phone": {"type": "string", "description": "Телефон получателя"},
+                "email": {
+                    "type": "string",
+                    "description": (
+                        "Электронная почта клиента — на неё придёт чек. "
+                        "Спрашивай вместе с ФИО и телефоном и объясняй, что "
+                        "она нужна именно для чека."
+                    ),
+                },
             },
             "required": ["name", "phone"],
         },
@@ -275,8 +294,14 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     # инструмент не вызвала — и узнаёт об этом только при подтверждении.
     name = draft.details.get("recipient_name")
     phone = draft.details.get("recipient_phone")
+    email = draft.details.get("recipient_email")
     if name and phone:
         lines.append(f"Получатель записан: {name}, {phone}.")
+        if settings.payments_enabled:
+            lines.append(
+                f"Почта для чека: {email}." if email
+                else "Почта для чека ещё НЕ записана — без неё оплату не выставить."
+            )
     elif draft.delivery_method in ("cdek_pvz", "cdek_courier", "ozon_pvz"):
         lines.append(
             "Получатель ещё НЕ записан. Если клиент уже называл ФИО и телефон — "
@@ -678,16 +703,27 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
     name = (tool_input.get("name") or "").strip()
     phone = (tool_input.get("phone") or "").strip()
+    email = (tool_input.get("email") or "").strip()
     if not name or not phone:
         return "Нужны и ФИО получателя, и телефон. Спроси у клиента то, чего не хватает."
 
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone
+    if email:
+        draft.details["recipient_email"] = email
     await state.set_draft(peer_id, draft)
-    return (
-        f"Получатель записан: {name}, {phone}. Если клиент уже согласился "
-        "оформить заказ, вызывай confirm_order."
-    )
+
+    written = f"Получатель записан: {name}, {phone}"
+    written += f", {email}." if email else "."
+    if settings.payments_enabled and not draft.details.get("recipient_email"):
+        # Без почты платёж не выставить, и узнать об этом лучше здесь, а не
+        # на подтверждении, когда клиент уже сказал «оформляйте».
+        return (
+            written + " Осталась электронная почта — на неё придёт чек, без "
+            "неё оплату не выставить. Спроси её и вызови set_recipient ещё "
+            "раз, вместе с ФИО и телефоном."
+        )
+    return written + " Если клиент уже согласился оформить заказ, вызывай confirm_order."
 
 
 async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
@@ -837,6 +873,13 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
             "Если клиент уже называл их в переписке — вызови set_recipient с "
             "этими данными прямо сейчас, не переспрашивая, и потом confirm_order. "
             "Если не называл — спроси."
+        )
+
+    if settings.payments_enabled and not draft.details.get("recipient_email"):
+        return ToolExecution(
+            "Для оплаты нужна электронная почта клиента — на неё придёт чек. "
+            "Спроси её и вызови set_recipient с ФИО, телефоном и почтой, а "
+            "потом confirm_order."
         )
 
     draft.stage = "confirmed"
