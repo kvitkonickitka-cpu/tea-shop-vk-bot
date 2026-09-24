@@ -81,16 +81,31 @@ _PAYMENT_STEP_WITHOUT_KASSA = (
     "передаст ему заказ. Не обещай клиенту оплату «сейчас» и не придумывай ссылок."
 )
 
-# Ссылку подставляем из кода, а не пишем в промпт руками: иначе она разъедется
-# с той, что возвращают инструменты, и бот начнёт слать две разные.
-_ORDER_FLOW_PROMPT = (
-    _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
-    .replace("{map_url}", CDEK_OFFICES_MAP_URL)
-    .replace(
-        "{payment_step}",
-        _PAYMENT_STEP_WITH_KASSA if payment_service.is_enabled() else _PAYMENT_STEP_WITHOUT_KASSA,
+_ORDER_FLOW_TEMPLATE = _ORDER_FLOW_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def order_flow_prompt() -> str:
+    """Инструкция по оформлению заказа под текущие настройки.
+
+    Собирается на каждый ход, а не один раз при импорте: шаг оплаты зависит
+    от того, подключена ли касса, и зафиксированный при загрузке модуля
+    текст переживал бы смену настройки — ровно так инструкция и разошлась с
+    кодом, обещая клиенту ссылку от менеджера при работающей кассе.
+
+    Ссылки на карты подставляем из кода, а не пишем в промпт руками: иначе
+    они разъедутся с теми, что возвращают инструменты, и бот начнёт слать
+    две разные.
+    """
+    return (
+        _ORDER_FLOW_TEMPLATE
+        .replace("{map_url}", CDEK_OFFICES_MAP_URL)
+        .replace(
+            "{payment_step}",
+            _PAYMENT_STEP_WITH_KASSA
+            if payment_service.is_enabled()
+            else _PAYMENT_STEP_WITHOUT_KASSA,
+        )
     )
-)
 
 # Способы доставки, которые бот вправе предложить. Почта России выключена
 # настройкой: считать её по-настоящему мы не умеем, а плоский тариф — это
@@ -776,13 +791,21 @@ async def _register_in_ozon(peer_id: int, draft: OrderDraft) -> str | None:
     return registered.ozon_posting
 
 
-async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> None:
+async def _escalate_for_payment(
+    peer_id: int, draft: OrderDraft, order_id, reason: str = ""
+) -> None:
     """Передать менеджеру заказ, который нужно довести до оплаты.
 
     Пока кассы нет, бот на этом шаге говорил «ссылка скоро будет» — и на том
     всё заканчивалось: клиент ждал ссылку, которую никто не собирался
     присылать, а менеджер о нём не знал. Поэтому подтверждённый заказ уходит
     обычной эскалацией, той же, что и любой вопрос, которого бот не тянет.
+
+    С включённой кассой сюда попадают только отказы: ЮKassa не ответила или
+    отказала, заказ не записался. Причину передаёт вызывающий — менеджеру
+    нужен текст ошибки, а не догадка. Раньше здесь стояло «Модуль оплаты не
+    подключён» намертво, и после включения кассы человек читал в телеграме
+    неправду: касса работает, а сорвался конкретный платёж.
 
     Эскалацию открываем даже если по этому клиенту уже открыта другая: вопрос
     оплаты не сливается с предыдущим, и потерять его дороже, чем написать
@@ -797,7 +820,12 @@ async def _escalate_for_payment(peer_id: int, draft: OrderDraft, order_id) -> No
         f"нужна ссылка на оплату. Состав: {items}. Доставка: "
         f"{draft.delivery_label or '—'}."
     )
-    reason = "Модуль оплаты не подключён — ссылку на оплату выставляет менеджер."
+    if not reason:
+        reason = (
+            "Оплата не подключена — ссылку на оплату выставляет менеджер."
+            if not payment_service.is_enabled()
+            else "Счёт не выставлен, причина не записана — смотреть лог контейнера."
+        )
 
     await escalation_state.mark_open(peer_id)
     try:
@@ -924,20 +952,27 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
 
     try:
         payment = await payment_service.create_payment(draft, order_key)
-    except yookassa_client.YooKassaUnknown:
+    except yookassa_client.YooKassaUnknown as error:
         # Ответа нет, и счёт мог создаться. Повторять нельзя — спишется
         # дважды; выставлять «не получилось» тоже нельзя, это может быть
         # неправдой. Поэтому зовём человека и оставляем черновик как есть.
         logger.exception("ЮKassa не ответила по заказу %s", order_key)
-        await _escalate_for_payment(peer_id, draft, None)
+        await _escalate_for_payment(
+            peer_id, draft, None,
+            f"ЮKassa не дала точного ответа, счёт мог создаться — проверить в "
+            f"кабинете, прежде чем выставлять новый. {str(error)[:300]}",
+        )
         reply = (
             "Заказ подтверждён. Со ссылкой на оплату вышла заминка — менеджер "
             "пришлёт её сам, я уже передала ему ваш заказ."
         )
         return ToolExecution(reply, client_reply=reply)
-    except Exception:
+    except Exception as error:
         logger.exception("Не выставили счёт по заказу %s", order_key)
-        await _escalate_for_payment(peer_id, draft, None)
+        await _escalate_for_payment(
+            peer_id, draft, None,
+            f"Счёт выставить не удалось: {type(error).__name__}: {str(error)[:300]}",
+        )
         reply = (
             "Заказ подтверждён, но выставить оплату не получилось — этим "
             "займётся менеджер, я уже передала ему ваш заказ."
@@ -952,11 +987,16 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
             payment_id=payment.id,
             payment_status=payment.status,
         )
-    except Exception:
+    except Exception as error:
         # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
         # у нас не будет. Зовём человека, пока клиент ещё в диалоге.
         logger.exception("Не сохранили заказ %s после выставления счёта", order_key)
-        await _escalate_for_payment(peer_id, draft, None)
+        await _escalate_for_payment(
+            peer_id, draft, None,
+            f"Счёт {payment.id} выставлен, но заказ не записался в базу — "
+            f"деньги придут, а следа у нас нет. {type(error).__name__}: "
+            f"{str(error)[:300]}",
+        )
 
     await state.clear_draft(peer_id)
 
@@ -1127,7 +1167,7 @@ async def _handle_turn(
     system_prompt = _BASE_SYSTEM_PROMPT
     if catalog_context:
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
-    system_prompt += f"\n\n{_ORDER_FLOW_PROMPT}"
+    system_prompt += f"\n\n{order_flow_prompt()}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
 
     if attached and attached.notes:
