@@ -12,6 +12,7 @@ from app.modules import events
 from app.modules.dialog import telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import cdek_watch
+from app.modules.payment import watch as payment_watch
 from app.modules.queue import client as queue_client
 from app.modules.reports import service as reports_service
 
@@ -95,6 +96,9 @@ async def _run_scheduled() -> dict:
     """
     started = time.monotonic()
     result = {
+        # Платежи первыми: потерянное уведомление означает оплаченный заказ,
+        # который иначе не уедет никогда.
+        "payments": await _run_task("Проверка платежей", payment_watch.check_pending()),
         "cdek_orders": await _run_task("Проверка заказов СДЭК", cdek_watch.check_pending_orders()),
     }
 
@@ -264,6 +268,16 @@ async def ozon_posting(request: Request):
     except Exception as error:
         logger.exception("Не получилось с отправлением Ozon %s", number)
         return {"error": str(error)[:300]}
+
+
+@router.post("/internal/payments/check")
+async def check_payments(request: Request):
+    """Перечитать у ЮKassa платежи и чеки, не дожидаясь таймера."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    result = await payment_watch.check_pending()
+    logger.info("Проверка платежей: %s", result)
+    return result
 
 
 @router.post("/internal/cdek/check")

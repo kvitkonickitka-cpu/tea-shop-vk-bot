@@ -55,7 +55,7 @@ async def handle(body: dict) -> dict:
     )
 
     if payment.status == "succeeded" and payment.paid:
-        return await _on_paid(payment)
+        return await handle_paid(payment)
 
     if payment.status == "canceled":
         order = await orders_repository.by_payment(payment_id)
@@ -81,7 +81,7 @@ async def handle(body: dict) -> dict:
     return {"платёж": payment_id, "статус": payment.status, "действий": "нет"}
 
 
-async def _on_paid(payment: yookassa_client.Payment) -> dict:
+async def handle_paid(payment: yookassa_client.Payment) -> dict:
     """Деньги пришли: заводим отправление и показываем заказ менеджеру."""
     order = await orders_repository.claim_paid(
         payment.id, payment.status, payment.receipt_registration
