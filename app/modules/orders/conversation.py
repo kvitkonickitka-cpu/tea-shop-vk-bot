@@ -82,10 +82,15 @@ _OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russi
 # Почту спрашиваем только когда подключена оплата: чек ЮKassa доставляет
 # исключительно письмом, и без адреса платёж не выставить. Пока оплаты нет,
 # лишний вопрос клиенту ни к чему.
+#
+# Условие везде одно — `payment_service.is_enabled()`, то есть флаг И ключи.
+# Раньше часть проверок смотрела на один флаг: с поднятым флагом, но без
+# ключей в ревизии бот спрашивал бы у клиента почту, а оплату всё равно
+# уводил менеджеру. Так ошибка настройки становилась видна клиенту.
 _EMAIL_TOOL_HINT = (
     "Вместе с ними спроси электронную почту — на неё придёт чек, без неё "
     "оплату не выставить."
-    if settings.payments_enabled
+    if payment_service.is_enabled()
     else ""
 )
 
@@ -299,7 +304,7 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     email = draft.details.get("recipient_email")
     if name and phone:
         lines.append(f"Получатель записан: {name}, {phone}.")
-        if settings.payments_enabled:
+        if payment_service.is_enabled():
             lines.append(
                 f"Почта для чека: {email}." if email
                 else "Почта для чека ещё НЕ записана — без неё оплату не выставить."
@@ -716,7 +721,7 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
     written = f"Получатель записан: {name}, {phone}"
     written += f", {email}." if email else "."
-    if settings.payments_enabled and not draft.details.get("recipient_email"):
+    if payment_service.is_enabled() and not draft.details.get("recipient_email"):
         # Без почты платёж не выставить, и узнать об этом лучше здесь, а не
         # на подтверждении, когда клиент уже сказал «оформляйте».
         return (
@@ -826,7 +831,7 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
             "Если не называл — спроси."
         )
 
-    if settings.payments_enabled and not draft.details.get("recipient_email"):
+    if payment_service.is_enabled() and not draft.details.get("recipient_email"):
         return ToolExecution(
             "Для оплаты нужна электронная почта клиента — на неё придёт чек. "
             "Спроси её и вызови set_recipient с ФИО, телефоном и почтой, а "
