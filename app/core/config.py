@@ -11,7 +11,15 @@ _ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
+    # extra="ignore": в .env лежат не только настройки приложения. Там же
+    # живут ключи для ручных скриптов — например CONTAINER_URL для
+    # scripts/api.sh, — и по умолчанию pydantic падал на незнакомом ключе,
+    # обрушивая вообще всё, что читает .env. Платим за это тем, что опечатка
+    # в имени переменной теперь не заметна: значение просто останется
+    # умолчанием. Обмен осознанный — падать целиком хуже.
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     app_name: str = "Tea Shop VK Bot Backend"
     # Коммит, из которого собран образ. Подставляется при деплое и видна в
