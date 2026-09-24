@@ -13,6 +13,7 @@ from app.modules.dialog import telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import cdek_watch
 from app.modules.payment import watch as payment_watch
+from app.modules.payment import yookassa_client
 from app.modules.queue import client as queue_client
 from app.modules.reports import service as reports_service
 
@@ -268,6 +269,36 @@ async def ozon_posting(request: Request):
     except Exception as error:
         logger.exception("Не получилось с отправлением Ozon %s", number)
         return {"error": str(error)[:300]}
+
+
+@router.post("/internal/payments/me")
+async def payments_account(request: Request):
+    """Чей магазин отвечает на ключи ревизии. Ничего не создаёт.
+
+    Проверять надо именно отсюда: ключи в `.env` на ноутбуке и ключи,
+    вшитые в ревизию, — две независимые копии.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    if not yookassa_client.is_configured():
+        return {"error": "YOOKASSA_SHOP_ID/YOOKASSA_SECRET_KEY не заданы в ревизии"}
+
+    try:
+        data = await yookassa_client.account_info()
+    except Exception as error:
+        logger.exception("Не спросили у ЮKassa, чей это магазин")
+        return {"error": str(error)[:300]}
+
+    test = data.get("test")
+    return {
+        "магазин": data.get("account_id"),
+        "контур": "тестовый" if test else ("БОЕВОЙ" if test is False else "не сказано"),
+        "состояние": data.get("status"),
+        "фискализация": data.get("fiscalization"),
+        "способы оплаты": data.get("payment_methods"),
+        "оплата включена в боте": settings.payments_enabled,
+    }
 
 
 @router.post("/internal/payments/check")

@@ -311,6 +311,8 @@ VK ──> /vk/callback ──> очередь ──> триггер ──> / 
     scripts/api.sh ozon/sync                               догрузить каталог
     scripts/api.sh 'ozon/quote?city=Уфа&weight=400'        подбор пункта и цена
     scripts/api.sh 'ozon/posting?number=…&cancel=1'        отменить отправление
+    scripts/api.sh payments/me                             чей магазин ЮKassa в ревизии
+    scripts/api.sh payments/check                          перечитать платежи и чеки
     scripts/api.sh cdek/check                              сверка заказов с СДЭКом
     scripts/api.sh telegram/ping                           проверка чата заказов
 
@@ -671,6 +673,13 @@ workflow **литералами**, а не секретами: включени�
 В кабинете ЮKassa: Интеграция — HTTP-уведомления, адрес
 `https://<контейнер>/payments/yookassa`, события `payment.succeeded`,
 `payment.canceled`, `refund.succeeded`.
+
+**Проверять ключи надо из контейнера, а не с ноутбука:**
+`scripts/api.sh payments/me`. Ключи в локальном `.env` и ключи, вшитые в
+ревизию, — две независимые копии, и рабочий разведчик на ноутбуке про
+контейнер не говорит ничего. Эндпоинт зовёт `GET /me`, ничего не создаёт и
+отвечает: чей магазин, **тестовый он или боевой**, включена ли
+фискализация, и поднят ли флаг оплаты в самом боте.
 
 ### Что нужно настроить
 
