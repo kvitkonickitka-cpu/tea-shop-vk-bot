@@ -29,6 +29,14 @@ class Order(Base):
     payment_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     payment_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receipt_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Когда клиенту напоминали про неоплаченный счёт. Две отметки, потому
+    # что напоминания разные: первое мягкое, второе — «ссылка закроется».
+    reminder_1_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reminder_2_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Получатель, код пункта выдачи, тариф — то же, что лежало в черновике.
     # С оплатой отправление заводится уже после платежа, когда черновика
     # нет, и без этой копии заводить его было бы нечем.

@@ -75,6 +75,10 @@ _MISSING_COLUMNS = (
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS receipt_status VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS details JSONB",
+    # Напоминания о неоплаченном счёте: по одной отметке на касание, иначе
+    # клиент получал бы их каждые пять минут вместе с тиком расписания.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_1_sent_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_2_sent_at TIMESTAMPTZ",
 )
 
 

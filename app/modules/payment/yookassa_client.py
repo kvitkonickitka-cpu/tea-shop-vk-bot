@@ -237,6 +237,22 @@ async def create_payment(
     return payment
 
 
+async def cancel_payment(payment_id: str) -> Payment:
+    """Отменить платёж, который клиент так и не оплатил.
+
+    Работает не всегда: отменить можно платёж, ждущий подтверждения, а
+    `pending` ЮKassa закрывает сама по истечении срока и на запрос отвечает
+    отказом. Поэтому вызывающий обязан быть готов к `YooKassaError` — это
+    штатный исход, а не поломка.
+
+    Ключ идемпотентности выводим из идентификатора платежа: повторная
+    попытка отменить то же самое не должна считаться новой операцией.
+    """
+    key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-cancel:{payment_id}"))
+    data = await _call("POST", f"/payments/{payment_id}/cancel", {}, key=key)
+    return _to_payment(data)
+
+
 async def get_payment(payment_id: str) -> Payment:
     """Состояние платежа. Им же проверяется подлинность уведомления."""
     return _to_payment(await _call("GET", f"/payments/{payment_id}"))

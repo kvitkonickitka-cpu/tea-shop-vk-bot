@@ -12,6 +12,12 @@
 касса с ОФД — позже и асинхронно. Документация прямо говорит: если чек
 висит в `pending` трое суток, идти в поддержку. Значит за этим надо
 следить, иначе узнаем от налоговой.
+
+Здесь же живут напоминания о неоплаченном счёте. **Срок жизни счёта наш, а
+не ЮKassa:** она платёж сама не закрывает и никакого «истекает в» в ответе
+не присылает — «сутки» всегда были нашим таймером
+(`payment_unpaid_after_hours`). От него и считается, когда напомнить и
+когда счёт закрыть.
 """
 
 from __future__ import annotations
@@ -21,19 +27,19 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 
+from app.core import worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages import client as client_messages, templates
-from app.modules.orders import order_chat, repository as orders_repository
+from app.modules.dialog import history as dialog_history
+from app.modules.dialog.models import ConversationMessage
+from app.modules.orders import order_chat, repository as orders_repository, state
 from app.modules.orders.models import Order
+from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service, webhook, yookassa_client
 
 logger = logging.getLogger(__name__)
 
-# Сколько ждать оплаты, прежде чем показать заказ менеджеру. Ссылка живёт
-# ограниченное время, и висящий сутки заказ — это либо передумавший клиент,
-# либо потерянное уведомление; и то и другое человеку стоит увидеть.
-_UNPAID_AFTER = timedelta(hours=24)
 # Срок из документации ЮKassa: дольше — в поддержку.
 _RECEIPT_STUCK_AFTER = timedelta(days=3)
 # Совсем старые не трогаем: опрашивать их по кругу незачем.
@@ -44,9 +50,183 @@ STATUS_UNPAID = "payment_expired"
 RECEIPT_STUCK = "stuck"
 
 
+async def _dialogue_is_live(order: Order) -> bool:
+    """Идёт ли разговор прямо сейчас — тогда напоминание лишнее.
+
+    Два случая. Клиент написал только что: он в диалоге, и робот с
+    напоминанием выглядит глухим. Или менеджер ответил после выставления
+    счёта: заказ ведёт человек, и бот не должен лезть поперёд него.
+    """
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return False
+
+    talked_after = datetime.now(timezone.utc) - timedelta(
+        minutes=settings.payment_reminder_skip_if_talked_minutes
+    )
+    async with session_factory() as session:
+        client_said = await session.scalar(
+            select(ConversationMessage.id)
+            .where(
+                ConversationMessage.peer_id == order.peer_id,
+                ConversationMessage.role == "user",
+                ConversationMessage.created_at > talked_after,
+            )
+            .limit(1)
+        )
+        if client_said is not None:
+            return True
+
+        manager_said = await session.scalar(
+            select(ConversationMessage.id)
+            .where(
+                ConversationMessage.peer_id == order.peer_id,
+                ConversationMessage.author == dialog_history.AUTHOR_MANAGER,
+                ConversationMessage.created_at > order.created_at,
+            )
+            .limit(1)
+        )
+    return manager_said is not None
+
+
+def _created_at(order: Order) -> datetime:
+    """Момент создания заказа со часовым поясом: база отдаёт его наивным."""
+    created = order.created_at
+    return created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
+
+
+def expires_at(order: Order) -> datetime:
+    """Когда счёт закрывается. Срок наш, поэтому считается от создания."""
+    return _created_at(order) + timedelta(hours=settings.payment_unpaid_after_hours)
+
+
+async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime) -> str | None:
+    """Напомнить про неоплаченный счёт, если пора и если это уместно.
+
+    Возвращает тип отправленного напоминания или None. Тихие часы не
+    отменяют напоминание, а откладывают его: тик расписания придёт снова
+    утром, и отметки в базе всё ещё пусты. Исключение — второе напоминание:
+    если к утру счёт уже закроется, оно бессмысленно, и мы его пропускаем.
+    """
+    if payment.status != "pending":
+        return None
+    if not payment.confirmation_url:
+        # Без ссылки напоминание превращается в «заплатите, но не скажу как».
+        logger.info("Заказ %s: у платежа нет ссылки, напоминание пропускаем", order.id)
+        return None
+
+    deadline = expires_at(order)
+    second_due = deadline - timedelta(minutes=settings.payment_reminder_2_before_expiry_minutes)
+    first_due = _created_at(order) + timedelta(
+        minutes=settings.payment_reminder_1_after_minutes
+    )
+
+    if order.reminder_2_sent_at is None and now >= second_due:
+        if worktime.is_quiet(now) and worktime.quiet_until(now) >= deadline:
+            # К утру ссылка уже не будет работать — вместо напоминания
+            # клиент получит новость о закрытии счёта, и это честнее.
+            logger.info("Заказ %s: второе напоминание потеряло смысл до утра", order.id)
+            await orders_repository.set_state(order.id, reminder_2_sent_at=now)
+            return None
+        if worktime.is_quiet(now):
+            return None
+        if await _dialogue_is_live(order):
+            return None
+        sent = await client_messages.send(
+            peer_id=order.peer_id,
+            ref=client_messages.order_ref(order.id),
+            event_type=templates.REMINDER_2,
+            text=templates.reminder_2(order, payment.confirmation_url, deadline),
+        )
+        await orders_repository.set_state(order.id, reminder_2_sent_at=now)
+        return templates.REMINDER_2 if sent else None
+
+    if order.reminder_1_sent_at is None and now >= first_due:
+        if worktime.is_quiet(now):
+            return None
+        if await _dialogue_is_live(order):
+            return None
+        sent = await client_messages.send(
+            peer_id=order.peer_id,
+            ref=client_messages.order_ref(order.id),
+            event_type=templates.REMINDER_1,
+            text=templates.reminder_1(order, payment.confirmation_url),
+        )
+        await orders_repository.set_state(order.id, reminder_1_sent_at=now)
+        return templates.REMINDER_1 if sent else None
+
+    return None
+
+
+async def _close_invoice(order: Order, payment: yookassa_client.Payment) -> None:
+    """Счёт прожил свой срок: закрыть его и вернуть клиенту черновик.
+
+    Порядок важен. Сначала статус — чтобы тик, пришедший через пять минут,
+    не начал всё заново. Потом отмена платежа у ЮKassa: `pending` она
+    отменять обычно отказывается (закрывает сама), и её отказ здесь
+    нормальный исход, а не поломка. Потом черновик: состав, доставка и
+    получатель сохранились, клиенту достаточно сказать «да».
+    """
+    await orders_repository.set_state(
+        order.id, status=STATUS_UNPAID, payment_status=payment.status
+    )
+
+    if payment.status == "pending":
+        try:
+            await yookassa_client.cancel_payment(order.payment_id)
+        except Exception as error:
+            # Штатный исход: `pending` ЮKassa закрывает сама и на запрос
+            # отвечает отказом. Заказ у нас уже закрыт, и это главное.
+            logger.info("Заказ %s: ЮKassa не отменила платёж — %s", order.id, error)
+
+    await _restore_draft(order)
+
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.PAYMENT_EXPIRED,
+        text=templates.payment_expired(order),
+    )
+
+
+async def _restore_draft(order: Order) -> None:
+    """Вернуть черновик на подтверждение, ничего не потеряв.
+
+    Номер заказа из деталей убираем намеренно: из него выводится ключ
+    идемпотентности ЮKassa, и с прежним номером повторное подтверждение
+    вернуло бы тот же — уже закрытый — платёж вместо нового счёта.
+
+    Если клиент успел собрать новый заказ, его черновик не трогаем: он
+    важнее старого.
+    """
+    existing = await state.get_draft(order.peer_id)
+    if existing is not None:
+        logger.info("Заказ %s: у клиента уже есть черновик, старый не возвращаем", order.id)
+        return
+
+    details = dict(order.details or {})
+    details.pop("order_key", None)
+    await state.set_draft(
+        order.peer_id,
+        OrderDraft(
+            items=list(order.items or []),
+            items_total=float(order.items_total or 0),
+            delivery_method=order.delivery_method,
+            delivery_label=(details.get("delivery_label") or order.delivery_method or None),
+            delivery_cost=float(order.delivery_cost) if order.delivery_cost is not None else None,
+            details=details,
+            stage="awaiting_confirmation",
+        ),
+    )
+
+
 async def check_pending() -> dict:
     """Перечитать у ЮKassa всё, что ещё не досчитано."""
-    result = {"checked": 0, "paid": 0, "canceled": 0, "unpaid": 0, "receipts": 0, "failed": 0}
+    result = {
+        "checked": 0, "paid": 0, "canceled": 0, "unpaid": 0,
+        "reminders": 0, "receipts": 0, "failed": 0,
+    }
 
     if not payment_service.is_enabled():
         result["skipped"] = "оплата не подключена"
@@ -118,26 +298,22 @@ async def check_pending() -> dict:
                 )
                 continue
 
-            if age > _UNPAID_AFTER:
-                await orders_repository.set_state(
-                    order.id, status=STATUS_UNPAID, payment_status=payment.status
-                )
+            if now >= expires_at(order):
+                # Счёт прожил свой срок: закрываем, возвращаем черновик и
+                # говорим об этом обоим — клиенту и менеджеру.
                 result["unpaid"] += 1
+                await _close_invoice(order, payment)
                 await order_chat.send(
                     order,
                     templates.manager_unpaid(
                         order, payment.status, settings.payment_unpaid_after_hours
                     ),
                 )
-                # Ссылка к этому моменту уже не работает, и клиент, который
-                # собирался оплатить завтра, упёрся бы в неё молча. Лучше
-                # сказать прямо и позвать оформить заново.
-                await client_messages.send(
-                    peer_id=order.peer_id,
-                    ref=client_messages.order_ref(order.id),
-                    event_type=templates.PAYMENT_EXPIRED,
-                    text=templates.payment_expired(order),
-                )
+                continue
+
+            reminded = await _remind(order, payment, now)
+            if reminded:
+                result["reminders"] += 1
             continue
 
         # Оплачен: следим за чеком.
