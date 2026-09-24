@@ -32,13 +32,21 @@ async def set_typing(peer_id: int) -> None:
             raise RuntimeError(f"VK API error: {data['error']}")
 
 
-async def send_message(peer_id: int, text: str) -> None:
+async def send_message(peer_id: int, text: str, random_id: int | None = None) -> None:
+    """Отправить сообщение клиенту.
+
+    `random_id` — защита от дубликата на стороне ВК: с тем же значением он
+    повторную отправку отбрасывает. Для ответов в диалоге он случайный (два
+    одинаковых ответа подряд — законный случай), а для сообщений, которые
+    бот отправляет сам по событию, вызывающий передаёт значение, выведенное
+    из этого события.
+    """
     params = {
         "access_token": settings.vk_access_token,
         "v": settings.vk_api_version,
         "peer_id": peer_id,
         "message": text,
-        "random_id": random.getrandbits(31),
+        "random_id": random.getrandbits(31) if random_id is None else random_id,
     }
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(f"{VK_API_URL}/messages.send", data=params)

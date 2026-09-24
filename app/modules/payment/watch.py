@@ -21,8 +21,10 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 
+from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.orders import client_notice, order_chat, repository as orders_repository
+from app.messages import client as client_messages, templates
+from app.modules.orders import order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 from app.modules.payment import service as payment_service, webhook, yookassa_client
 
@@ -40,12 +42,6 @@ _BATCH = 20
 
 STATUS_UNPAID = "payment_expired"
 RECEIPT_STUCK = "stuck"
-
-
-def _orders_chat_text(order: Order, what: str, details: str) -> str:
-    return (
-        f"⚠️ Заказ №{order.id}: {what}\n{details}\n\n" + order_chat.card(order)
-    )
 
 
 async def check_pending() -> dict:
@@ -114,7 +110,12 @@ async def check_pending() -> dict:
                     order.id, status=webhook.STATUS_CANCELED, payment_status=payment.status
                 )
                 result["canceled"] += 1
-                await client_notice.tell(order, client_notice.payment_canceled(order))
+                await client_messages.send(
+                    peer_id=order.peer_id,
+                    ref=client_messages.order_ref(order.id),
+                    event_type=templates.PAYMENT_DECLINED,
+                    text=templates.payment_declined(order),
+                )
                 continue
 
             if age > _UNPAID_AFTER:
@@ -124,15 +125,19 @@ async def check_pending() -> dict:
                 result["unpaid"] += 1
                 await order_chat.send(
                     order,
-                    _orders_chat_text(
-                        order, "оплата так и не пришла",
-                        f"Прошло больше суток, платёж в статусе «{payment.status}».",
+                    templates.manager_unpaid(
+                        order, payment.status, settings.payment_unpaid_after_hours
                     ),
                 )
                 # Ссылка к этому моменту уже не работает, и клиент, который
                 # собирался оплатить завтра, упёрся бы в неё молча. Лучше
                 # сказать прямо и позвать оформить заново.
-                await client_notice.tell(order, client_notice.payment_expired(order))
+                await client_messages.send(
+                    peer_id=order.peer_id,
+                    ref=client_messages.order_ref(order.id),
+                    event_type=templates.PAYMENT_EXPIRED,
+                    text=templates.payment_expired(order),
+                )
             continue
 
         # Оплачен: следим за чеком.
@@ -147,16 +152,25 @@ async def check_pending() -> dict:
             await orders_repository.set_state(order.id, receipt_status=RECEIPT_STUCK)
             await order_chat.send(
                 order,
-                _orders_chat_text(
-                    order, "чек не зарегистрирован",
-                    f"Статус чека «{payment.receipt_registration or 'неизвестен'}» "
-                    f"{'отклонён' if payment.receipt_registration == 'canceled' else 'больше трёх суток'}. "
-                    "По документации ЮKassa — обращаться в их поддержку.",
+                templates.manager_receipt_stuck(
+                    order,
+                    payment.receipt_registration,
+                    overdue=payment.receipt_registration != "canceled",
                 ),
             )
-            # Клиент ждёт чек письмом и не знает, что тот застрял на стороне
-            # кассы. Ждать от него вопроса «а где чек» — значит отвечать на
-            # него задним числом.
-            await client_notice.tell(order, client_notice.receipt_delayed(order))
+            # Клиент ждёт чек и не знает, что тот застрял на стороне кассы.
+            # Ждать от него вопроса «а где чек» — значит отвечать на него
+            # задним числом.
+            details = order.details or {}
+            await client_messages.send(
+                peer_id=order.peer_id,
+                ref=client_messages.order_ref(order.id),
+                event_type=templates.RECEIPT_DELAYED,
+                text=templates.receipt_delayed(
+                    order,
+                    email=details.get("recipient_email", ""),
+                    phone=details.get("recipient_phone", ""),
+                ),
+            )
 
     return result

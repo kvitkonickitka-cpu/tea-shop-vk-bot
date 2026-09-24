@@ -20,7 +20,8 @@ from app.core.config import settings
 from app.core.database import get_session_factory
 from app.modules.delivery import cdek_client
 from app.modules.dialog import vk_client
-from app.modules.orders import client_notice, order_chat, repository as orders_repository
+from app.messages import client as client_messages, templates
+from app.modules.orders import order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -84,14 +85,12 @@ async def _tell_client_number(order: Order, number: str | None) -> None:
     """
     if not number or order.payment_status != orders_repository.PAID:
         return
-    try:
-        await vk_client.send_message(
-            order.peer_id,
-            f"Посылка по заказу №{order.id} передана в СДЭК.\n"
-            f"Трек-номер: {number}\nОтследить: {CDEK_TRACKING_URL}",
-        )
-    except Exception:
-        logger.exception("Не сказали клиенту трек-номер по заказу %s", order.id)
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.CDEK_TRACK,
+        text=templates.cdek_track(order, number, CDEK_TRACKING_URL),
+    )
 
 
 async def _tell_client_trouble(order: Order) -> None:
@@ -104,7 +103,12 @@ async def _tell_client_trouble(order: Order) -> None:
     """
     if order.payment_status != orders_repository.PAID:
         return
-    await client_notice.tell(order, client_notice.shipment_trouble(order))
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.SHIPMENT_TROUBLE,
+        text=templates.shipment_trouble(order),
+    )
 
 
 async def _warn_manager(order: Order, what: str, details: str) -> None:

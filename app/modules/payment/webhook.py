@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import logging
 
-from app.modules.dialog import vk_client
+from app.messages import client as client_messages, templates
 from app.modules.orders import (
     cdek_watch,
-    client_notice,
     order_chat,
     repository as orders_repository,
     shipping,
@@ -74,8 +73,13 @@ async def handle(body: dict) -> dict:
             )
             # Клиент видел ссылку на оплату и ждёт. Не сказать, что счёт
             # отменён, значит оставить его гадать, дошли деньги или нет.
-            # Статус проверяем до записи: уведомление может прийти дважды.
-            await client_notice.tell(order, client_notice.payment_canceled(order))
+            await client_messages.send(
+                peer_id=order.peer_id,
+                ref=client_messages.order_ref(order.id),
+                event_type=templates.PAYMENT_DECLINED,
+                text=templates.payment_declined(order),
+                on_failure=_client_unreachable(order, templates.PAYMENT_DECLINED),
+            )
         return {"платёж": payment_id, "статус": payment.status}
 
     if payment.status == "waiting_for_capture":
@@ -142,41 +146,6 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
     }
 
 
-def client_message(order, registered: shipping.Registered) -> str:
-    """Что клиент получает в ВК, когда оплата прошла.
-
-    Текст собираем здесь и не зовём Claude: клиента в диалоге в этот момент
-    нет — уведомление приходит от ЮKassa, когда он уже ушёл из переписки, — и
-    формулировать тут нечего, все данные известны.
-    """
-    # :g — чтобы в сообщении клиенту не было «917.0 руб».
-    lines = ["✅ Оплата получена, спасибо!", f"Заказ №{order.id} на {order.total:g} руб."]
-
-    email = (order.details or {}).get("recipient_email")
-    if email:
-        lines.append(f"Чек придёт на {email}.")
-
-    if registered.ozon_posting:
-        # Клиенту важно не столько само отправление, сколько что делать
-        # дальше: номер он увидит в приложении Ozon и там же будет следить
-        # за доставкой, без нас и без менеджера.
-        lines.append(
-            f"Отправление Ozon: {registered.ozon_posting} — по нему посылку видно "
-            "в приложении и на сайте Ozon, там же отслеживается доставка."
-        )
-    elif registered.cdek_uuid:
-        lines.append(
-            "Передаём посылку в СДЭК. Трек-номер пришлём сюда, как только "
-            "СДЭК его выдаст."
-        )
-    else:
-        # Перевозчик не принял отправление (или заказ вообще без него).
-        # Пугать клиента нечем: менеджера мы уже предупредили.
-        lines.append("Заказ передан в работу, менеджер свяжется с вами по отправке.")
-
-    return "\n".join(lines)
-
-
 async def _tell_client(order, registered: shipping.Registered) -> None:
     """Сказать клиенту, что деньги дошли.
 
@@ -184,12 +153,31 @@ async def _tell_client(order, registered: shipping.Registered) -> None:
     клиент оставался с ссылкой на оплату и тишиной — заплатил и не знает,
     увидели ли это.
     """
-    try:
-        await vk_client.send_message(order.peer_id, client_message(order, registered))
-    except Exception:
-        # Отправление уже заведено, и заказ оплачен: молчать об ошибке нельзя,
-        # но и повторять всю обработку из-за неё тоже — ЮKassa получит 200.
-        logger.exception("Не сказали клиенту про оплату заказа %s", order.id)
+    details = order.details or {}
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.PAID,
+        text=templates.paid(
+            order,
+            email=details.get("recipient_email", ""),
+            phone=details.get("recipient_phone", ""),
+            posting=registered.ozon_posting or "",
+            cdek=bool(registered.cdek_uuid),
+        ),
+        on_failure=_client_unreachable(order, templates.PAID),
+    )
+
+
+def _client_unreachable(order, event_type: str):
+    """Обработчик отказа ВК: клиент новость не получил, скажем менеджеру."""
+
+    async def report(error: str) -> None:
+        await order_chat.send(
+            order, templates.manager_client_unreachable(order, event_type, error)
+        )
+
+    return report
 
 
 async def _on_refund(refund_id: str) -> dict:
@@ -219,8 +207,15 @@ async def _on_refund(refund_id: str) -> dict:
         f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order),
     )
     # Возврат делает менеджер в кабинете ЮKassa, и клиент об этом узнаёт
-    # только от банка — через неизвестно сколько. Скажем сами.
-    await client_notice.tell(order, client_notice.refunded(order, refund.amount))
+    # только от банка — через неизвестно сколько. Скажем сами. Сумма — та,
+    # что вернули: возврат бывает частичным, и сумма заказа тут соврала бы.
+    await client_messages.send(
+        peer_id=order.peer_id,
+        ref=client_messages.order_ref(order.id),
+        event_type=templates.REFUNDED,
+        text=templates.refunded(order, refund.amount),
+        on_failure=_client_unreachable(order, templates.REFUNDED),
+    )
     return {"возврат": refund.id, "заказ": order.id}
 
 
