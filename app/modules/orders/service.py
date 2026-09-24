@@ -1,12 +1,66 @@
+"""Заказ, оформленный в витрине сообщества, минуя диалог.
+
+ВК присылает `market_order_new`, когда клиент нажал «Оформить» в товарах
+сообщества. Дальше заказ ведёт тот же путь, что и заказ из переписки:
+выбор доставки инструментами, живой расчёт у перевозчика, счёт ЮKassa,
+отправление после оплаты.
+
+Раньше эта ветка жила отдельной жизнью: считала СДЭК сама, называла цену
+тарифа без НДС и сборов (ту самую, из-за которой 320 руб расчёта
+превращались в 397 руб счёта), не знала про Ozon и не умела выставить
+счёт. Клиент из витрины и клиент из переписки получали разные магазины.
+"""
+
 import logging
 from typing import Any
 
-from app.core.config import settings
-from app.modules.delivery import cdek_client
-from app.modules.dialog import claude_client, vk_client
-from app.modules.orders import vk_orders_client
+from app.modules.dialog import telegram_client, vk_client
+from app.modules.orders import order_chat, state, vk_orders_client
+from app.modules.orders.state import OrderDraft
 
 logger = logging.getLogger(__name__)
+
+
+def _rubles(value: Any) -> float:
+    """Сумма ВК в рублях: в API она приходит копейками и строкой."""
+    if isinstance(value, dict):
+        value = value.get("amount", 0)
+    try:
+        return round(float(value) / 100, 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _items_of(raw_items: list[dict]) -> list[dict]:
+    """Состав заказа в том виде, в каком его держит черновик.
+
+    Схему ВК разбираем защитно: товар без названия или цены пропускаем, но
+    из-за него не теряем весь заказ.
+    """
+    items = []
+    for row in raw_items or []:
+        product = row.get("item") or {}
+        name = (product.get("title") or "").strip()
+        if not name:
+            continue
+        quantity = int(row.get("quantity") or 1)
+        price = _rubles(product.get("price"))
+        if not price:
+            # Цена за единицу неизвестна — берём из строки заказа целиком.
+            price = round(_rubles(row.get("price")) / max(quantity, 1), 2)
+        items.append({"name": name, "quantity": quantity, "price": price})
+    return items
+
+
+async def _tell_manager(order_id: int, user_id: int, text: str) -> None:
+    try:
+        await telegram_client.send_message(
+            f"🛒 <b>Заказ из витрины №{order_id}</b>\n{text}\n\n"
+            f"{vk_client.dialog_link(user_id)}",
+            chat_id=order_chat.chat_id(),
+        )
+    except Exception:
+        logger.exception("Не сказали менеджеру про витринный заказ %s", order_id)
 
 
 async def handle_new_order(order_event: dict[str, Any]) -> None:
@@ -21,80 +75,71 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
         logger.exception("Failed to fetch order %s from VK", order_id)
         return
 
-    # Логируем сырой объект заказа: пока не проверяли вживую точную схему
-    # полей VK для этого события, это нужно для быстрой диагностики.
+    # Логируем сырой объект заказа: точную схему полей ВК для этого события
+    # вживую пока не проверяли, и при первом настоящем заказе это первое,
+    # на что придётся смотреть.
     logger.info("Fetched order %s: %s", order_id, order)
 
     user_id = order.get("user_id")
-    address = order.get("delivery_address") or order.get("address")
-
     if not user_id:
         logger.error("Order %s has no user_id, cannot notify buyer", order_id)
         return
 
-    total_price = order.get("total_price")
-    if isinstance(total_price, dict):
-        items_total = total_price.get("amount", 0) / 100
-    else:
-        items_total = order.get("price", 0)
-
-    if not address:
-        logger.warning("Order %s has no delivery address, skipping CDEK calc", order_id)
-        reply = "Ваш заказ принят! Уточним стоимость доставки и напишем отдельно."
-        await vk_client.send_message(user_id, reply)
-        return
-
-    items = order.get("items", [])
-    total_quantity = sum(item.get("quantity", 1) for item in items) or 1
-    weight_grams = settings.cdek_default_package_weight_grams * total_quantity
-
-    unknown_cost = "Ваш заказ принят! Точную стоимость доставки СДЭК уточним и напишем вам отдельно."
-
     try:
-        tariffs = await cdek_client.calculate_tariffs(address, weight_grams)
+        raw_items = await vk_orders_client.get_order_items(order_id)
     except Exception:
-        logger.exception("Failed to calculate CDEK delivery for order %s", order_id)
-        await vk_client.send_message(user_id, unknown_cost)
+        logger.exception("Не получили состав витринного заказа %s", order_id)
+        raw_items = []
+
+    items = _items_of(raw_items)
+    if not items:
+        # Без состава черновик не собрать: суммы, объявленная ценность и
+        # позиции чека берутся из него. Заказ при этом настоящий, поэтому
+        # доводит его человек, а клиент слышит об этом сразу.
+        logger.error("Витринный заказ %s: состав не разобрали, зовём менеджера", order_id)
+        await _tell_manager(
+            order_id, user_id, "Состав заказа не разобрали — оформить доставку руками."
+        )
+        await vk_client.send_message(
+            user_id,
+            f"Заказ №{order_id} принят! Сейчас уточним доставку и вернёмся с "
+            "расчётом 🙏",
+        )
         return
 
-    # Два режима считаем отдельно и оба показываем клиенту. Пункт выдачи
-    # дешевле доставки до двери примерно на 250 руб, поэтому называем его
-    # первым; курьера оставляем как второй вариант, а не как единственный.
-    # Смешивать режимы нельзя: самый дешёвый тариф вообще — «склад-склад»,
-    # и выдать его цену за доставку по адресу значит возить себе в убыток.
-    pickup = cdek_client.cheapest(tariffs, cdek_client.TO_PICKUP)
-    courier = cdek_client.cheapest(tariffs, cdek_client.TO_DOOR)
-    if pickup is None and courier is None:
-        logger.warning(
-            "Order %s: СДЭК не предложил ни одного подходящего тарифа по адресу «%s»",
-            order_id,
-            address,
-        )
-        await vk_client.send_message(user_id, unknown_cost)
-        return
+    items_total = round(sum(item["price"] * item["quantity"] for item in items), 2)
 
-    options = []
-    if pickup is not None:
-        options.append(
-            f"Пункт выдачи СДЭК рядом с адресом «{address}»: {pickup.delivery_sum} руб, "
-            f"срок {pickup.period}, итого {items_total + pickup.delivery_sum} руб."
-        )
-    if courier is not None:
-        options.append(
-            f"Курьером до адреса «{address}»: {courier.delivery_sum} руб, "
-            f"срок {courier.period}, итого {items_total + courier.delivery_sum} руб."
-        )
+    # Черновик ставим на тот же этап, на который его ставит propose_order в
+    # переписке: дальше клиента ведут обычные инструменты.
+    draft = OrderDraft(items=items, items_total=items_total, stage="awaiting_delivery")
 
-    facts = (
-        f"Заказ №{order_id} принят. Сумма товаров: {items_total} руб. "
-        + " ".join(options)
-        + " Первым предложи пункт выдачи — он дешевле."
+    # Адрес из витрины — подсказка, а не выбор: доставку всё равно считает
+    # перевозчик, а пункт выдачи клиент называет сам.
+    address = order.get("delivery_address") or order.get("address")
+    if isinstance(address, dict):
+        address = address.get("address") or address.get("text")
+    if address:
+        draft.details["vk_order_address"] = str(address)
+    draft.details["vk_order_id"] = order_id
+
+    await state.set_draft(user_id, draft)
+
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    lines = [
+        f"Заказ №{order_id} принят: {listed} — {items_total:g} ₽.",
+        "Осталось выбрать доставку. Дешевле всего пункт выдачи Ozon — "
+        "заберёте сами. Быстрее, но дороже — пункт выдачи СДЭК, ещё есть "
+        "курьер СДЭК до двери.",
+    ]
+    lines.append(
+        f"В какой город везём? Адрес из заказа — «{address}», везём туда?"
+        if address
+        else "В какой город везём?"
     )
+    await vk_client.send_message(user_id, "\n".join(lines))
 
-    try:
-        reply = await claude_client.generate_order_notification(facts)
-    except Exception:
-        logger.exception("Claude order notification generation failed for order %s", order_id)
-        reply = facts
-
-    await vk_client.send_message(user_id, reply)
+    await _tell_manager(
+        order_id,
+        user_id,
+        f"{listed} — {items_total:g} руб. Клиенту предложено выбрать доставку в диалоге.",
+    )
