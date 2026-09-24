@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
 from app.modules.dialog import (
+    attachments as vk_attachments,
     claude_client,
     escalation_log,
     escalation_state,
@@ -1051,14 +1052,39 @@ class _Spent:
         )
 
 
-async def handle_turn(peer_id: int, user_text: str) -> str:
+# Что делать с тем, что модель открыть не может. Фотографии она видит сама,
+# а голосовое, видео или файл до неё не доедут никогда — и молчать об этом
+# хуже всего: клиент решит, что его не услышали, и пришлёт то же ещё раз.
+_ATTACHMENT_PROMPT = (
+    "Клиент приложил к сообщению вложение, которое ты открыть не можешь "
+    "(оно названо в его реплике). Скажи об этом прямо и попроси написать "
+    "текстом или прислать фотографию — не делай вид, что ты его посмотрел, "
+    "и не угадывай содержимое."
+)
+
+
+def _for_history(spoken: str, images: list) -> str:
+    """Реплика клиента в том виде, в каком она останется в истории.
+
+    Сами снимки не храним: в истории они стоили бы токенов на каждом
+    следующем ходу, а для разговора достаточно знать, что фотография была.
+    """
+    if not images:
+        return spoken
+    mark = f"[фото: {len(images)} шт.]" if len(images) > 1 else "[фото]"
+    return f"{mark} {spoken}".strip()
+
+
+async def handle_turn(
+    peer_id: int, user_text: str, attached: vk_attachments.Collected | None = None
+) -> str:
     global _cold_start
     started = time.monotonic()
     spent = _Spent()
     cold = _cold_start
     _cold_start = False
     try:
-        return await _handle_turn(peer_id, user_text, spent)
+        return await _handle_turn(peer_id, user_text, spent, attached)
     finally:
         logger.info(
             "ход peer_id=%s %s%s",
@@ -1068,7 +1094,12 @@ async def handle_turn(peer_id: int, user_text: str) -> str:
         )
 
 
-async def _handle_turn(peer_id: int, user_text: str, spent: _Spent) -> str:
+async def _handle_turn(
+    peer_id: int,
+    user_text: str,
+    spent: _Spent,
+    attached: vk_attachments.Collected | None = None,
+) -> str:
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
 
@@ -1078,14 +1109,36 @@ async def _handle_turn(peer_id: int, user_text: str, spent: _Spent) -> str:
     system_prompt += f"\n\n{_ORDER_FLOW_PROMPT}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
 
+    if attached and attached.notes:
+        # Подсказку добавляем только когда есть что объяснять: постоянная
+        # строчка про голосовые в промпте — это токены на каждом ходу и
+        # лишний повод упомянуть их к месту и не к месту.
+        system_prompt += f"\n\n{_ATTACHMENT_PROMPT}"
+
     escalation_note = await _describe_escalation(peer_id)
     if escalation_note:
         system_prompt += f"\n\n{_ESCALATION_FLOW_PROMPT}\n\n{escalation_note}"
 
     tools = _tools_for_stage(draft.stage if draft else None)
 
+    # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
+    # кладём в историю. Иначе следующий ход увидит реплику клиента пустой и
+    # не поймёт, о чём был разговор.
+    note = vk_attachments.describe(attached) if attached else ""
+    spoken = " ".join(part for part in (user_text, note) if part)
+    images = list(attached.images) if attached else []
+
     history = await dialog_history.get_history(peer_id)
-    messages: list[dict] = history + [{"role": "user", "content": user_text}]
+    if images:
+        # Снимок идёт перед текстом: так модель сначала смотрит, а потом
+        # читает вопрос о том, что увидела.
+        content: str | list = [
+            *images,
+            {"type": "text", "text": spoken or "Клиент прислал фотографию без подписи."},
+        ]
+    else:
+        content = spoken
+    messages: list[dict] = history + [{"role": "user", "content": content}]
 
     turn_started = time.monotonic()
     response = await spent.claude(claude_client.converse(messages, system_prompt, tools))
@@ -1115,7 +1168,7 @@ async def _handle_turn(peer_id: int, user_text: str, spent: _Spent) -> str:
         # подтверждён, но в СДЭК не уехал».
         if executions and executions[-1][1].client_reply is not None:
             reply = executions[-1][1].client_reply
-            await dialog_history.append_exchange(peer_id, user_text, reply)
+            await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
             return reply
 
         messages.append({
@@ -1153,5 +1206,5 @@ async def _handle_turn(peer_id: int, user_text: str, spent: _Spent) -> str:
             break
 
     reply = claude_client.extract_text(response, default=_NO_TEXT_FALLBACK)
-    await dialog_history.append_exchange(peer_id, user_text, reply)
+    await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
     return reply

@@ -6,7 +6,13 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.background import fire_and_forget
 from app.core.database import get_session_factory
-from app.modules.dialog import escalation_log, escalation_state, history as dialog_history, vk_client
+from app.modules.dialog import (
+    attachments,
+    escalation_log,
+    escalation_state,
+    history as dialog_history,
+    vk_client,
+)
 from app.modules.dialog.models import ProcessedEvent
 from app.modules.orders import conversation as orders_conversation
 
@@ -70,7 +76,13 @@ async def mark_processed(event_id: str) -> None:
 async def handle_message_new(message: dict[str, Any]) -> None:
     peer_id = message["peer_id"]
     text = message.get("text", "")
-    if not text:
+
+    # Сообщение без текста — не пустое: в нём может быть фотография чая,
+    # скриншот с адресом пункта выдачи или снимок оплаты. Раньше обработчик
+    # выходил здесь же, и клиент, приславший одно фото, не получал вообще
+    # ничего — со стороны это выглядит как сломанный бот.
+    attached = await attachments.collect(message)
+    if not text and not attached.any:
         return
 
     started = time.monotonic()
@@ -89,7 +101,7 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         fire_and_forget(_set_typing_quietly(peer_id))
 
         try:
-            reply = await orders_conversation.handle_turn(peer_id, text)
+            reply = await orders_conversation.handle_turn(peer_id, text, attached)
         except Exception:
             logger.exception("Claude generation failed for peer_id=%s", peer_id)
             reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
@@ -106,9 +118,10 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         # CancelledError пройдёт через finally и заберёт запись с собой.
         finished = time.monotonic()
         logger.info(
-            "handle_message_new: peer_id=%s стадия=%s генерация=%.2fс всего=%.2fс",
+            "handle_message_new: peer_id=%s стадия=%s вложения=%s генерация=%.2fс всего=%.2fс",
             peer_id,
             stage,
+            f"{len(attached.images)} фото, {len(attached.notes)} прочих" if attached.any else "нет",
             (generated if generated is not None else finished) - started,
             finished - started,
         )
