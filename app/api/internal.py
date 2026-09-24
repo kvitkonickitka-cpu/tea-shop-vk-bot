@@ -110,15 +110,19 @@ async def _run_scheduled() -> dict:
         "cdek_orders": await _run_task("Проверка заказов СДЭК", cdek_watch.check_pending_orders()),
     }
 
+    # Вопросы без ответа — до каталога: проверка дешёвая (несколько строк в
+    # базе), а каталог забирает весь остаток бюджета и до задач после него
+    # дело может не дойти вовсе.
+    result["open_questions"] = await _run_task(
+        "Вопросы без ответа", escalation_watch.check_open_questions()
+    )
+
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
         "Каталог Ozon", ozon_catalog.sync(budget_seconds=max(5, min(20, int(left))))
     )
     result["reports"] = await _run_task(
         "Отчёты по диалогам", reports_service.send_pending_reports()
-    )
-    result["open_questions"] = await _run_task(
-        "Вопросы без ответа", escalation_watch.check_open_questions()
     )
     result["undelivered"] = await _run_task(
         "Отчёт о недоставленном менеджеру", reports_service.report_undelivered()
