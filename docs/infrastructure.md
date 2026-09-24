@@ -341,6 +341,7 @@ VK ──> /vk/callback ──> очередь ──> триггер ──> / 
     scripts/api.sh ozon/sync                               догрузить каталог
     scripts/api.sh 'ozon/quote?city=Уфа&weight=400'        подбор пункта и цена
     scripts/api.sh 'ozon/posting?number=…&cancel=1'        отменить отправление
+    scripts/api.sh orders/12/invoice                       выставить счёт по заказу №12
     scripts/api.sh payments/me                             чей магазин ЮKassa в ревизии
     scripts/api.sh payments/check                          перечитать платежи и чеки
     scripts/api.sh cdek/check                              сверка заказов с СДЭКом

@@ -94,7 +94,8 @@ async def clean(db):
     from sqlalchemy import text
 
     wanted = (
-        "orders", "order_drafts", "conversation_messages", "conversations",
+        "orders", "order_payments", "order_drafts", "conversation_messages",
+        "conversations",
         "escalations", "escalation_states", "client_notices",
         "manager_notifications", "processed_events", "dialog_reports",
         "heartbeats",

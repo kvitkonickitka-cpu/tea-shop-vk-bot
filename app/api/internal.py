@@ -13,7 +13,8 @@ from app.modules import events
 from app.modules.catalog import vk_market
 from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
-from app.modules.orders import cdek_watch
+from app.modules.orders import cdek_watch, repository as orders_repository
+from app.modules.payment import service as payment_service
 from app.modules.payment import watch as payment_watch
 from app.modules.payment import yookassa_client
 from app.modules.queue import client as queue_client
@@ -179,6 +180,47 @@ async def telegram_ping(request: Request):
 
     logger.info("Проверка связи: сообщение ушло в %s", where)
     return {"chat": where, "sent": True}
+
+
+@router.post("/internal/orders/{order_id}/invoice")
+async def issue_invoice(order_id: int, request: Request):
+    """Выставить счёт по заказу и отдать ссылку менеджеру.
+
+    Нужно, когда бот не смог: ЮKassa отказала, счёт истёк, клиент просит
+    новую ссылку в переписке с человеком. Идёт тем же кодом, что и
+    подтверждение в диалоге, — те же проверки полноты и та же запись
+    попытки, — поэтому выставленный так счёт ничем не отличается от
+    обычного: оплата по нему заведёт отправление сама.
+
+        scripts/api.sh orders/12/invoice
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+
+    try:
+        payment, note = await payment_service.issue_for_order(order)
+    except Exception as error:
+        logger.exception("Не выставили счёт по заказу %s", order_id)
+        return {"заказ": order_id, "error": f"{type(error).__name__}: {str(error)[:300]}"}
+
+    if payment is None:
+        logger.warning("Счёт по заказу %s не выставлен: %s", order_id, note)
+        return {"заказ": order_id, "error": note}
+
+    logger.info("Счёт по заказу %s выставлен вручную: платёж %s", order_id, payment.id)
+    return {
+        "заказ": order_id,
+        "платёж": payment.id,
+        "сумма": payment.amount,
+        "статус": payment.status,
+        "что дальше": note,
+        "ссылка на оплату": payment.confirmation_url,
+        "клиенту": f"Ссылку можно переслать клиенту: {payment.confirmation_url}",
+    }
 
 
 @router.post("/internal/catalog/vk")

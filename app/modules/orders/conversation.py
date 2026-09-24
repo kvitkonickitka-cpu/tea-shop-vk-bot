@@ -848,9 +848,16 @@ async def _escalate_for_payment(
     except Exception:
         logger.exception("Не записали эскалацию по оплате для peer_id=%s", peer_id)
 
+    # Подсказка с командой: у менеджера есть способ выставить счёт самому,
+    # и напоминать про него надо ровно там, где он понадобился.
+    how = (
+        f"\n\nВыставить счёт: <code>scripts/api.sh orders/{order_id}/invoice</code>"
+        if order_id
+        else "\n\nЗаказ в базу не попал — оформлять вручную."
+    )
     message = (
         f"<b>💳 Нужна ссылка на оплату</b>\n{html.escape(question)}\n\n"
-        f"{html.escape(reason)}\n\n{vk_client.dialog_link(peer_id)}"
+        f"{html.escape(reason)}{how}\n\n{vk_client.dialog_link(peer_id)}"
     )
     await _notify_manager(peer_id, message)
 
@@ -952,6 +959,27 @@ async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     return ToolExecution(reply, client_reply=reply)
 
 
+async def _save_unpaid(peer_id: int, draft: OrderDraft, order_id) -> int | None:
+    """Сохранить заказ, счёт по которому выставить не удалось.
+
+    Без номера заказа менеджеру нечего выставлять: служебная команда работает
+    по номеру. Раньше в этой ветке заказ не сохранялся вовсе — оставались
+    только текст эскалации и черновик у клиента.
+    """
+    try:
+        if order_id:
+            return int(order_id)
+        order = await orders_repository.save_order(
+            peer_id, draft, status=payment_service.STATUS_PAYMENT_FAILED
+        )
+        draft.details["order_id"] = order.id
+        await state.set_draft(peer_id, draft)
+        return order.id
+    except Exception:
+        logger.exception("Не сохранили заказ без счёта для peer_id=%s", peer_id)
+        return None
+
+
 async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecution:
     """Подтверждение, когда оплата подключена: счёт вместо отправления.
 
@@ -989,7 +1017,7 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
         # неправдой. Поэтому зовём человека и оставляем черновик как есть.
         logger.exception("ЮKassa не ответила по заказу %s", order_key)
         await _escalate_for_payment(
-            peer_id, draft, None,
+            peer_id, draft, await _save_unpaid(peer_id, draft, order_id),
             f"ЮKassa не дала точного ответа, счёт мог создаться — проверить в "
             f"кабинете, прежде чем выставлять новый. {str(error)[:300]}",
         )
@@ -1001,7 +1029,7 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
     except Exception as error:
         logger.exception("Не выставили счёт по заказу %s", order_key)
         await _escalate_for_payment(
-            peer_id, draft, None,
+            peer_id, draft, await _save_unpaid(peer_id, draft, order_id),
             f"Счёт выставить не удалось: {type(error).__name__}: {str(error)[:300]}",
         )
         reply = (

@@ -74,6 +74,13 @@ async def reopen_for_payment(order_id: int, draft: OrderDraft, payment_id: str, 
         return order
 
 
+async def by_id(order_id: int) -> Order | None:
+    """Заказ по номеру — им пользуются служебные эндпоинты."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        return await session.get(Order, order_id)
+
+
 async def register_payment(
     order_id: int, payment_id: str, *, attempt: int, status: str, amount: float
 ) -> None:

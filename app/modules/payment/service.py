@@ -157,6 +157,88 @@ async def restore_draft(order) -> None:
     )
 
 
+# Статус заказа, по которому счёт выставить не удалось. Заказ при этом
+# сохраняется: менеджеру нужен номер, чтобы выставить счёт вручную.
+STATUS_PAYMENT_FAILED = "payment_failed"
+
+
+def missing_for_invoice(
+    *, items: list, details: dict, delivery_method: str | None
+) -> list[str]:
+    """Чего не хватает, чтобы выставить счёт. Пусто — всё на месте.
+
+    Те же требования, что и у `confirm_order`: без них платёж либо не
+    создастся, либо создастся по неполному заказу, который потом некуда
+    отправить.
+    """
+    details = details or {}
+    missing = []
+    if not items:
+        missing.append("состав заказа")
+    if not details.get("recipient_name"):
+        missing.append("ФИО получателя")
+    phone = details.get("recipient_phone", "")
+    if not phone:
+        missing.append("телефон получателя")
+    elif not yookassa_client.phone_is_valid(phone):
+        missing.append(f"телефон получателя целиком (сейчас «{phone}»)")
+    if not delivery_method:
+        missing.append("способ доставки")
+    if delivery_method == "cdek_pvz" and not details.get("delivery_point"):
+        missing.append("код пункта выдачи СДЭК")
+    if delivery_method == "ozon_pvz" and not details.get("ozon_point_id"):
+        missing.append("пункт выдачи Ozon")
+    return missing
+
+
+async def issue_for_order(order) -> tuple[yookassa_client.Payment | None, str]:
+    """Выставить счёт по уже сохранённому заказу.
+
+    Нужно менеджеру: заказ есть, а ссылки нет — счёт не создался, истёк или
+    клиент просит новую. Код тот же, что и в диалоге: те же проверки
+    полноты, тот же `create_payment`, та же запись попытки. Отличается
+    только источник данных — заказ, а не черновик.
+
+    Возвращает платёж и пояснение; при отказе платёж пустой.
+    """
+    from app.modules.orders import repository as orders_repository
+
+    if not is_enabled():
+        return None, "оплата не подключена: нет флага PAYMENTS_ENABLED или ключей ЮKassa"
+    if order.payment_status == "succeeded":
+        return None, "заказ уже оплачен — второй счёт выставлять нельзя"
+
+    details = dict(order.details or {})
+    missing = missing_for_invoice(
+        items=list(order.items or []),
+        details=details,
+        delivery_method=order.delivery_method,
+    )
+    if missing:
+        return None, "не хватает: " + ", ".join(missing)
+
+    order_key = details.get("order_key") or f"order{order.id}"
+    details["order_key"] = order_key
+    draft = OrderDraft(
+        items=list(order.items or []),
+        items_total=float(order.items_total or 0),
+        delivery_method=order.delivery_method,
+        delivery_label=details.get("delivery_label") or order.delivery_method,
+        delivery_cost=float(order.delivery_cost) if order.delivery_cost is not None else None,
+        details=details,
+        stage="awaiting_confirmation",
+    )
+
+    attempt = await orders_repository.next_attempt(order.id)
+    payment = await create_payment(draft, order_key, attempt)
+
+    await orders_repository.reopen_for_payment(order.id, draft, payment.id, payment.status)
+    await orders_repository.register_payment(
+        order.id, payment.id, attempt=attempt, status=payment.status, amount=payment.amount
+    )
+    return payment, f"счёт выставлен, попытка {attempt}"
+
+
 async def generate_payment_link(draft: OrderDraft) -> str:
     """Оставлено ради обратной совместимости со старым вызовом.
 
