@@ -41,8 +41,26 @@ def owner_id() -> int:
     return -int(digits)
 
 
+def token() -> str:
+    """Чем читаем витрину.
+
+    Токеном сообщества `market.get` не работает: ВК отвечает «27 Group
+    authorization failed: method is unavailable with group auth» — это не
+    про права, витрину группе смотреть не разрешают в принципе. Заказы тем
+    же токеном читаются, так что дело не в нём.
+
+    Поэтому витрину читает токен администратора сообщества
+    (`VK_USER_TOKEN`), а групповой остаётся на всё остальное.
+    """
+    return settings.vk_user_token or settings.vk_access_token
+
+
+def token_kind() -> str:
+    return "администратора" if settings.vk_user_token else "сообщества"
+
+
 def is_configured() -> bool:
-    return bool(settings.vk_access_token and settings.vk_group_id)
+    return bool(token() and settings.vk_group_id)
 
 
 def price_rubles(price) -> float:
@@ -67,7 +85,7 @@ async def get_items(count: int = _PAGE, offset: int = 0) -> dict:
                 # extended даёт описание, фотографии и свойства вариантов —
                 # ровно то, из-за чего мы сюда и пришли.
                 "extended": 1,
-                "access_token": settings.vk_access_token,
+                "access_token": token(),
                 "v": settings.vk_api_version,
             },
         )
@@ -112,7 +130,7 @@ async def probe(limit: int = 5) -> dict:
     описания и ссылки.
     """
     if not is_configured():
-        return {"error": "нет VK_ACCESS_TOKEN или VK_GROUP_ID"}
+        return {"error": "нет токена или VK_GROUP_ID"}
 
     response = await get_items(count=_PAGE)
     items = response.get("items") or []
@@ -139,6 +157,7 @@ async def probe(limit: int = 5) -> dict:
 
     return {
         "витрина": owner_id(),
+        "читали токеном": token_kind(),
         "всего товаров в магазине": response.get("count"),
         "получено за один запрос": len(items),
         "по доступности": by_availability,

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     vk_confirmation_token: str = ""
     vk_secret_key: str = ""
     vk_group_id: str = ""
+    # Токен администратора сообщества. Нужен только для чтения витрины:
+    # `market.get` с токеном сообщества не работает вовсе — ВК отвечает
+    # «27 Group authorization failed». Пусто — витрину не читаем.
+    vk_user_token: str = ""
     vk_access_token: str = ""
     vk_api_version: str = "5.199"
 
