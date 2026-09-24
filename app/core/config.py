@@ -1,8 +1,17 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Путь к .env абсолютный, от корня репозитория. С относительным «.env» файл
+# искался бы от каталога запуска: скрипт, запущенный не из репозитория,
+# молча не находил ключи и сообщал, что их нет, — а они лежали на месте.
+# В контейнере .env нет вовсе, там настройки приходят переменными окружения,
+# и отсутствующий файл этому не мешает.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
 
     app_name: str = "Tea Shop VK Bot Backend"
     # Коммит, из которого собран образ. Подставляется при деплое и видна в
