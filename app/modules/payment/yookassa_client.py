@@ -385,6 +385,7 @@ async def create_refund(
     email: str,
     phone: str,
     full_name: str,
+    full: bool = False,
 ) -> Refund:
     """Вернуть деньги клиенту — с чеком возврата.
 
@@ -393,18 +394,27 @@ async def create_refund(
     у себя вторые деньги нельзя, а ждать менеджера — значит держать.
 
     Чек возврата обязателен на фискализированном магазине: иначе в ОФД
-    останется приход без расхода. Позиции те же, что и в чеке платежа.
+    останется приход без расхода. **При полном возврате (`full=True`) данные
+    чека не передаём** — ЮKassa сама собирает чек возврата по чеку платежа,
+    и в памятке прямо сказано, что `receipt` бывает только в запросах на
+    частичный возврат (статья «Чеки при возвратах»). При частичном — позиции
+    те же, что в чеке платежа: предоплата, без кодов маркировки, как и было
+    в чеке прихода.
+
+    Это верно только **до закрывающего чека**: после него товар продан с
+    кодами и полным расчётом, и чек возврата по данным платежа (предоплата,
+    без кодов) был бы неверным. Такой возврат бот не делает.
 
     Ключ идемпотентности выводим из платежа: повторное уведомление не
     должно возвращать деньги дважды.
     """
-    rows = receipt_items(items, delivery_cost, delivery_label)
-    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
-    payload = {
-        "payment_id": payment_id,
-        "amount": _money(amount),
-        "receipt": {"customer": customer, "items": rows},
-    }
+    payload = {"payment_id": payment_id, "amount": _money(amount)}
+    if not full:
+        rows = receipt_items(items, delivery_cost, delivery_label)
+        payload["receipt"] = {
+            "customer": receipt_customer(full_name=full_name, email=email),
+            "items": rows,
+        }
     key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-refund:{payment_id}"))
     data = await _call("POST", "/refunds", payload, key=key)
     refund = _to_refund(data)

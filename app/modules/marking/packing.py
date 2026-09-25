@@ -443,3 +443,24 @@ async def count_assigned(order_id: int) -> int:
                 .where(MarkingCodeRow.order_id == order_id)
             ) or 0
         )
+
+
+async def release_codes(order_id: int) -> int:
+    """Вернуть коды заказа в наличие: посылку не вручили или деньги вернули.
+
+    Только привязанные, но не проданные: проданный по чеку код остаётся
+    проданным, его судьбу решает чек возврата. Отметку «собрано» не
+    трогаем — по ней видно, что заказ собирали.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            update(MarkingCodeRow)
+            .where(MarkingCodeRow.order_id == order_id, MarkingCodeRow.status == ASSIGNED)
+            .values(order_id=None, item_index=None, status=IN_STOCK,
+                    scanned_at=None, scanned_by=None, manual=False)
+        )
+        await session.commit()
+    if result.rowcount:
+        logger.info("Заказ %s: освобождено кодов маркировки — %s", order_id, result.rowcount)
+    return int(result.rowcount or 0)
