@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -251,9 +252,29 @@ async def delivery_point_ids(cursor: str = "", limit: int = _MAX_PAGE) -> tuple[
     return data.get("delivery_points") or [], data.get("next_cursor") or ""
 
 
+_NOT_FOUND = re.compile(r"Не найдены пункты выдачи:\s*([\d,\s]+)")
+
+
 async def delivery_points_info(ids: list[int]) -> list[DeliveryPoint]:
-    """Подробности пунктов выдачи по их идентификаторам."""
-    data = await call("/v1/delivery-point/info", {"delivery_point_ids": ids})
+    """Подробности пунктов выдачи по их идентификаторам.
+
+    Если хоть одного пункта из пачки уже нет, Ozon отвечает 404 на всю
+    пачку и перечисляет пропавших. Раньше это роняло заход, и каталог
+    спотыкался об одну и ту же страницу каждый тик — полный обход не
+    завершался ни разу. Теперь пропавших убираем и спрашиваем остальных.
+    """
+    try:
+        data = await call("/v1/delivery-point/info", {"delivery_point_ids": ids})
+    except OzonError as error:
+        match = _NOT_FOUND.search(str(error))
+        if not match:
+            raise
+        missing = {int(x) for x in re.findall(r"\d+", match.group(1))}
+        rest = [i for i in ids if int(i) not in missing]
+        logger.info("Ozon не знает пунктов %s — берём остальные %s", len(missing), len(rest))
+        if not rest or len(rest) == len(ids):
+            return []
+        data = await call("/v1/delivery-point/info", {"delivery_point_ids": rest})
     points = []
     for item in data.get("delivery_points") or []:
         points.append(

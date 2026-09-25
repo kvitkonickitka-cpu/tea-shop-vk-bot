@@ -51,6 +51,8 @@ _OZON_WITH_CARRIER = {
     "delivered",
 }
 _OZON_TROUBLE = {"forming_failed", "not_accepted_to_delivery"}
+# Заказа нет в СДЭКе вовсе — такой больше не опрашиваем.
+CDEK_GONE = "СДЭК: заказ не найден (удалён в кабинете?)"
 
 # Статусы заказа, которые опрашивать незачем: регистрация у СДЭКа ещё не
 # подтверждена (этим занят `cdek_watch`), провалилась, или деньги вернули.
@@ -167,6 +169,7 @@ async def _due(now: datetime) -> list[Order]:
                             )
                         ),
                         Order.status != "refunded",
+                        or_(Order.carrier_status.is_(None), Order.carrier_status != CDEK_GONE),
                         Order.created_at > now - _GIVE_UP_AFTER,
                         or_(
                             Order.carrier_checked_at.is_(None),
@@ -214,6 +217,14 @@ async def check_deliveries(now: datetime | None = None) -> dict:
         try:
             observation = await _observe(order)
         except Exception as error:
+            if "v2_entity_not_found" in str(error):
+                # СДЭК не знает такого заказа — удалили в кабинете. Спрашивать
+                # каждый час бессмысленно: говорим менеджеру один раз и
+                # больше не опрашиваем.
+                result["trouble"] += 1
+                await _save(order, Observation(status=CDEK_GONE, trouble=True), now)
+                await order_chat.send(order, templates.manager_carrier_trouble(order, CDEK_GONE))
+                continue
             # Перевозчик не ответил — спросим в следующий раз. Отметку
             # времени ставим всё равно, иначе этот заказ съедал бы весь
             # тик каждые пять минут.

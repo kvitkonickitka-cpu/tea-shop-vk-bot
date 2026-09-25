@@ -12,6 +12,11 @@ from app.core.config import settings
 from app.core.database import init_models, is_available
 
 logging.basicConfig(level=logging.INFO)
+# httpx на уровне INFO пишет полный адрес каждого запроса, а в адресе бывают
+# секреты: токен бота в пути Telegram API, client_secret в запросе токена
+# СДЭКа. Они оказывались в логах контейнера открытым текстом.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
