@@ -177,11 +177,11 @@ async def _fallback_to_admin(
     недоставленном тоже уходит в телеграм, то есть при его недоступности не
     доходит и он. Сообщение от имени сообщества идёт другой дорогой.
     """
-    admin_id = settings.admin_vk_id
+    admin_id = await vk_client.resolve_user_id(settings.admin_vk_id)
     if not admin_id:
         logger.error(
-            "Резервный канал не настроен (ADMIN_VK_ID пуст) — уведомление %s "
-            "останется только в базе и в логе.", notification_id,
+            "Резервный канал не настроен (ADMIN_VK_ID пуст или не распознан) — "
+            "уведомление %s останется только в базе и в логе.", notification_id,
         )
         return
 

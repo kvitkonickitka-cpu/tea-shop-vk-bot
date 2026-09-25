@@ -229,3 +229,43 @@ async def test_without_admin_id_we_at_least_shout_in_the_log(clean, telegram, mo
         await manager_messages.flush()
 
     assert any("ADMIN_VK_ID" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("123456", 123456), (123456, 123456), ("id123456", 123456),
+        ("https://vk.com/id123456", 123456), ("", None), ("0", None), (0, None),
+    ],
+)
+async def test_admin_id_forms(raw, expected):
+    from app.modules.dialog import vk_client
+
+    assert await vk_client.resolve_user_id(raw) == expected
+
+
+async def test_admin_screen_name_is_resolved(monkeypatch):
+    """Короткое имя страницы — как было в секрете, из-за чего бот не стартовал."""
+    import httpx
+
+    from app.modules.dialog import vk_client
+
+    class Answer:
+        def json(self):
+            return {"response": {"type": "user", "object_id": 555}}
+
+    async def fake_post(self, url, data=None):
+        assert url.endswith("utils.resolveScreenName") and data["screen_name"] == "nikita_kvitko"
+        return Answer()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    vk_client._resolved.clear()
+    assert await vk_client.resolve_user_id("https://vk.com/nikita_kvitko") == 555
+    assert await vk_client.resolve_user_id("@nikita_kvitko") == 555
+
+
+def test_settings_survive_a_screen_name(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("ADMIN_VK_ID", "nikita_kvitko")
+    assert Settings().admin_vk_id == "nikita_kvitko"
