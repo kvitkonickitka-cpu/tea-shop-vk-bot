@@ -147,6 +147,11 @@ def receipt_items(items: list[dict], delivery_cost: float, delivery_label: str) 
 
     Доставка — услуга, а не товар, и в чеке она обязана быть своей позицией:
     сумма платежа должна сходиться с суммой позиций чека до копейки.
+
+    **`amount` позиции — цена за единицу** (тег 1079), а не стоимость строки:
+    ЮKassa считает сумму чека как `quantity × amount`. Раньше сюда шла цена,
+    умноженная на количество, и заказ из двух пачек одного сорта давал чек
+    вдвое дороже платежа — счёт на такой заказ не выставлялся.
     """
     rows = []
     for item in items:
@@ -156,7 +161,7 @@ def receipt_items(items: list[dict], delivery_cost: float, delivery_label: str) 
             {
                 "description": str(item.get("name", "Товар"))[:_MAX_ITEM_NAME],
                 "quantity": quantity,
-                "amount": _money(price * quantity),
+                "amount": _money(price),
                 "vat_code": settings.yookassa_vat_code,
                 "payment_mode": _PAYMENT_MODE,
                 "payment_subject": _SUBJECT_GOODS,
@@ -177,6 +182,18 @@ def receipt_items(items: list[dict], delivery_cost: float, delivery_label: str) 
             }
         )
     return rows
+
+
+def receipt_total(rows: list[dict]) -> float:
+    """Сумма чека так, как её считает ЮKassa: цена × количество по позициям.
+
+    Считаем в копейках: сложение рублей с плавающей точкой даёт хвосты
+    вроде 1599.9999, и сумма платежа разойдётся с чеком на копейку.
+    """
+    kopecks = sum(
+        round(float(row["amount"]["value"]) * 100) * row["quantity"] for row in rows
+    )
+    return round(kopecks / 100, 2)
 
 
 def _describe_failure(response: httpx.Response) -> str:
@@ -260,7 +277,7 @@ async def create_payment(
     ЮKassa — и уже на живом клиенте.
     """
     rows = receipt_items(items, delivery_cost, delivery_label)
-    total = sum(float(row["amount"]["value"]) for row in rows)
+    total = receipt_total(rows)
 
     customer = receipt_customer(full_name=full_name, email=email, phone=phone)
     if not customer.get("email") and not customer.get("phone"):
