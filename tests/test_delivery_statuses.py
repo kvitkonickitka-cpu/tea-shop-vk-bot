@@ -220,3 +220,18 @@ def test_carrier_times_are_read():
         {"status": "delivered", "status_changed_at": "2026-09-20T10:00:00Z"}, handed_over=True
     )
     assert ozon.finished_at == datetime(2026, 9, 20, 10, tzinfo=timezone.utc)
+
+
+async def test_deleted_cdek_order_is_reported_once(clean, world, monkeypatch):
+    await make_order(clean)
+    calls = []
+
+    async def order_state(uuid):
+        calls.append(uuid)
+        raise RuntimeError("HTTP 400; {'errors': [{'code': 'v2_entity_not_found'}]}")
+
+    monkeypatch.setattr(delivery_watch.cdek_client, "order_state", order_state)
+    await delivery_watch.check_deliveries(DAY)
+    await delivery_watch.check_deliveries(DAY + timedelta(hours=3))
+    assert len(calls) == 1
+    assert len([t for t in world["manager"] if "не найден" in t]) == 1
