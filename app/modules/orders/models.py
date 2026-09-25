@@ -43,6 +43,24 @@ class Order(Base):
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Судьба посылки у перевозчика. Отметки ставятся один раз, первым, кто
+    # узнал: опросом перевозчика или ручной командой. По ним же идёт
+    # идемпотентность — событие «вручено» не может случиться дважды, а от
+    # него зависит закрывающий чек.
+    carrier_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    carrier_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    handed_over_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    not_delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class OrderPayment(Base):
     """Платёж по заказу — все попытки, а не только последняя.

@@ -85,6 +85,13 @@ _MISSING_COLUMNS = (
     "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS client_ping_sent_at TIMESTAMPTZ",
     # Резервный канал для недоставленных уведомлений менеджеру.
     "ALTER TABLE manager_notifications ADD COLUMN IF NOT EXISTS fallback_sent_at TIMESTAMPTZ",
+    # Судьба посылки у перевозчика: последний статус, когда спрашивали и три
+    # отметки событий. От «вручено» зависит закрывающий чек.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_status VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_checked_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS handed_over_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS not_delivered_at TIMESTAMPTZ",
 )
 
 

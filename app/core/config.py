@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Писать ли клиенту, что вопрос всё ещё у менеджера.
     escalation_client_ping_enabled: bool = True
 
+    # Как часто спрашивать перевозчика о посылке в пути. Посылка едет днями,
+    # и чаще раза в час спрашивать незачем — только тратить лимиты СДЭКа и
+    # время тика.
+    delivery_check_interval_minutes: int = 60
+
     # Railway автоматически прокидывает DATABASE_URL при подключении Postgres
     database_url: str = ""
 

@@ -9,6 +9,9 @@
 #   scripts/api.sh health
 #   scripts/api.sh ozon/sync
 #   scripts/api.sh orders/12/invoice      выставить счёт по заказу №12
+#   scripts/api.sh orders/12/delivered    отметить вручение (и handed-over,
+#                                         not-delivered), если перевозчик молчит
+#   scripts/api.sh delivery/check         спросить перевозчиков сейчас
 #   scripts/api.sh 'ozon/quote?city=Уфа&weight=400&value=1500'
 #   scripts/api.sh 'ozon/posting?number=0123-0001-1&cancel=1'
 
