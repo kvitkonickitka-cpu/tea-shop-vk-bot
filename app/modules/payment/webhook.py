@@ -106,7 +106,13 @@ async def _on_canceled(payment: yookassa_client.Payment) -> dict:
         # Счёт уже закрыт — например, догляд успел раньше уведомления.
         return {"платёж": payment.id, "действий": "нет, счёт уже закрыт"}
 
-    notice = templates.PAYMENT_DECLINED if decision == payment_service.ON_CANCEL_DECLINED else None
+    notice = (
+        templates.PAYMENT_DECLINED
+        if decision == payment_service.ON_CANCEL_DECLINED
+        else templates.PAYMENT_EXPIRED
+        if decision == payment_service.ON_CANCEL_EXPIRED
+        else None  # отмена магазином: причину объясняет менеджер
+    )
     await payment_service.close_invoice(order, payment, notice=notice)
     return {"платёж": payment.id, "статус": payment.status, "решение": decision}
 

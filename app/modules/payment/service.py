@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from app.core import worktime
 from app.core.config import settings
 from app.messages import client as client_messages, templates
 from app.modules.orders import repository as orders_repository, state
@@ -63,10 +64,13 @@ def decide_on_cancel(party: str, reason: str) -> str:
 
     ЮKassa в `cancellation_details` говорит, кто отменил и почему, и эти
     случаи требуют разного. Отказ банка — повод предложить другую карту.
-    Истёкший срок клиент уже знает: про закрытие счёта он услышал от нас
-    (задача про напоминания), и второе сообщение было бы про то же. Отмену
-    со стороны магазина объясняет менеджер — у бота нет причины, которую
-    можно назвать клиенту.
+    Отмену со стороны магазина объясняет менеджер: у бота нет причины,
+    которую можно назвать клиенту.
+
+    **Истёкший срок клиенту сообщаем.** Раньше здесь молчали, считая, что он
+    уже слышал про закрытие счёта от нашего догляда. С часовым сроком
+    ЮKassa это неверно: она закрывает платёж первой, и без сообщения клиент
+    просто остаётся с мёртвой ссылкой и без новостей.
     """
     if reason.startswith("expired"):
         return ON_CANCEL_EXPIRED
@@ -109,12 +113,29 @@ async def close_invoice(order, payment, *, notice: str | None) -> None:
     if notice is None:
         return
 
+    # Ночью по своей инициативе не пишем. Сообщение не теряется: догляд
+    # видит закрытый заказ без отметки и дошлёт его после тихих часов.
+    if worktime.is_quiet():
+        logger.info(
+            "Заказ %s: про закрытый счёт скажем клиенту после тихих часов", order.id
+        )
+        return
+
+    await tell_about_closed_invoice(order, notice)
+
+
+async def tell_about_closed_invoice(order, notice: str) -> bool:
+    """Сказать клиенту про закрытый счёт. Отдельно — потому что зовут дважды.
+
+    Первый раз — когда счёт закрылся; второй — утром, если закрылся он
+    ночью и сообщение отложили.
+    """
     text = (
         templates.payment_declined(order)
         if notice == templates.PAYMENT_DECLINED
         else templates.payment_expired(order)
     )
-    await client_messages.send(
+    return await client_messages.send(
         peer_id=order.peer_id,
         ref=client_messages.order_ref(order.id),
         event_type=notice,
