@@ -6,18 +6,19 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
-from app.core import heartbeat
+from app.core import heartbeat, worktime
 from app.core.config import settings
 from app.messages import manager as manager_messages
 from app.modules import events
 from app.modules.catalog import vk_market
-from app.modules.marking import pool as marking_pool
+from app.modules.marking import packing, pool as marking_pool
 from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import (
     cdek_watch,
     delivery_events,
     delivery_watch,
+    order_chat,
     repository as orders_repository,
 )
 from app.modules.payment import service as payment_service
@@ -277,6 +278,40 @@ async def mark_delivery_event(order_id: int, request: Request):
         }
     logger.info("Заказ %s: событие %s отмечено вручную", order_id, kind)
     return {"заказ": order_id, "событие": kind, "отмечено": True}
+
+
+@router.post("/internal/orders/{order_id}/pack-link")
+async def pack_link(order_id: int, request: Request):
+    """Свежая ссылка на страницу сборки — и она же в чат заказов.
+
+        scripts/api.sh orders/12/pack-link
+
+    Нужна, когда срок ссылки из карточки вышел или карточка ушла без неё
+    (не был задан PUBLIC_BASE_URL). В чат — чтобы открыть с телефона.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+
+    base = settings.public_base_url
+    if not base:
+        # Запрос пришёл на адрес контейнера — он и есть публичный адрес.
+        # Схему поправляем: шлюз передаёт запрос внутрь по http.
+        base = str(request.base_url).rstrip("/")
+        if base.startswith("http://") and "localhost" not in base and "127.0.0.1" not in base:
+            base = "https://" + base[len("http://"):]
+    made = packing.pack_url(order_id, base)
+    if made is None:
+        return {"error": "ссылку не собрать: не задан INTERNAL_API_TOKEN"}
+    url, expires = made
+    await order_chat.send(
+        order,
+        f'📦 <a href="{url}">Собрать заказ №{order_id} — сканировать коды</a>\n'
+        f"Ссылка действует до {worktime.to_msk(expires):%d.%m %H:%M} МСК.",
+    )
+    return {"заказ": order_id, "ссылка": url, "действует до (МСК)": f"{worktime.to_msk(expires):%d.%m %H:%M}"}
 
 
 @router.post("/internal/codes/import")

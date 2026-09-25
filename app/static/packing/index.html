@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>Сборка заказа</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --text: #1f1d1a; --muted: #6b665e;
+    --line: #e4dfd5; --accent: #2f6b4f; --accent-text: #ffffff;
+    --ok: #2f6b4f; --ok-bg: #e5f1ea; --bad: #a3322a; --bad-bg: #f8e6e4;
+    --warn: #8a5a00; --warn-bg: #fbf0d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151412; --card: #1f1d1a; --text: #efebe4; --muted: #a39d93;
+      --line: #34302a; --accent: #5fae86; --accent-text: #0f1a14;
+      --ok: #7fcaa2; --ok-bg: #16281f; --bad: #f08a80; --bad-bg: #2d1917;
+      --warn: #f0c060; --warn-bg: #2b2413;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 12px 16px calc(96px + env(safe-area-inset-bottom));
+  }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .position { padding: 10px 0; border-top: 1px solid var(--line); }
+  .position:first-child { border-top: 0; padding-top: 0; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .name { font-weight: 600; }
+  .count { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .count.done { color: var(--ok); }
+  .codes { list-style: none; margin: 6px 0 0; padding: 0; }
+  .codes li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; font-size: 14px; }
+  .codes code { font-size: 13px; word-break: break-all; }
+  .tag { font-size: 12px; color: var(--warn); margin-left: 6px; }
+  button {
+    font: inherit; border: 0; border-radius: 10px; padding: 12px 14px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font-weight: 600;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button.small { padding: 4px 10px; font-size: 13px; font-weight: 500; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .camera { position: relative; border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; display: none; }
+  .camera.on { display: block; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .frame { position: absolute; inset: 18% 22%; border: 3px solid rgba(255,255,255,.85); border-radius: 10px; pointer-events: none; }
+  .message { border-radius: 10px; padding: 10px 12px; margin: 10px 0 0; font-weight: 500; display: none; }
+  .message.show { display: block; }
+  .message.ok { background: var(--ok-bg); color: var(--ok); }
+  .message.bad { background: var(--bad-bg); color: var(--bad); }
+  .message.warn { background: var(--warn-bg); color: var(--warn); }
+  label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+  input, textarea {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+  }
+  textarea { min-height: 72px; font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  .footer {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--card); border-top: 1px solid var(--line);
+  }
+  .footer button { width: 100%; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .actions button { flex: 1 1 auto; }
+</style>
+</head>
+<body>
+<h1 id="title">Сборка заказа</h1>
+
+<div class="card" id="positions"><span class="muted">Загружаю заказ…</span></div>
+
+<div class="card">
+  <div class="camera" id="camera"><video id="video" playsinline muted></video><div class="frame"></div></div>
+  <div class="actions" style="margin-top:10px">
+    <button id="cameraButton">Включить камеру</button>
+  </div>
+  <div class="message" id="message"></div>
+  <p class="muted" id="hint">Наведите камеру на квадратный код DataMatrix на пачке. Каждая пачка — один скан.</p>
+</div>
+
+<div class="card">
+  <label for="packer">Кто собирает</label>
+  <input id="packer" autocomplete="name" placeholder="Имя">
+</div>
+
+<div class="card">
+  <details>
+    <summary>Ввести код вручную</summary>
+    <p class="message warn show">Запасной путь. В коде есть невидимые разделители, и при копировании или наборе
+      руками они теряются — касса такой код не примет. Сканируйте камерой, если только можно.
+      Разделитель можно вписать как &lt;GS&gt;.</p>
+    <textarea id="manualCode" placeholder="010460620309922121…&lt;GS&gt;93…"></textarea>
+    <div class="actions" style="margin-top:8px"><button class="secondary" id="manualButton">Проверить и добавить</button></div>
+  </details>
+</div>
+
+<div class="footer"><button id="finishButton" disabled>Собрано</button></div>
+
+<script src="/pack/static/zxing-reader.js"></script>
+<script>
+(() => {
+  const token = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
+  const base = "/pack/" + encodeURIComponent(token);
+  const $ = (id) => document.getElementById(id);
+  let state = null;
+  let busy = false;
+  let lastText = "";
+  let lastAt = 0;
+  let stream = null;
+  let scanning = false;
+
+  try { $("packer").value = localStorage.getItem("packer") || ""; } catch (e) {}
+  $("packer").addEventListener("change", () => {
+    try { localStorage.setItem("packer", $("packer").value.trim()); } catch (e) {}
+  });
+
+  function show(text, kind) {
+    const box = $("message");
+    box.textContent = text;
+    box.className = "message show " + kind;
+  }
+
+  async function call(path, payload) {
+    const response = await fetch(base + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    let data = {};
+    try { data = await response.json(); } catch (e) {}
+    if (!response.ok && !data.message) data.message = "Сервер ответил ошибкой " + response.status;
+    return data;
+  }
+
+  function render() {
+    if (!state) return;
+    $("title").textContent = "Сборка заказа №" + state.order_id;
+    const box = $("positions");
+    box.innerHTML = "";
+    if (state.closed_reason) {
+      box.innerHTML = '<p class="message bad show"></p>';
+      box.firstChild.textContent = state.closed_reason;
+    }
+    if (state.packed_at) {
+      const p = document.createElement("p");
+      p.className = "message ok show";
+      p.textContent = "Собрано " + state.packed_at + " — коды закреплены за заказом.";
+      box.appendChild(p);
+    }
+    if (!state.pool_imported) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "Пул кодов не загружен — принимаются любые коды, годные по формату.";
+      box.appendChild(p);
+    }
+    for (const position of state.positions) {
+      const div = document.createElement("div");
+      div.className = "position";
+      const row = document.createElement("div");
+      row.className = "row";
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = position.name + " × " + position.quantity;
+      const count = document.createElement("span");
+      count.className = "count" + (position.done ? " done" : "");
+      count.textContent = position.scanned + " / " + position.quantity + (position.done ? " ✓" : "");
+      row.append(name, count);
+      div.appendChild(row);
+      if (!position.gtin) {
+        const warn = document.createElement("p");
+        warn.className = "message bad show";
+        warn.textContent = "У товара не задан GTIN в каталоге — собрать с кодами нельзя.";
+        div.appendChild(warn);
+      }
+      const list = document.createElement("ul");
+      list.className = "codes";
+      for (const code of position.codes) {
+        const li = document.createElement("li");
+        const label = document.createElement("span");
+        const c = document.createElement("code");
+        c.textContent = code.serial;
+        label.appendChild(c);
+        if (!code.from_pool) {
+          const tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = "не из пула";
+          label.appendChild(tag);
+        }
+        if (code.manual) {
+          const tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = "вручную";
+          label.appendChild(tag);
+        }
+        li.appendChild(label);
+        if (!state.packed_at) {
+          const remove = document.createElement("button");
+          remove.className = "secondary small";
+          remove.textContent = "Убрать";
+          remove.addEventListener("click", () => removeCode(code.id));
+          li.appendChild(remove);
+        }
+        list.appendChild(li);
+      }
+      div.appendChild(list);
+      box.appendChild(div);
+    }
+    $("finishButton").disabled = !state.can_finish;
+    $("finishButton").textContent = state.packed_at ? "Собрано ✓" : "Собрано";
+  }
+
+  async function load() {
+    const data = await call("/state");
+    if (!data.ok) {
+      $("positions").innerHTML = '<p class="message bad show"></p>';
+      $("positions").firstChild.textContent = data.message || "Не удалось открыть заказ.";
+      $("cameraButton").disabled = true;
+      return;
+    }
+    state = data.state;
+    render();
+  }
+
+  function feedback(ok) {
+    try { navigator.vibrate && navigator.vibrate(ok ? 60 : [80, 60, 80]); } catch (e) {}
+  }
+
+  async function submit(code, manual) {
+    if (busy) return;
+    busy = true;
+    try {
+      const data = await call("/scan", { code, manual, by: $("packer").value.trim() });
+      if (data.state) { state = data.state; render(); }
+      if (data.ok) {
+        show(data.message + (data.warning ? " · " + data.warning : ""), data.warning ? "warn" : "ok");
+      } else {
+        show(data.message || "Код не принят.", "bad");
+      }
+      feedback(!!data.ok);
+      return !!data.ok;
+    } catch (e) {
+      show("Нет связи с сервером — проверьте интернет и отсканируйте ещё раз.", "bad");
+      return false;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeCode(id) {
+    const data = await call("/remove", { id });
+    if (data.state) { state = data.state; render(); }
+    show(data.message || (data.ok ? "Код убран." : "Не получилось убрать код."), data.ok ? "ok" : "bad");
+  }
+
+  $("finishButton").addEventListener("click", async () => {
+    const data = await call("/finish", { by: $("packer").value.trim() });
+    if (data.state) { state = data.state; render(); }
+    show(data.message || "Не получилось.", data.ok ? "ok" : "bad");
+    if (data.ok) stopCamera();
+  });
+
+  $("manualButton").addEventListener("click", async () => {
+    const value = $("manualCode").value;
+    if (!value.trim()) return;
+    if (await submit(value, true)) $("manualCode").value = "";
+  });
+
+  // --- камера ---------------------------------------------------------------
+
+  if (window.ZXingWASM) {
+    ZXingWASM.prepareZXingModule({
+      overrides: {
+        locateFile: (path, prefix) =>
+          path.endsWith(".wasm") ? "/pack/static/zxing_reader.wasm" : prefix + path,
+      },
+      fireImmediately: true,
+    });
+  }
+
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+
+  async function tick() {
+    if (!scanning) return;
+    const video = $("video");
+    if (video.readyState >= 2 && !busy) {
+      // Берём середину кадра: там рамка, и так распознавание быстрее.
+      const w = video.videoWidth, h = video.videoHeight;
+      const side = Math.floor(Math.min(w, h) * 0.8);
+      canvas.width = side; canvas.height = side;
+      context.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, side, side);
+      try {
+        const results = await ZXingWASM.readBarcodes(context.getImageData(0, 0, side, side), {
+          formats: ["DataMatrix"],
+          // Plain — чтобы разделители GS остались в тексте как есть.
+          textMode: "Plain",
+          tryHarder: true,
+          maxNumberOfSymbols: 1,
+        });
+        const found = results.find((r) => r.isValid && r.text);
+        if (found) {
+          const now = Date.now();
+          // Один и тот же код в кадре — не повод слать его каждые 200 мс.
+          if (found.text !== lastText || now - lastAt > 4000) {
+            lastText = found.text; lastAt = now;
+            if (found.symbologyIdentifier && found.symbologyIdentifier !== "]d2") {
+              show("Это не код маркировки (не GS1 DataMatrix) — наведите на другой квадратный код.", "bad");
+              feedback(false);
+            } else {
+              await submit(found.text, false);
+            }
+          }
+        }
+      } catch (e) {
+        show("Сканер не загрузился: " + (e && e.message ? e.message : e), "bad");
+        stopCamera();
+        return;
+      }
+    }
+    setTimeout(tick, 200);
+  }
+
+  async function startCamera() {
+    if (!window.ZXingWASM) {
+      show("Сканер не загрузился — обновите страницу. Пока можно ввести код вручную.", "bad");
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false,
+      });
+    } catch (e) {
+      show("Камера недоступна: разрешите доступ к камере для этой страницы в настройках браузера.", "bad");
+      return;
+    }
+    const video = $("video");
+    video.srcObject = stream;
+    await video.play();
+    $("camera").classList.add("on");
+    $("cameraButton").textContent = "Выключить камеру";
+    scanning = true;
+    tick();
+  }
+
+  function stopCamera() {
+    scanning = false;
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    $("camera").classList.remove("on");
+    $("cameraButton").textContent = "Включить камеру";
+  }
+
+  $("cameraButton").addEventListener("click", () => (scanning ? stopCamera() : startCamera()));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stopCamera(); });
+
+  load();
+})();
+</script>
+</body>
+</html>

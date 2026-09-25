@@ -92,6 +92,9 @@ _MISSING_COLUMNS = (
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS handed_over_at TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS not_delivered_at TIMESTAMPTZ",
+    # Сборка со сканированием кодов маркировки.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS packed_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS packed_by VARCHAR",
 )
 
 

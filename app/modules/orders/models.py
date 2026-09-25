@@ -60,6 +60,12 @@ class Order(Base):
     not_delivered_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Сборка со сканированием кодов маркировки: когда и кто нажал «Собрано».
+    # После отметки коды закреплены за заказом и уходят в закрывающий чек.
+    packed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    packed_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class OrderPayment(Base):

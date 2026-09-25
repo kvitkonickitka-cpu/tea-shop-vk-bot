@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # время тика.
     delivery_check_interval_minutes: int = 60
 
+    # Публичный адрес контейнера, https://….containers.yandexcloud.net — из
+    # него собирается ссылка на страницу сборки в карточке заказа. Пусто —
+    # ссылки в карточке нет, её можно получить командой
+    # `scripts/api.sh orders/<N>/pack-link`.
+    public_base_url: str = ""
+    # Сколько живёт ссылка на сборку. Сутки мало: оплатили вечером пятницы,
+    # собирают в понедельник. После «Собрано» ссылка всё равно ничего не
+    # меняет, так что длинный срок почти ничем не грозит.
+    packing_link_ttl_hours: int = 72
+
     # Railway автоматически прокидывает DATABASE_URL при подключении Postgres
     database_url: str = ""
 

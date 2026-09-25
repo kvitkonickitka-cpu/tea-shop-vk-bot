@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from app.messages import client as client_messages, templates
+from app.modules.marking import packing
 from app.modules.orders import (
     cdek_watch,
     order_chat,
@@ -362,4 +363,9 @@ def _paid_card(order, payment: yookassa_client.Payment, *, was_closed: bool = Fa
         # зарегистрирован — это не повод дёргать клиента, но менеджер должен
         # видеть, что чека ещё нет.
         card += f"\nЧек: {payment.receipt_registration}"
+    # Ссылка на сборку со сканированием кодов маркировки — если у товаров
+    # заданы GTIN и известен адрес контейнера.
+    pack_line = packing.card_line(order)
+    if pack_line:
+        card += "\n" + pack_line
     return card

@@ -12,6 +12,7 @@
 #   scripts/api.sh orders/12/delivered    отметить вручение (и handed-over,
 #                                         not-delivered), если перевозчик молчит
 #   scripts/api.sh delivery/check         спросить перевозчиков сейчас
+#   scripts/api.sh orders/12/pack-link    свежая ссылка на страницу сборки
 #   scripts/api.sh codes/import codes.csv  загрузить пул кодов маркировки
 #                                         (выгрузка из СУЗ «Честного знака»)
 #   scripts/api.sh 'ozon/quote?city=Уфа&weight=400&value=1500'
