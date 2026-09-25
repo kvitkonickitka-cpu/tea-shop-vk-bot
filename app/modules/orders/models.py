@@ -66,6 +66,19 @@ class Order(Base):
         DateTime(timezone=True), nullable=True
     )
     packed_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Закрывающий чек при вручении — один на заказ. Номер попытки нужен для
+    # ключа идемпотентности: после отказа ЮKassa повтор с тем же ключом и
+    # другими данными она не примет, а после сбоя сети повтор обязан быть с
+    # тем же ключом, чтобы не выбить второй чек.
+    settlement_receipt_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    settlement_receipt_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    settlement_receipt_attempt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    settlement_receipt_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Почему чек не ушёл — последняя причина. Менеджеру говорим, когда она
+    # меняется, а не каждый тик.
+    settlement_note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class OrderPayment(Base):

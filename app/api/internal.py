@@ -21,7 +21,7 @@ from app.modules.orders import (
     order_chat,
     repository as orders_repository,
 )
-from app.modules.payment import service as payment_service
+from app.modules.payment import service as payment_service, settlement
 from app.modules.payment import watch as payment_watch
 from app.modules.payment import yookassa_client
 from app.modules.queue import client as queue_client
@@ -119,6 +119,8 @@ async def _run_scheduled() -> dict:
         # Судьба посылок после регистрации: передали, вручили, вернули. От
         # вручения зависит закрывающий чек, поэтому раньше каталога.
         "deliveries": await _run_task("Статусы доставки", delivery_watch.check_deliveries()),
+        # Закрывающие чеки: статус у ЮKassa, повтор после сбоя сети.
+        "settlement_receipts": await _run_task("Закрывающие чеки", settlement.check()),
     }
 
     # Вопросы без ответа — до каталога: проверка дешёвая (несколько строк в
@@ -278,6 +280,30 @@ async def mark_delivery_event(order_id: int, request: Request):
         }
     logger.info("Заказ %s: событие %s отмечено вручную", order_id, kind)
     return {"заказ": order_id, "событие": kind, "отмечено": True}
+
+
+@router.post("/internal/orders/{order_id}/settlement-receipt")
+async def settlement_receipt(order_id: int, request: Request):
+    """Отправить закрывающий чек по вручённому заказу — после исправления.
+
+        scripts/api.sh orders/12/settlement-receipt
+
+    Идёт тем же кодом, что и событие «вручено»: те же проверки (оплачен,
+    есть почта, собран с кодами, сумма сходится), тот же ключ
+    идемпотентности. Если чек уже есть — второй не создаётся.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+    if order.delivered_at is None:
+        return {
+            "заказ": order_id,
+            "error": "заказ ещё не вручён — чек уходит при вручении. Если "
+                     f"вручён, но перевозчик молчит: scripts/api.sh orders/{order_id}/delivered",
+        }
+    return {"заказ": order_id, **(await settlement.issue(order))}
 
 
 @router.post("/internal/orders/{order_id}/pack-link")

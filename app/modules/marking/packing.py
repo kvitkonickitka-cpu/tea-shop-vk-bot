@@ -142,6 +142,8 @@ class PackingState:
     def complete(self) -> bool:
         return bool(self.positions) and all(p.done for p in self.positions)
 
+    delivered_without_codes: bool = False
+
     @property
     def can_finish(self) -> bool:
         return self.complete and self.packed_at is None and not self.closed_reason
@@ -153,6 +155,7 @@ class PackingState:
             if self.packed_at else None,
             "pool_imported": self.pool_imported,
             "closed_reason": self.closed_reason,
+            "delivered_without_codes": self.delivered_without_codes,
             "can_finish": self.can_finish,
             "positions": [
                 {
@@ -169,8 +172,9 @@ def _closed_reason(order: Order) -> str:
     """Почему заказ уже нельзя собирать, или пусто."""
     if order.status == "refunded":
         return "По заказу оформлен возврат — собирать его не нужно."
-    if order.delivered_at is not None:
-        return "Заказ уже вручён."
+    if order.delivered_at is not None and order.settlement_receipt_id and \
+            order.settlement_receipt_status in ("pending", "succeeded"):
+        return "Заказ вручён, закрывающий чек с кодами уже отправлен."
     if order.not_delivered_at is not None:
         return "Заказ не вручён и возвращается — собирать его заново не нужно."
     return ""
@@ -219,6 +223,9 @@ async def _state(session, order: Order) -> PackingState:
         packed_at=order.packed_at,
         pool_imported=await pool.pool_imported(),
         closed_reason=_closed_reason(order),
+        # Вручённый заказ без кодов собрать всё ещё можно: так исправляют
+        # закрывающий чек, если сборку через страницу пропустили.
+        delivered_without_codes=order.delivered_at is not None and order.packed_at is None,
     )
 
 

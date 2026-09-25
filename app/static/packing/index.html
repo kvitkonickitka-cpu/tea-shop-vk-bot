@@ -156,6 +156,13 @@
       p.textContent = "Собрано " + state.packed_at + " — коды закреплены за заказом.";
       box.appendChild(p);
     }
+    if (state.delivered_without_codes) {
+      const p = document.createElement("p");
+      p.className = "message warn show";
+      p.textContent = "Заказ уже вручён, а коды не отсканированы. Добавьте коды пачек, которые ушли в посылке, " +
+        "нажмите «Собрано», затем отправьте чек: scripts/api.sh orders/" + state.order_id + "/settlement-receipt";
+      box.appendChild(p);
+    }
     if (!state.pool_imported) {
       const p = document.createElement("p");
       p.className = "muted";

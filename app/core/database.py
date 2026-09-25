@@ -95,6 +95,12 @@ _MISSING_COLUMNS = (
     # Сборка со сканированием кодов маркировки.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS packed_at TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS packed_by VARCHAR",
+    # Закрывающий чек при вручении.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_id VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_status VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_attempt INTEGER",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_sent_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_note VARCHAR",
 )
 
 

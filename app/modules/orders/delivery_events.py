@@ -100,6 +100,17 @@ async def record(order_id: int, event: str, *, source: str) -> Order | None:
 
 async def _consequences(order: Order, event: str) -> None:
     """Что происходит после события. Сбой одного следствия не отменяет другие."""
+    if event == DELIVERED:
+        from app.modules.payment import settlement
+
+        try:
+            await settlement.on_delivered(order)
+        except Exception:
+            # Отметка «вручено» уже стоит, и повторно событие не придёт. Чек
+            # досылает таймер (`settlement.check`) или команда
+            # orders/<N>/settlement-receipt.
+            logger.exception("Заказ %s: закрывающий чек не отправлен", order.id)
+
     if event == NOT_DELIVERED:
         await order_chat.send(
             order, templates.manager_not_delivered(order, order.carrier_status or "не вручён")
@@ -150,7 +161,14 @@ async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
             )
         event_type = templates.HANDED_OVER
     elif event == DELIVERED:
-        text = templates.delivered(order)
+        from app.modules.payment import settlement
+
+        # Про закрывающий чек предупреждаем, только если он и правда ушёл:
+        # иначе клиент ждал бы письма, которого не будет.
+        text = templates.delivered(
+            order,
+            receipt_email=details.get("recipient_email", "") if settlement.was_sent(order) else "",
+        )
         event_type = templates.DELIVERED
     else:
         text = templates.not_delivered(order)

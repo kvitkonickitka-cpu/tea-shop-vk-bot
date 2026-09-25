@@ -413,3 +413,39 @@ async def create_refund(
         refund.id, payment_id, refund.amount, refund.status,
     )
     return refund
+
+
+@dataclass(frozen=True)
+class Receipt:
+    """Чек, созданный отдельным запросом, — закрывающий при вручении."""
+
+    id: str
+    status: str
+    payment_id: str
+
+
+def _to_receipt(data: dict) -> Receipt:
+    return Receipt(
+        id=data.get("id", ""),
+        status=data.get("status", ""),
+        payment_id=data.get("payment_id", ""),
+    )
+
+
+async def create_receipt(payload: dict, key: str) -> Receipt:
+    """Создать чек отдельным запросом (`POST /receipts`).
+
+    Так формируется чек зачёта предоплаты при вручении: подтверждено
+    поддержкой ЮKassa 25.09.2026, другого способа нет. Регистрирует его
+    касса позже и асинхронно — статус приходит `pending`.
+    """
+    receipt = _to_receipt(await _call("POST", "/receipts", payload, key=key))
+    logger.info(
+        "ЮKassa: чек %s по платежу %s, статус %s",
+        receipt.id, receipt.payment_id, receipt.status,
+    )
+    return receipt
+
+
+async def get_receipt(receipt_id: str) -> Receipt:
+    return _to_receipt(await _call("GET", f"/receipts/{receipt_id}"))
