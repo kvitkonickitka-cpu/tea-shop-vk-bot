@@ -9,6 +9,13 @@
 #   scripts/api.sh health
 #   scripts/api.sh ozon/sync
 #   scripts/api.sh orders/12/invoice      выставить счёт по заказу №12
+#   scripts/api.sh orders/12/delivered    отметить вручение (и handed-over,
+#                                         not-delivered), если перевозчик молчит
+#   scripts/api.sh delivery/check         спросить перевозчиков сейчас
+#   scripts/api.sh orders/12/pack-link    свежая ссылка на страницу сборки
+#   scripts/api.sh orders/12/settlement-receipt   закрывающий чек после исправления
+#   scripts/api.sh codes/import codes.csv  загрузить пул кодов маркировки
+#                                         (выгрузка из СУЗ «Честного знака»)
 #   scripts/api.sh 'ozon/quote?city=Уфа&weight=400&value=1500'
 #   scripts/api.sh 'ozon/posting?number=0123-0001-1&cancel=1'
 
@@ -71,7 +78,19 @@ esac
 
 # Служебные эндпоинты работают дольше: выгрузка каталога тратит до 20 секунд
 # сама по себе, расчёт ходит в Ozon. Минута — с запасом, но не навсегда.
-BODY=$(curl -sS --max-time 60 -X POST "$URL" --data-binary "$TOKEN")
+# Второй аргумент — файл, который надо передать вместе с токеном (выгрузка
+# кодов маркировки). Токен идёт первой строкой, файл — следом: эндпоинт ищет
+# токен в теле, а строку с ним при разборе пропускает.
+if [ -n "${2:-}" ]; then
+    if [ ! -f "$2" ]; then
+        echo "Нет файла $2" >&2
+        exit 1
+    fi
+    BODY=$({ printf '%s\n' "$TOKEN"; cat "$2"; } \
+        | curl -sS --max-time 120 -X POST "$URL" --data-binary @-)
+else
+    BODY=$(curl -sS --max-time 60 -X POST "$URL" --data-binary "$TOKEN")
+fi
 echo "$BODY"
 
 # `forbidden` значит, что токен в .env и токен в ревизии разошлись. Сравнить

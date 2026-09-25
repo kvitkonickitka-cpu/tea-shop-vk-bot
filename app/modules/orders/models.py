@@ -43,6 +43,43 @@ class Order(Base):
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Судьба посылки у перевозчика. Отметки ставятся один раз, первым, кто
+    # узнал: опросом перевозчика или ручной командой. По ним же идёт
+    # идемпотентность — событие «вручено» не может случиться дважды, а от
+    # него зависит закрывающий чек.
+    carrier_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    carrier_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    handed_over_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    not_delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Сборка со сканированием кодов маркировки: когда и кто нажал «Собрано».
+    # После отметки коды закреплены за заказом и уходят в закрывающий чек.
+    packed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    packed_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Закрывающий чек при вручении — один на заказ. Номер попытки нужен для
+    # ключа идемпотентности: после отказа ЮKassa повтор с тем же ключом и
+    # другими данными она не примет, а после сбоя сети повтор обязан быть с
+    # тем же ключом, чтобы не выбить второй чек.
+    settlement_receipt_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    settlement_receipt_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    settlement_receipt_attempt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    settlement_receipt_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Почему чек не ушёл — последняя причина. Менеджеру говорим, когда она
+    # меняется, а не каждый тик.
+    settlement_note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
 
 class OrderPayment(Base):
     """Платёж по заказу — все попытки, а не только последняя.

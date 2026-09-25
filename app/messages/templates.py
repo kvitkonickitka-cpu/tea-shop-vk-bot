@@ -31,6 +31,9 @@ REMINDER_2 = "payment_reminder_2"
 ESCALATION_WAITING = "escalation_waiting"
 DOUBLE_PAYMENT = "double_payment"
 DOUBLE_PAYMENT_STUCK = "double_payment_stuck"
+HANDED_OVER = "handed_over"
+DELIVERED = "delivered"
+NOT_DELIVERED = "not_delivered"
 
 
 def amount(value) -> str:
@@ -87,8 +90,10 @@ def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bo
 
 
 def cdek_track(order, number: str, tracking_url: str) -> str:
+    # «Оформлена», а не «передана»: СДЭК выдаёт накладную при регистрации,
+    # а посылку мы сдаём в отделение позже. О приёмке — отдельная новость.
     return (
-        f"Посылка по заказу №{order.id} передана в СДЭК.\n"
+        f"Посылка по заказу №{order.id} оформлена в СДЭКе.\n"
         f"Трек-номер: {number}\nОтследить: {tracking_url}"
     )
 
@@ -181,6 +186,44 @@ def reminder_2(order, link: str, expires_at) -> str:
     )
 
 
+def handed_over(order, *, carrier: str, number: str = "", tracking_url: str = "") -> str:
+    """Посылку принял перевозчик — не «зарегистрировали», а физически забрал."""
+    lines = [f"📦 Посылка по заказу №{order.id} принята {carrier} и уже в пути."]
+    if number and tracking_url:
+        lines.append(f"Трек-номер: {number}\nОтследить: {tracking_url}")
+    elif number:
+        lines.append(
+            f"Отправление: {number} — за ним удобно следить в приложении Ozon."
+        )
+    return "\n".join(lines)
+
+
+def delivered(order, *, receipt_email: str = "") -> str:
+    """Посылка вручена.
+
+    Про закрывающий чек предупреждаем заранее: второе письмо из ЮKassa по
+    уже оплаченному заказу иначе выглядит как повторное списание.
+    """
+    lines = [f"Заказ №{order.id} вручён — спасибо, что выбрали нас! 🍵"]
+    if receipt_email:
+        lines.append(
+            f"На {receipt_email} придёт итоговый чек о получении товара. Это не "
+            "новое списание, а закрывающий документ к уже оплаченному заказу."
+        )
+    lines.append("Будет здорово, если напишете, как вам чай.")
+    return "\n".join(lines)
+
+
+def not_delivered(order) -> str:
+    """Посылку не вручили, она едет обратно к нам."""
+    return (
+        f"Посылка по заказу №{order.id} не была получена и возвращается к нам.\n"
+        "Менеджер свяжется с вами "
+        f"{worktime.working_day_phrase()}: вернём деньги или отправим заново — "
+        "как вам удобнее."
+    )
+
+
 def escalation_waiting() -> str:
     return "Вопрос у менеджера, он ответит здесь же, как только освободится 🙏"
 
@@ -237,4 +280,60 @@ def manager_double_payment_stuck(order, payment, error: str) -> str:
         f"Платёж {payment.id} на {amount(payment.amount)} руб.\n"
         f"ЮKassa отказала: {error}\n"
         "Вернуть вручную в кабинете ЮKassa — деньги клиента у нас."
+    )
+
+
+def manager_not_delivered(order, carrier_status: str) -> str:
+    return (
+        f"↩️ <b>Заказ №{order.id} не вручён — посылка возвращается</b>\n"
+        f"Статус перевозчика: {carrier_status}.\n"
+        "Закрывающий чек по такому заказу не формируется. Когда посылка "
+        "вернётся — полный возврат в кабинете ЮKassa: чек возврата ЮKassa "
+        "соберёт сама по чеку оплаты. Коды маркировки освободятся сами, "
+        "когда придёт уведомление о возврате. Клиенту сказали."
+    )
+
+
+def manager_carrier_trouble(order, carrier_status: str) -> str:
+    return (
+        f"⚠️ <b>Заказ №{order.id}: заминка у перевозчика</b>\n"
+        f"Статус: {carrier_status}. Проверьте отправление в кабинете."
+    )
+
+
+def manager_settlement_problem(order, reason: str, *, urgent: bool = True) -> str:
+    """Закрывающий чек не ушёл или застрял — что и как исправить."""
+    return (
+        f"{'🚨' if urgent else '⚠️'} <b>Заказ №{order.id}: {reason}</b>\n"
+        "Закрывающий чек (зачёт предоплаты с кодами маркировки) не сформирован.\n"
+        f"Исправить и отправить: ссылка на сборку — scripts/api.sh orders/{order.id}/pack-link, "
+        f"затем scripts/api.sh orders/{order.id}/settlement-receipt"
+    )
+
+
+def pack_card_line(url: str, expires) -> str:
+    """Строка со ссылкой на сборку в карточке оплаченного заказа."""
+    return (
+        f'📦 <a href="{url}">Собрать заказ — сканировать коды</a> '
+        f"(ссылка до {worktime.to_msk(expires):%d.%m %H:%M} МСК)"
+    )
+
+
+def manager_pack_link(order_id, url: str, expires) -> str:
+    """Свежая ссылка на сборку по команде orders/<N>/pack-link."""
+    return (
+        f'📦 <a href="{url}">Собрать заказ №{order_id} — сканировать коды</a>\n'
+        f"Ссылка действует до {worktime.to_msk(expires):%d.%m %H:%M} МСК."
+    )
+
+
+def manager_refund_codes_released(count: int) -> str:
+    return f"Коды маркировки освобождены: {count} шт., снова в наличии."
+
+
+def manager_refund_after_settlement() -> str:
+    return (
+        "⚠️ Возврат после закрывающего чека: чек возврата должен быть с "
+        "полным расчётом и кодами маркировки возвращённых пачек. Проверьте "
+        "чек возврата в кабинете ЮKassa; при расхождении — их поддержка."
     )

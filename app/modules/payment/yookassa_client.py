@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -100,27 +101,32 @@ def phone_is_valid(raw: str) -> bool:
     return _PHONE_MIN_DIGITS <= len(digits) <= _PHONE_MAX_DIGITS
 
 
-def receipt_customer(*, full_name: str, email: str, phone: str) -> dict:
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def email_is_valid(raw: str) -> bool:
+    """Похоже ли на почтовый адрес. Проверка грубая: отсеять опечатки вроде
+    пропущенной собаки, а не разбирать RFC 5322 — это сделает ЮKassa."""
+    return bool(_EMAIL.match((raw or "").strip()))
+
+
+def receipt_customer(*, full_name: str, email: str, phone: str = "") -> dict:
     """Кому выписан чек.
 
-    По 54-ФЗ электронный чек можно отправить на почту **или** на телефон, и
-    ЮKassa принимает любой из контактов. Раньше бот требовал почту, считая,
-    что чек доставляется только письмом, и клиент без почты не мог оформить
-    заказ вовсе.
+    **Только почта.** В «Чеках от ЮKassa» `customer.email` обязателен, а чек
+    доставляется исключительно письмом — так сказано в их документации и
+    подтверждено поддержкой 25.09.2026 для каждого чека, включая закрывающий
+    при вручении. Одно время мы клали телефон вместо отсутствующей почты:
+    тестовый магазин (эмуляция сторонней кассы) это принимал, боевой — нет.
 
-    Контакт кладём один: почту, если она есть, иначе телефон. Оба сразу не
-    нужны — чек уйдёт по одному, а лишние данные в фискальном документе не
-    нужны ни клиенту, ни нам.
+    `phone` остался в подписи, чтобы вызывающим не пришлось его убирать, но
+    в чек не идёт.
     """
     customer: dict = {}
     if full_name:
         customer["full_name"] = full_name[:256]
     if email:
-        customer["email"] = email[:254]
-        return customer
-    digits = normalize_phone(phone)
-    if digits:
-        customer["phone"] = digits
+        customer["email"] = email.strip()[:254]
     return customer
 
 
@@ -279,10 +285,10 @@ async def create_payment(
     rows = receipt_items(items, delivery_cost, delivery_label)
     total = receipt_total(rows)
 
-    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
-    if not customer.get("email") and not customer.get("phone"):
+    customer = receipt_customer(full_name=full_name, email=email)
+    if not customer.get("email"):
         raise YooKassaError(
-            "в чеке нет ни почты, ни телефона — ЮKassa такой платёж не примет"
+            "в чеке нет почты — «Чеки от ЮKassa» без неё платёж не примут"
         )
 
     payload = {
@@ -379,6 +385,7 @@ async def create_refund(
     email: str,
     phone: str,
     full_name: str,
+    full: bool = False,
 ) -> Refund:
     """Вернуть деньги клиенту — с чеком возврата.
 
@@ -387,18 +394,27 @@ async def create_refund(
     у себя вторые деньги нельзя, а ждать менеджера — значит держать.
 
     Чек возврата обязателен на фискализированном магазине: иначе в ОФД
-    останется приход без расхода. Позиции те же, что и в чеке платежа.
+    останется приход без расхода. **При полном возврате (`full=True`) данные
+    чека не передаём** — ЮKassa сама собирает чек возврата по чеку платежа,
+    и в памятке прямо сказано, что `receipt` бывает только в запросах на
+    частичный возврат (статья «Чеки при возвратах»). При частичном — позиции
+    те же, что в чеке платежа: предоплата, без кодов маркировки, как и было
+    в чеке прихода.
+
+    Это верно только **до закрывающего чека**: после него товар продан с
+    кодами и полным расчётом, и чек возврата по данным платежа (предоплата,
+    без кодов) был бы неверным. Такой возврат бот не делает.
 
     Ключ идемпотентности выводим из платежа: повторное уведомление не
     должно возвращать деньги дважды.
     """
-    rows = receipt_items(items, delivery_cost, delivery_label)
-    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
-    payload = {
-        "payment_id": payment_id,
-        "amount": _money(amount),
-        "receipt": {"customer": customer, "items": rows},
-    }
+    payload = {"payment_id": payment_id, "amount": _money(amount)}
+    if not full:
+        rows = receipt_items(items, delivery_cost, delivery_label)
+        payload["receipt"] = {
+            "customer": receipt_customer(full_name=full_name, email=email),
+            "items": rows,
+        }
     key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"tea-shop-refund:{payment_id}"))
     data = await _call("POST", "/refunds", payload, key=key)
     refund = _to_refund(data)
@@ -407,3 +423,39 @@ async def create_refund(
         refund.id, payment_id, refund.amount, refund.status,
     )
     return refund
+
+
+@dataclass(frozen=True)
+class Receipt:
+    """Чек, созданный отдельным запросом, — закрывающий при вручении."""
+
+    id: str
+    status: str
+    payment_id: str
+
+
+def _to_receipt(data: dict) -> Receipt:
+    return Receipt(
+        id=data.get("id", ""),
+        status=data.get("status", ""),
+        payment_id=data.get("payment_id", ""),
+    )
+
+
+async def create_receipt(payload: dict, key: str) -> Receipt:
+    """Создать чек отдельным запросом (`POST /receipts`).
+
+    Так формируется чек зачёта предоплаты при вручении: подтверждено
+    поддержкой ЮKassa 25.09.2026, другого способа нет. Регистрирует его
+    касса позже и асинхронно — статус приходит `pending`.
+    """
+    receipt = _to_receipt(await _call("POST", "/receipts", payload, key=key))
+    logger.info(
+        "ЮKassa: чек %s по платежу %s, статус %s",
+        receipt.id, receipt.payment_id, receipt.status,
+    )
+    return receipt
+
+
+async def get_receipt(receipt_id: str) -> Receipt:
+    return _to_receipt(await _call("GET", f"/receipts/{receipt_id}"))

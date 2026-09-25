@@ -6,15 +6,22 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
-from app.core import heartbeat
+from app.core import heartbeat, worktime
 from app.core.config import settings
-from app.messages import manager as manager_messages
+from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.catalog import vk_market
+from app.modules.marking import packing, pool as marking_pool
 from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
-from app.modules.orders import cdek_watch, repository as orders_repository
-from app.modules.payment import service as payment_service
+from app.modules.orders import (
+    cdek_watch,
+    delivery_events,
+    delivery_watch,
+    order_chat,
+    repository as orders_repository,
+)
+from app.modules.payment import service as payment_service, settlement
 from app.modules.payment import watch as payment_watch
 from app.modules.payment import yookassa_client
 from app.modules.queue import client as queue_client
@@ -109,6 +116,11 @@ async def _run_scheduled() -> dict:
         # который иначе не уедет никогда.
         "payments": await _run_task("Проверка платежей", payment_watch.check_pending()),
         "cdek_orders": await _run_task("Проверка заказов СДЭК", cdek_watch.check_pending_orders()),
+        # Судьба посылок после регистрации: передали, вручили, вернули. От
+        # вручения зависит закрывающий чек, поэтому раньше каталога.
+        "deliveries": await _run_task("Статусы доставки", delivery_watch.check_deliveries()),
+        # Закрывающие чеки: статус у ЮKassa, повтор после сбоя сети.
+        "settlement_receipts": await _run_task("Закрывающие чеки", settlement.check()),
     }
 
     # Вопросы без ответа — до каталога: проверка дешёвая (несколько строк в
@@ -221,6 +233,134 @@ async def issue_invoice(order_id: int, request: Request):
         "ссылка на оплату": payment.confirmation_url,
         "клиенту": f"Ссылку можно переслать клиенту: {payment.confirmation_url}",
     }
+
+
+_MANUAL_EVENTS = {
+    "handed-over": delivery_events.HANDED_OVER,
+    "delivered": delivery_events.DELIVERED,
+    "not-delivered": delivery_events.NOT_DELIVERED,
+}
+
+
+# Пути перечислены явно, а не шаблоном `{event}`: шаблон перехватывал бы и
+# остальные команды заказа, объявленные после него.
+@router.post("/internal/orders/{order_id}/handed-over")
+@router.post("/internal/orders/{order_id}/delivered")
+@router.post("/internal/orders/{order_id}/not-delivered")
+async def mark_delivery_event(order_id: int, request: Request):
+    """Отметить событие доставки руками, когда перевозчик его не отдаёт.
+
+        scripts/api.sh orders/12/handed-over     посылку сдали перевозчику
+        scripts/api.sh orders/12/delivered       посылку вручили
+        scripts/api.sh orders/12/not-delivered   не вручили, едет обратно
+
+    Идёт тем же кодом, что и опрос перевозчика: отметка ставится один раз,
+    и если опрос успел раньше, команда просто скажет, что событие уже было.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+
+    kind = _MANUAL_EVENTS[request.url.path.rstrip("/").rsplit("/", 1)[-1]]
+
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+
+    recorded = await delivery_events.record(
+        order_id, kind, source=delivery_events.SOURCE_MANUAL
+    )
+    if recorded is None:
+        return {
+            "заказ": order_id,
+            "событие": kind,
+            "действий": "нет — событие уже отмечено (или заказ уже вручён / не вручён)",
+            "передан": str(order.handed_over_at or "—"),
+            "вручён": str(order.delivered_at or "—"),
+            "не вручён": str(order.not_delivered_at or "—"),
+        }
+    logger.info("Заказ %s: событие %s отмечено вручную", order_id, kind)
+    return {"заказ": order_id, "событие": kind, "отмечено": True}
+
+
+@router.post("/internal/orders/{order_id}/settlement-receipt")
+async def settlement_receipt(order_id: int, request: Request):
+    """Отправить закрывающий чек по вручённому заказу — после исправления.
+
+        scripts/api.sh orders/12/settlement-receipt
+
+    Идёт тем же кодом, что и событие «вручено»: те же проверки (оплачен,
+    есть почта, собран с кодами, сумма сходится), тот же ключ
+    идемпотентности. Если чек уже есть — второй не создаётся.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+    if order.delivered_at is None:
+        return {
+            "заказ": order_id,
+            "error": "заказ ещё не вручён — чек уходит при вручении. Если "
+                     f"вручён, но перевозчик молчит: scripts/api.sh orders/{order_id}/delivered",
+        }
+    return {"заказ": order_id, **(await settlement.issue(order))}
+
+
+@router.post("/internal/orders/{order_id}/pack-link")
+async def pack_link(order_id: int, request: Request):
+    """Свежая ссылка на страницу сборки — и она же в чат заказов.
+
+        scripts/api.sh orders/12/pack-link
+
+    Нужна, когда срок ссылки из карточки вышел или карточка ушла без неё
+    (не был задан PUBLIC_BASE_URL). В чат — чтобы открыть с телефона.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+
+    base = settings.public_base_url
+    if not base:
+        # Запрос пришёл на адрес контейнера — он и есть публичный адрес.
+        # Схему поправляем: шлюз передаёт запрос внутрь по http.
+        base = str(request.base_url).rstrip("/")
+        if base.startswith("http://") and "localhost" not in base and "127.0.0.1" not in base:
+            base = "https://" + base[len("http://"):]
+    made = packing.pack_url(order_id, base)
+    if made is None:
+        return {"error": "ссылку не собрать: не задан INTERNAL_API_TOKEN"}
+    url, expires = made
+    await order_chat.send(order, templates.manager_pack_link(order_id, url, expires))
+    return {"заказ": order_id, "ссылка": url, "действует до (МСК)": f"{worktime.to_msk(expires):%d.%m %H:%M}"}
+
+
+@router.post("/internal/codes/import")
+async def import_marking_codes(request: Request):
+    """Загрузить пул кодов маркировки из выгрузки СУЗ «Честного знака».
+
+        scripts/api.sh codes/import codes.csv
+
+    TXT (код на строку) или CSV. Повторная загрузка того же файла ничего не
+    портит: уже известные коды пропускаются. После первой загрузки при
+    сборке принимаются только коды из пула.
+    """
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    if not await _authorized(request, raw):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    token = (settings.internal_api_token or "").strip()
+    return await marking_pool.import_codes(raw, skip=token)
+
+
+@router.post("/internal/delivery/check")
+async def check_deliveries(request: Request):
+    """Спросить перевозчиков о посылках в пути, не дожидаясь таймера."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    result = await delivery_watch.check_deliveries()
+    logger.info("Статусы доставки: %s", result)
+    return result
 
 
 @router.post("/internal/catalog/vk")

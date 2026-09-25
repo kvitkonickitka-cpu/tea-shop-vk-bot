@@ -8,6 +8,19 @@ from app.modules.orders.models import Order, OrderPayment
 from app.modules.orders.state import OrderDraft
 
 
+def _details_of(draft: OrderDraft) -> dict:
+    """Детали черновика для заказа — вместе с подписью доставки.
+
+    Подпись доставки попадает в первый чек («Доставка: Ozon, пункт выдачи:
+    …»), и закрывающий чек при вручении должен повторить ту же позицию.
+    Своей колонки у заказа под неё нет, поэтому кладём в детали.
+    """
+    details = dict(draft.details or {})
+    if draft.delivery_label:
+        details["delivery_label"] = draft.delivery_label
+    return details
+
+
 async def save_order(
     peer_id: int,
     draft: OrderDraft,
@@ -35,7 +48,7 @@ async def save_order(
             payment_status=payment_status,
             # Копия деталей черновика: отправление может заводиться позже,
             # когда черновик уже убран.
-            details=dict(draft.details or {}),
+            details=_details_of(draft),
         )
         session.add(order)
         await session.commit()
@@ -63,7 +76,7 @@ async def reopen_for_payment(order_id: int, draft: OrderDraft, payment_id: str, 
         order.delivery_method = draft.delivery_method
         order.delivery_cost = draft.delivery_cost
         order.total = total
-        order.details = dict(draft.details or {})
+        order.details = _details_of(draft)
         order.status = "awaiting_payment"
         order.payment_id = payment_id
         order.payment_status = payment_status

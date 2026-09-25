@@ -17,13 +17,14 @@ from __future__ import annotations
 import logging
 
 from app.messages import client as client_messages, templates
+from app.modules.marking import packing
 from app.modules.orders import (
     cdek_watch,
     order_chat,
     repository as orders_repository,
     shipping,
 )
-from app.modules.payment import service as payment_service, yookassa_client
+from app.modules.payment import service as payment_service, settlement, yookassa_client
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,9 @@ async def _refund_double_payment(order, payment: yookassa_client.Payment) -> dic
             email=details.get("recipient_email", ""),
             phone=details.get("recipient_phone", ""),
             full_name=details.get("recipient_name", ""),
+            # Вторая оплата возвращается целиком — чек возврата ЮKassa
+            # соберёт сама по чеку этого платежа.
+            full=True,
         )
     except Exception as error:
         logger.exception("Не вернули вторую оплату по заказу %s", order.id)
@@ -333,10 +337,19 @@ async def _on_refund(refund_id: str) -> dict:
         return {"возврат": refund.id, "действий": "нет, уже отмечен"}
 
     await orders_repository.set_state(order.id, status=STATUS_REFUNDED)
-    await order_chat.send(
-        order,
-        f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order),
-    )
+    card = f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order)
+    if order.delivered_at is None:
+        # Посылка не вручена — пачки не проданы и вернутся на полку (или не
+        # уезжали вовсе). Коды снова в наличии, закрывающий чек не нужен.
+        released = await packing.release_codes(order.id)
+        if released:
+            card += "\n" + templates.manager_refund_codes_released(released)
+    elif settlement.was_sent(order):
+        # Товар уже продан по чеку с кодами. Чек возврата, который ЮKassa
+        # соберёт по данным платежа, — предоплата без кодов — для такого
+        # случая неверен. Автоматики на это нет: разбирает менеджер.
+        card += "\n" + templates.manager_refund_after_settlement()
+    await order_chat.send(order, card)
     # Возврат делает менеджер в кабинете ЮKassa, и клиент об этом узнаёт
     # только от банка — через неизвестно сколько. Скажем сами. Сумма — та,
     # что вернули: возврат бывает частичным, и сумма заказа тут соврала бы.
@@ -362,4 +375,9 @@ def _paid_card(order, payment: yookassa_client.Payment, *, was_closed: bool = Fa
         # зарегистрирован — это не повод дёргать клиента, но менеджер должен
         # видеть, что чека ещё нет.
         card += f"\nЧек: {payment.receipt_registration}"
+    # Ссылка на сборку со сканированием кодов маркировки — если у товаров
+    # заданы GTIN и известен адрес контейнера.
+    pack_line = packing.card_line(order)
+    if pack_line:
+        card += "\n" + pack_line
     return card

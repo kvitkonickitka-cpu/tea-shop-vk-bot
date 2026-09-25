@@ -85,6 +85,22 @@ _MISSING_COLUMNS = (
     "ALTER TABLE escalations ADD COLUMN IF NOT EXISTS client_ping_sent_at TIMESTAMPTZ",
     # Резервный канал для недоставленных уведомлений менеджеру.
     "ALTER TABLE manager_notifications ADD COLUMN IF NOT EXISTS fallback_sent_at TIMESTAMPTZ",
+    # Судьба посылки у перевозчика: последний статус, когда спрашивали и три
+    # отметки событий. От «вручено» зависит закрывающий чек.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_status VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_checked_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS handed_over_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS not_delivered_at TIMESTAMPTZ",
+    # Сборка со сканированием кодов маркировки.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS packed_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS packed_by VARCHAR",
+    # Закрывающий чек при вручении.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_id VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_status VARCHAR",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_attempt INTEGER",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_receipt_sent_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_note VARCHAR",
 )
 
 
@@ -111,6 +127,7 @@ async def init_models() -> None:
     from app.modules.delivery import models as delivery_models  # noqa: F401
     from app.core import heartbeat as heartbeat_models  # noqa: F401
     from app.messages import models as message_models  # noqa: F401
+    from app.modules.marking import models as marking_models  # noqa: F401
 
     try:
         async with _engine.begin() as conn:
