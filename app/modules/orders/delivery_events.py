@@ -54,16 +54,25 @@ def _carrier_name(order: Order) -> str:
     return "службой доставки"
 
 
-async def record(order_id: int, event: str, *, source: str) -> Order | None:
+async def record(
+    order_id: int, event: str, *, source: str, at: datetime | None = None
+) -> Order | None:
     """Отметить событие доставки. None — оно уже было, или заказа нет.
 
     Следствия (сообщение клиенту, менеджеру, закрывающий чек) выполняет
     тот, кто поставил отметку, — ровно один раз.
+
+    `at` — когда событие случилось у перевозчика. Отметка ставится этим
+    временем, а не временем опроса: при первом опросе старых заказов
+    посылка, вручённая три недели назад, иначе считалась бы вручённой
+    сейчас — и клиент получил бы «заказ вручён» спустя недели.
     """
     if event not in EVENTS:
         raise ValueError(f"неизвестное событие доставки: {event}")
 
     now = datetime.now(timezone.utc)
+    if at is not None:
+        now = min(at, now)
     statement = update(Order).where(Order.id == order_id)
     if event == HANDED_OVER:
         statement = statement.where(Order.handed_over_at.is_(None)).values(handed_over_at=now)
@@ -144,6 +153,15 @@ async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
 
     event = _latest_event(order)
     if event is None:
+        return False
+    # О давнем событии не пишем: новость, опоздавшая на неделю, только
+    # сбивает с толку. Так бывает при первом опросе старых заказов.
+    happened = {
+        HANDED_OVER: order.handed_over_at,
+        DELIVERED: order.delivered_at,
+        NOT_DELIVERED: order.not_delivered_at,
+    }[event]
+    if happened is not None and (now or datetime.now(timezone.utc)) - happened > _TELL_WITHIN:
         return False
 
     details = order.details or {}

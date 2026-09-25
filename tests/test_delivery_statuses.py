@@ -51,12 +51,15 @@ def world(monkeypatch):
     return box
 
 
-def cdek(*codes: str, number: str = "1100285492") -> dict:
+def cdek(*codes: str, number: str = "1100285492", days_ago: float = 0) -> dict:
+    """Ответ СДЭКа: статусы по часу друг за другом, последний — `days_ago` назад."""
+    last = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {
         "entity": {
             "cdek_number": number,
             "statuses": [
-                {"code": code, "name": code.lower(), "date_time": f"2026-09-{10 + i:02d}T10:00:00+0000"}
+                {"code": code, "name": code.lower(),
+                 "date_time": (last - timedelta(hours=len(codes) - 1 - i)).strftime("%Y-%m-%dT%H:%M:%S+0000")}
                 for i, code in enumerate(codes)
             ],
         }
@@ -191,3 +194,29 @@ def test_templates_read_well():
     assert "Трек-номер: 11" in templates.handed_over(order, carrier="СДЭКом", number="11", tracking_url="u")
     assert "a@b.ru" in templates.delivered(order, receipt_email="a@b.ru")
     assert "чек" not in templates.delivered(order)
+
+
+async def test_old_delivery_is_marked_silently(clean, world, monkeypatch):
+    """Первый опрос старого заказа: вручено три недели назад — клиенту не пишем."""
+    order = await make_order(clean, created_at=datetime.now(timezone.utc) - timedelta(days=25))
+
+    async def order_state(uuid):
+        return cdek("CREATED", "RECEIVED_AT_SHIPMENT_WAREHOUSE", "DELIVERED", days_ago=21)
+
+    monkeypatch.setattr(delivery_watch.cdek_client, "order_state", order_state)
+    result = await delivery_watch.check_deliveries()
+    assert result["delivered"] == 1
+    assert world["client"] == []
+    fresh = await orders_repository.by_id(order.id)
+    # Отметка — временем СДЭКа, а не временем опроса.
+    assert datetime.now(timezone.utc) - fresh.delivered_at > timedelta(days=20)
+    assert await delivery_events.tell_pending_clients() == 0
+
+
+def test_carrier_times_are_read():
+    seen = delivery_watch.read_cdek(cdek("CREATED", "RECEIVED_AT_SHIPMENT_WAREHOUSE", "DELIVERED", days_ago=2))
+    assert seen.handed_over_at < seen.finished_at
+    ozon = delivery_watch.read_ozon(
+        {"status": "delivered", "status_changed_at": "2026-09-20T10:00:00Z"}, handed_over=True
+    )
+    assert ozon.finished_at == datetime(2026, 9, 20, 10, tzinfo=timezone.utc)

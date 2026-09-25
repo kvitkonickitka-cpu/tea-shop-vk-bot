@@ -73,6 +73,24 @@ class Observation:
     not_delivered: bool = False
     trouble: bool = False
     cdek_number: str = ""
+    # Когда у перевозчика случились передача и конечное событие — чтобы
+    # отметка стояла их временем, а не временем опроса.
+    handed_over_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+def _parse_time(raw) -> datetime | None:
+    """Время из ответа перевозчика: СДЭК пишет «+0000», Ozon — «Z»."""
+    if not raw:
+        return None
+    text = str(raw).replace("Z", "+00:00")
+    if len(text) > 5 and text[-5] in "+-" and text[-3] != ":":
+        text = text[:-2] + ":" + text[-2:]
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def read_cdek(data: dict) -> Observation:
@@ -81,7 +99,18 @@ def read_cdek(data: dict) -> Observation:
     codes = {str(s.get("code") or "") for s in statuses}
     latest = max(statuses, key=lambda s: str(s.get("date_time") or ""), default={})
     latest_code = str(latest.get("code") or "")
+
+    def first_time(wanted) -> datetime | None:
+        times = [
+            _parse_time(s.get("date_time")) for s in statuses
+            if wanted(str(s.get("code") or ""))
+        ]
+        times = [t for t in times if t is not None]
+        return min(times) if times else None
+
     return Observation(
+        handed_over_at=first_time(lambda code: code and code not in _CDEK_NOT_YET),
+        finished_at=first_time(lambda code: code in _CDEK_DELIVERED | _CDEK_NOT_DELIVERED),
         status=f"СДЭК: {latest.get('name') or latest_code or 'нет статуса'}"
         + (f" ({latest_code})" if latest_code else ""),
         with_carrier=bool(codes - _CDEK_NOT_YET - {""}),
@@ -95,7 +124,10 @@ def read_cdek(data: dict) -> Observation:
 def read_ozon(info: dict, *, handed_over: bool) -> Observation:
     status = str(info.get("status") or "")
     canceled = status == "canceled"
+    changed = _parse_time(info.get("status_changed_at"))
     return Observation(
+        handed_over_at=changed if status in _OZON_WITH_CARRIER else None,
+        finished_at=changed if status == "delivered" or (canceled and handed_over) else None,
         status=f"Ozon: {status or 'нет статуса'}",
         with_carrier=status in _OZON_WITH_CARRIER,
         delivered=status == "delivered",
@@ -200,17 +232,20 @@ async def check_deliveries(now: datetime | None = None) -> dict:
 
         if observation.with_carrier and order.handed_over_at is None:
             if await delivery_events.record(
-                order.id, delivery_events.HANDED_OVER, source=delivery_events.SOURCE_CARRIER
+                order.id, delivery_events.HANDED_OVER, source=delivery_events.SOURCE_CARRIER,
+                at=observation.handed_over_at,
             ):
                 result["handed_over"] += 1
         if observation.delivered:
             if await delivery_events.record(
-                order.id, delivery_events.DELIVERED, source=delivery_events.SOURCE_CARRIER
+                order.id, delivery_events.DELIVERED, source=delivery_events.SOURCE_CARRIER,
+                at=observation.finished_at,
             ):
                 result["delivered"] += 1
         elif observation.not_delivered:
             if await delivery_events.record(
-                order.id, delivery_events.NOT_DELIVERED, source=delivery_events.SOURCE_CARRIER
+                order.id, delivery_events.NOT_DELIVERED, source=delivery_events.SOURCE_CARRIER,
+                at=observation.finished_at,
             ):
                 result["not_delivered"] += 1
 
