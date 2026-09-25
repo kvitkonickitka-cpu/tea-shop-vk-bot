@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.messages import manager as manager_messages
 from app.modules import events
 from app.modules.catalog import vk_market
+from app.modules.marking import pool as marking_pool
 from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import (
@@ -276,6 +277,23 @@ async def mark_delivery_event(order_id: int, request: Request):
         }
     logger.info("Заказ %s: событие %s отмечено вручную", order_id, kind)
     return {"заказ": order_id, "событие": kind, "отмечено": True}
+
+
+@router.post("/internal/codes/import")
+async def import_marking_codes(request: Request):
+    """Загрузить пул кодов маркировки из выгрузки СУЗ «Честного знака».
+
+        scripts/api.sh codes/import codes.csv
+
+    TXT (код на строку) или CSV. Повторная загрузка того же файла ничего не
+    портит: уже известные коды пропускаются. После первой загрузки при
+    сборке принимаются только коды из пула.
+    """
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    if not await _authorized(request, raw):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    token = (settings.internal_api_token or "").strip()
+    return await marking_pool.import_codes(raw, skip=token)
 
 
 @router.post("/internal/delivery/check")

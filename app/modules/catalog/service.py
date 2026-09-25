@@ -12,6 +12,46 @@ def load_items() -> list[dict]:
         return json.load(f)
 
 
+def find_item(name: str, items: list[dict] | None = None) -> dict | None:
+    """Товар каталога по названию из заказа.
+
+    Сначала точное совпадение, потом вхождение — тем же правилом, каким
+    `propose_order` сопоставляет названное клиентом с каталогом: в заказе
+    лежит название из каталога, а у заказа из витрины — название из ВК.
+    """
+    items = load_items() if items is None else items
+    wanted = (name or "").strip().casefold()
+    if not wanted:
+        return None
+    for item in items:
+        if item.get("name", "").strip().casefold() == wanted:
+            return item
+    for item in items:
+        have = item.get("name", "").strip().casefold()
+        if have and (wanted in have or have in wanted):
+            return item
+    return None
+
+
+def gtin_for(name: str, items: list[dict] | None = None) -> str:
+    """GTIN товара из «Честного знака» — его задаёт владелец в каталоге.
+
+    Пусто — GTIN не задан или записан с ошибкой: собрать такой товар с
+    кодами нельзя, и страница сборки скажет об этом прямо.
+    """
+    from app.modules.marking import codes
+
+    item = find_item(name, items)
+    gtin = codes.normalize_gtin((item or {}).get("gtin", ""))
+    return gtin if codes.gtin_is_valid(gtin) else ""
+
+
+def marking_configured(items: list[dict] | None = None) -> bool:
+    """Задан ли GTIN хоть у одного товара — значит, собираем с кодами."""
+    items = load_items() if items is None else items
+    return any(gtin_for(item.get("name", ""), items) for item in items)
+
+
 async def build_catalog_context() -> str:
     try:
         items = load_items()
