@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -100,27 +101,32 @@ def phone_is_valid(raw: str) -> bool:
     return _PHONE_MIN_DIGITS <= len(digits) <= _PHONE_MAX_DIGITS
 
 
-def receipt_customer(*, full_name: str, email: str, phone: str) -> dict:
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def email_is_valid(raw: str) -> bool:
+    """Похоже ли на почтовый адрес. Проверка грубая: отсеять опечатки вроде
+    пропущенной собаки, а не разбирать RFC 5322 — это сделает ЮKassa."""
+    return bool(_EMAIL.match((raw or "").strip()))
+
+
+def receipt_customer(*, full_name: str, email: str, phone: str = "") -> dict:
     """Кому выписан чек.
 
-    По 54-ФЗ электронный чек можно отправить на почту **или** на телефон, и
-    ЮKassa принимает любой из контактов. Раньше бот требовал почту, считая,
-    что чек доставляется только письмом, и клиент без почты не мог оформить
-    заказ вовсе.
+    **Только почта.** В «Чеках от ЮKassa» `customer.email` обязателен, а чек
+    доставляется исключительно письмом — так сказано в их документации и
+    подтверждено поддержкой 25.09.2026 для каждого чека, включая закрывающий
+    при вручении. Одно время мы клали телефон вместо отсутствующей почты:
+    тестовый магазин (эмуляция сторонней кассы) это принимал, боевой — нет.
 
-    Контакт кладём один: почту, если она есть, иначе телефон. Оба сразу не
-    нужны — чек уйдёт по одному, а лишние данные в фискальном документе не
-    нужны ни клиенту, ни нам.
+    `phone` остался в подписи, чтобы вызывающим не пришлось его убирать, но
+    в чек не идёт.
     """
     customer: dict = {}
     if full_name:
         customer["full_name"] = full_name[:256]
     if email:
-        customer["email"] = email[:254]
-        return customer
-    digits = normalize_phone(phone)
-    if digits:
-        customer["phone"] = digits
+        customer["email"] = email.strip()[:254]
     return customer
 
 
@@ -279,10 +285,10 @@ async def create_payment(
     rows = receipt_items(items, delivery_cost, delivery_label)
     total = receipt_total(rows)
 
-    customer = receipt_customer(full_name=full_name, email=email, phone=phone)
-    if not customer.get("email") and not customer.get("phone"):
+    customer = receipt_customer(full_name=full_name, email=email)
+    if not customer.get("email"):
         raise YooKassaError(
-            "в чеке нет ни почты, ни телефона — ЮKassa такой платёж не примет"
+            "в чеке нет почты — «Чеки от ЮKassa» без неё платёж не примут"
         )
 
     payload = {

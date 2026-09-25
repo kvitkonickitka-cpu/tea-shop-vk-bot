@@ -203,6 +203,11 @@ def missing_for_invoice(
         missing.append("телефон получателя")
     elif not yookassa_client.phone_is_valid(phone):
         missing.append(f"телефон получателя целиком (сейчас «{phone}»)")
+    email = details.get("recipient_email", "")
+    if not email:
+        missing.append("почта для чека")
+    elif not yookassa_client.email_is_valid(email):
+        missing.append(f"почта для чека целиком (сейчас «{email}»)")
     if not delivery_method:
         missing.append("способ доставки")
     if delivery_method == "cdek_pvz" and not details.get("delivery_point"):

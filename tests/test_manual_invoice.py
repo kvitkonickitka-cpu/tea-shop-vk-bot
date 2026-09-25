@@ -21,7 +21,7 @@ async def make_order(db, **fields) -> Order:
         items_total=800, delivery_cost=117, total=917, delivery_method="ozon_pvz",
         status=payment_service.STATUS_PAYMENT_FAILED, payment_status=None,
         details={"order_key": "vk9600-1", "recipient_name": "Иванов Иван",
-                 "recipient_phone": "79181234567", "ozon_point_id": 42,
+                 "recipient_phone": "79181234567", "recipient_email": "a@b.ru", "ozon_point_id": 42,
                  "delivery_label": "Ozon, пункт выдачи: Ставропольская 230"},
         created_at=datetime.now(timezone.utc),
     )
@@ -95,6 +95,11 @@ async def test_second_invoice_uses_the_next_attempt(clean, kassa):
         ({"details": {"recipient_name": "Иванов", "recipient_phone": "79181234567"}},
          "пункт выдачи Ozon"),
         ({"delivery_method": None}, "способ доставки"),
+        ({"details": {"recipient_name": "Иванов", "recipient_phone": "79181234567",
+                      "ozon_point_id": 1}}, "почта для чека"),
+        ({"details": {"recipient_name": "Иванов", "recipient_phone": "79181234567",
+                      "recipient_email": "a.b.ru", "ozon_point_id": 1}},
+         "почта для чека целиком"),
     ],
 )
 async def test_incomplete_order_is_refused(clean, kassa, broken, expected):
@@ -134,6 +139,7 @@ async def test_failed_payment_still_saves_the_order(clean, monkeypatch):
         items_total=800.0, delivery_cost=117.0, delivery_method="ozon_pvz",
         delivery_label="Ozon, пункт выдачи",
         details={"recipient_name": "Иванов Иван", "recipient_phone": "79181234567",
+                 "recipient_email": "a@b.ru",
                  "ozon_point_id": 42},
         stage="awaiting_confirmation",
     )
