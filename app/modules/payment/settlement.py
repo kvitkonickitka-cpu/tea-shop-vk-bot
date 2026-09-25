@@ -38,6 +38,7 @@ from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.core.database import get_session_factory
+from app.messages import templates
 from app.modules.marking import packing
 from app.modules.marking.models import ASSIGNED, SOLD, MarkingCodeRow
 from app.modules.orders import order_chat, repository as orders_repository
@@ -203,14 +204,7 @@ async def _tell_manager(order: Order, note: str, *, urgent: bool = True) -> None
     if order.settlement_note == note:
         return
     await _save(order, settlement_note=note)
-    head = "🚨" if urgent else "⚠️"
-    await order_chat.send(
-        order,
-        f"{head} <b>Заказ №{order.id}: {note}</b>\n"
-        "Закрывающий чек (зачёт предоплаты с кодами маркировки) не сформирован.\n"
-        f"Исправить и отправить: ссылка на сборку — scripts/api.sh orders/{order.id}/pack-link, "
-        f"затем scripts/api.sh orders/{order.id}/settlement-receipt",
-    )
+    await order_chat.send(order, templates.manager_settlement_problem(order, note, urgent=urgent))
 
 
 async def _mark_sold(order_id: int) -> None:

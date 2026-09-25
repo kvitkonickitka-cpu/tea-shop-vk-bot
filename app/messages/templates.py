@@ -299,3 +299,41 @@ def manager_carrier_trouble(order, carrier_status: str) -> str:
         f"⚠️ <b>Заказ №{order.id}: заминка у перевозчика</b>\n"
         f"Статус: {carrier_status}. Проверьте отправление в кабинете."
     )
+
+
+def manager_settlement_problem(order, reason: str, *, urgent: bool = True) -> str:
+    """Закрывающий чек не ушёл или застрял — что и как исправить."""
+    return (
+        f"{'🚨' if urgent else '⚠️'} <b>Заказ №{order.id}: {reason}</b>\n"
+        "Закрывающий чек (зачёт предоплаты с кодами маркировки) не сформирован.\n"
+        f"Исправить и отправить: ссылка на сборку — scripts/api.sh orders/{order.id}/pack-link, "
+        f"затем scripts/api.sh orders/{order.id}/settlement-receipt"
+    )
+
+
+def pack_card_line(url: str, expires) -> str:
+    """Строка со ссылкой на сборку в карточке оплаченного заказа."""
+    return (
+        f'📦 <a href="{url}">Собрать заказ — сканировать коды</a> '
+        f"(ссылка до {worktime.to_msk(expires):%d.%m %H:%M} МСК)"
+    )
+
+
+def manager_pack_link(order_id, url: str, expires) -> str:
+    """Свежая ссылка на сборку по команде orders/<N>/pack-link."""
+    return (
+        f'📦 <a href="{url}">Собрать заказ №{order_id} — сканировать коды</a>\n'
+        f"Ссылка действует до {worktime.to_msk(expires):%d.%m %H:%M} МСК."
+    )
+
+
+def manager_refund_codes_released(count: int) -> str:
+    return f"Коды маркировки освобождены: {count} шт., снова в наличии."
+
+
+def manager_refund_after_settlement() -> str:
+    return (
+        "⚠️ Возврат после закрывающего чека: чек возврата должен быть с "
+        "полным расчётом и кодами маркировки возвращённых пачек. Проверьте "
+        "чек возврата в кабинете ЮKassa; при расхождении — их поддержка."
+    )

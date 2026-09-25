@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request, Response
 
 from app.core import heartbeat, worktime
 from app.core.config import settings
-from app.messages import manager as manager_messages
+from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.catalog import vk_market
 from app.modules.marking import packing, pool as marking_pool
@@ -332,11 +332,7 @@ async def pack_link(order_id: int, request: Request):
     if made is None:
         return {"error": "ссылку не собрать: не задан INTERNAL_API_TOKEN"}
     url, expires = made
-    await order_chat.send(
-        order,
-        f'📦 <a href="{url}">Собрать заказ №{order_id} — сканировать коды</a>\n'
-        f"Ссылка действует до {worktime.to_msk(expires):%d.%m %H:%M} МСК.",
-    )
+    await order_chat.send(order, templates.manager_pack_link(order_id, url, expires))
     return {"заказ": order_id, "ссылка": url, "действует до (МСК)": f"{worktime.to_msk(expires):%d.%m %H:%M}"}
 
 

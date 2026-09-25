@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core import worktime
+from app.messages import templates
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.modules.catalog import service as catalog_service
@@ -108,10 +109,7 @@ def card_line(order: Order) -> str:
     if made is None:
         return ""
     url, expires = made
-    return (
-        f'📦 <a href="{url}">Собрать заказ — сканировать коды</a> '
-        f"(ссылка до {worktime.to_msk(expires):%d.%m %H:%M} МСК)"
-    )
+    return templates.pack_card_line(url, expires)
 
 
 # --- состояние сборки -------------------------------------------------------
