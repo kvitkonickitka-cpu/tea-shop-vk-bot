@@ -188,11 +188,12 @@ def escalation_waiting() -> str:
 # --- менеджеру -------------------------------------------------------------
 
 
-def manager_unpaid(order, payment_status: str, hours: int) -> str:
+def manager_unpaid(order, payment_status: str, minutes: int) -> str:
     return (
         f"⚠️ Заказ №{order.id}: оплата так и не пришла\n"
-        f"Прошло больше {hours} ч, платёж в статусе «{payment_status}». "
-        "Счёт закрыт, черновик возвращён клиенту — он может оформить заново."
+        f"Прошло больше {minutes} мин — срок ссылки ЮKassa, — платёж в "
+        f"статусе «{payment_status}». Счёт закрыт, черновик возвращён "
+        "клиенту: он может оформить заново одним «да»."
     )
 
 

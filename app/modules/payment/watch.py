@@ -13,11 +13,16 @@
 висит в `pending` трое суток, идти в поддержку. Значит за этим надо
 следить, иначе узнаем от налоговой.
 
-Здесь же живут напоминания о неоплаченном счёте. **Срок жизни счёта наш, а
-не ЮKassa:** она платёж сама не закрывает и никакого «истекает в» в ответе
-не присылает — «сутки» всегда были нашим таймером
-(`payment_unpaid_after_hours`). От него и считается, когда напомнить и
-когда счёт закрыть.
+Здесь же живут напоминания о неоплаченном счёте. **Срок жизни ссылки — час,
+и он не наш, а ЮKassa:** `confirmation_url` у платежа, созданного через
+`POST /payments`, действует один час, после чего ЮKassa отменяет платёж
+сама с `reason=expired_on_confirmation` (подтверждено их поддержкой
+25.09.2026, в документации числа нет).
+
+Раньше здесь стояли сутки — «наш таймер», — и оба напоминания уходили
+клиенту с уже мёртвой ссылкой. Теперь `payment_invoice_ttl_minutes`
+описывает настоящий срок, а закрытие по таймеру осталось страховкой на
+случай, когда уведомление об отмене не дошло.
 """
 
 from __future__ import annotations
@@ -47,6 +52,50 @@ _GIVE_UP_AFTER = timedelta(days=7)
 _BATCH = 20
 
 RECEIPT_STUCK = "stuck"
+
+
+async def _tell_about_closed_invoices(now: datetime) -> int:
+    """Досказать про счёта, закрывшиеся в тихие часы.
+
+    Ночью бот по своей инициативе не пишет, а счёт живёт час — закрыться он
+    может в любое время суток. Сообщение при этом не теряется: заказ
+    остаётся закрытым и без отметки об отправке, и утром его находит этот
+    проход.
+    """
+    if worktime.is_quiet(now):
+        return 0
+
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return 0
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Order)
+                .where(
+                    Order.status == payment_service.STATUS_UNPAID,
+                    Order.created_at > now - _GIVE_UP_AFTER,
+                )
+                .order_by(Order.created_at)
+                .limit(_BATCH)
+            )
+        ).scalars().all()
+        pending = list(rows)
+
+    told = 0
+    for order in pending:
+        ref = client_messages.order_ref(order.id)
+        # Про отказ банка клиенту говорят отдельным текстом — если он уже
+        # ушёл, второе сообщение про тот же счёт будет лишним.
+        if await client_messages.already_sent(ref, templates.PAYMENT_EXPIRED):
+            continue
+        if await client_messages.already_sent(ref, templates.PAYMENT_DECLINED):
+            continue
+        if await payment_service.tell_about_closed_invoice(order, templates.PAYMENT_EXPIRED):
+            told += 1
+    return told
 
 
 async def _dialogue_is_live(order: Order) -> bool:
@@ -96,8 +145,12 @@ def _created_at(order: Order) -> datetime:
 
 
 def expires_at(order: Order) -> datetime:
-    """Когда счёт закрывается. Срок наш, поэтому считается от создания."""
-    return _created_at(order) + timedelta(hours=settings.payment_unpaid_after_hours)
+    """Когда ссылка на оплату перестаёт работать.
+
+    Час от создания платежа — срок ЮKassa. Считаем от создания заказа: счёт
+    выставляется в тот же момент, разница в секундах.
+    """
+    return _created_at(order) + timedelta(minutes=settings.payment_invoice_ttl_minutes)
 
 
 async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime) -> str | None:
@@ -116,6 +169,11 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
         return None
 
     deadline = expires_at(order)
+    if now >= deadline:
+        # Ссылка уже не работает — напоминание с ней было бы издевательством.
+        # Такой заказ закрывается в основном цикле, не здесь.
+        return None
+
     second_due = deadline - timedelta(minutes=settings.payment_reminder_2_before_expiry_minutes)
     first_due = _created_at(order) + timedelta(
         minutes=settings.payment_reminder_1_after_minutes
@@ -123,6 +181,8 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
 
     if order.reminder_2_sent_at is None and now >= second_due:
         if worktime.is_quiet(now) and worktime.quiet_until(now) >= deadline:
+            # Со часовым сроком счёта это обычный случай, а не редкость:
+            # ночью ссылка истечёт задолго до утра, и напоминать поздно.
             # К утру ссылка уже не будет работать — вместо напоминания
             # клиент получит новость о закрытии счёта, и это честнее.
             logger.info("Заказ %s: второе напоминание потеряло смысл до утра", order.id)
@@ -239,7 +299,7 @@ async def check_pending() -> dict:
                 await order_chat.send(
                     order,
                     templates.manager_unpaid(
-                        order, payment.status, settings.payment_unpaid_after_hours
+                        order, payment.status, settings.payment_invoice_ttl_minutes
                     ),
                 )
                 continue
@@ -281,5 +341,8 @@ async def check_pending() -> dict:
                     phone=details.get("recipient_phone", ""),
                 ),
             )
+
+    # Счёт мог закрыться ночью, когда бот клиенту не пишет. Догоняем.
+    result["closed_told"] = await _tell_about_closed_invoices(now)
 
     return result

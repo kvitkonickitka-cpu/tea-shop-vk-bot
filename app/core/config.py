@@ -61,13 +61,20 @@ class Settings(BaseSettings):
     quiet_hours_start: int = 23
     quiet_hours_end: int = 9
 
-    # Напоминания о неоплаченном счёте. Первое — мягкое, через полтора часа
-    # после выставления; второе — за четыре часа до закрытия счёта.
-    payment_reminder_1_after_minutes: int = 90
-    payment_reminder_2_before_expiry_minutes: int = 240
-    # Сколько живёт счёт. Это наш срок, а не срок ЮKassa: она сама платёж не
-    # закрывает, и «сутки» всегда были нашим таймером.
-    payment_unpaid_after_hours: int = 24
+    # Сколько живёт ссылка на оплату. **Это срок ЮKassa, а не наш**: при
+    # создании платежа через `POST /payments` `confirmation_url` действует
+    # один час — если за это время клиент не перешёл по ней и не выбрал
+    # способ оплаты, ЮKassa отменяет платёж сама
+    # (`reason=expired_on_confirmation`). Подтверждено их поддержкой
+    # 25.09.2026; в документации числа нет.
+    #
+    # Раньше здесь стояли сутки, и напоминания уходили клиенту с уже мёртвой
+    # ссылкой. Ставить больше часа нельзя, пока счёт создаётся так.
+    payment_invoice_ttl_minutes: int = 60
+    # Напоминания о неоплаченном счёте — внутри этого часа. Первое мягкое,
+    # второе за несколько минут до истечения.
+    payment_reminder_1_after_minutes: int = 25
+    payment_reminder_2_before_expiry_minutes: int = 10
     # Не напоминаем, если разговор и так идёт.
     payment_reminder_skip_if_talked_minutes: int = 30
 

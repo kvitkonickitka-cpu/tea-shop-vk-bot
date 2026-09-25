@@ -87,18 +87,26 @@ async def test_bank_refusal_offers_another_card(clean, sent):
     assert draft is not None and draft.stage == "awaiting_confirmation"
 
 
-async def test_expired_cancellation_stays_silent(clean, sent):
-    """Про закрытый счёт клиент уже слышал от догляда — второй раз молчим."""
+async def test_expired_cancellation_tells_the_client(clean, sent):
+    """Срок вышел — говорим сами: ЮKassa закрывает счёт раньше нашего таймера.
+
+    Ссылка живёт час (подтверждено поддержкой ЮKassa 25.09.2026), то есть
+    об истечении мы узнаём от неё, а не по своим часам. Промолчать значит
+    оставить клиента с мёртвой ссылкой и без новостей.
+    """
     order = await make_order(clean)
     await state.clear_draft(PEER)
 
     result = await webhook._on_canceled(canceled("yoo_money", "expired_on_confirmation"))
 
     assert result["решение"] == payment_service.ON_CANCEL_EXPIRED
-    assert sent == []
+    assert sent and "Срок счёта" in sent[-1] and "новую ссылку" in sent[-1]
     async with clean() as session:
         fresh = await session.get(Order, order.id)
     assert fresh.status == payment_service.STATUS_UNPAID
+    # Черновик вернулся: клиенту хватит одного «да».
+    draft = await state.get_draft(PEER)
+    assert draft is not None and draft.stage == "awaiting_confirmation"
 
 
 async def test_merchant_cancellation_stays_silent(clean, sent):

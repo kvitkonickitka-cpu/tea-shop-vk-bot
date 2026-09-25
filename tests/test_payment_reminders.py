@@ -63,7 +63,7 @@ def daytime(monkeypatch):
 
 
 async def test_first_reminder_after_the_interval(clean, sent, daytime):
-    order = await make_order(clean, created_minutes_ago=95)
+    order = await make_order(clean, created_minutes_ago=30)
     now = datetime.now(timezone.utc)
 
     kind = await watch._remind(order, payment(), now)
@@ -79,13 +79,13 @@ async def test_first_reminder_after_the_interval(clean, sent, daytime):
 
 
 async def test_no_reminder_before_the_interval(clean, sent, daytime):
-    order = await make_order(clean, created_minutes_ago=30)
+    order = await make_order(clean, created_minutes_ago=10)
     assert await watch._remind(order, payment(), datetime.now(timezone.utc)) is None
     assert sent == []
 
 
 async def test_no_reminder_while_the_client_is_talking(clean, sent, daytime):
-    order = await make_order(clean, created_minutes_ago=95)
+    order = await make_order(clean, created_minutes_ago=30)
     await dialog_history.append_message(PEER, "user", "а когда отправите?")
 
     assert await watch._remind(order, payment(), datetime.now(timezone.utc)) is None
@@ -93,7 +93,7 @@ async def test_no_reminder_while_the_client_is_talking(clean, sent, daytime):
 
 
 async def test_no_reminder_after_the_manager_replied(clean, sent, daytime):
-    order = await make_order(clean, created_minutes_ago=95)
+    order = await make_order(clean, created_minutes_ago=30)
     await dialog_history.append_message(
         PEER, "assistant", "Иван, я вам помогу", author=dialog_history.AUTHOR_MANAGER
     )
@@ -103,7 +103,7 @@ async def test_no_reminder_after_the_manager_replied(clean, sent, daytime):
 
 
 async def test_quiet_hours_postpone_the_reminder(clean, sent, monkeypatch):
-    order = await make_order(clean, created_minutes_ago=95)
+    order = await make_order(clean, created_minutes_ago=30)
     monkeypatch.setattr(worktime, "is_quiet", lambda moment=None: True)
 
     assert await watch._remind(order, payment(), datetime.now(timezone.utc)) is None
@@ -115,9 +115,8 @@ async def test_quiet_hours_postpone_the_reminder(clean, sent, monkeypatch):
 
 
 async def test_second_reminder_names_the_deadline(clean, sent, daytime):
-    # За три часа до закрытия счёта: второе напоминание уже пора.
-    minutes = 24 * 60 - 180
-    order = await make_order(clean, created_minutes_ago=minutes,
+    # За пять минут до истечения часа: второе напоминание уже пора.
+    order = await make_order(clean, created_minutes_ago=55,
                              reminder_1_sent_at=datetime.now(timezone.utc))
     now = datetime.now(timezone.utc)
 
@@ -128,9 +127,12 @@ async def test_second_reminder_names_the_deadline(clean, sent, daytime):
 
 
 async def test_second_reminder_skipped_when_night_eats_it(clean, sent, monkeypatch):
-    """Тихие часы кончатся позже, чем закроется счёт — напоминать нечего."""
-    minutes = 24 * 60 - 120
-    order = await make_order(clean, created_minutes_ago=minutes,
+    """Тихие часы кончатся позже, чем закроется счёт — напоминать нечего.
+
+    Со часовым сроком ссылки это обычный случай: ночью счёт истечёт задолго
+    до девяти утра.
+    """
+    order = await make_order(clean, created_minutes_ago=55,
                              reminder_1_sent_at=datetime.now(timezone.utc))
     monkeypatch.setattr(worktime, "is_quiet", lambda moment=None: True)
     monkeypatch.setattr(
@@ -147,14 +149,14 @@ async def test_second_reminder_skipped_when_night_eats_it(clean, sent, monkeypat
 
 
 async def test_no_reminder_when_payment_is_not_pending(clean, sent, daytime):
-    order = await make_order(clean, created_minutes_ago=95)
+    order = await make_order(clean, created_minutes_ago=30)
     assert await watch._remind(order, payment(status="canceled"), datetime.now(timezone.utc)) is None
     assert await watch._remind(order, payment(status="succeeded"), datetime.now(timezone.utc)) is None
     assert sent == []
 
 
 async def test_expired_invoice_closes_and_returns_the_draft(clean, sent, monkeypatch):
-    order = await make_order(clean, created_minutes_ago=25 * 60)
+    order = await make_order(clean, created_minutes_ago=70)
     canceled: list[str] = []
 
     async def fake_cancel(payment_id):
@@ -188,7 +190,7 @@ async def test_expired_invoice_closes_and_returns_the_draft(clean, sent, monkeyp
 
 
 async def test_expired_invoice_keeps_a_newer_draft(clean, sent, monkeypatch):
-    order = await make_order(clean, created_minutes_ago=25 * 60)
+    order = await make_order(clean, created_minutes_ago=70)
     monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
 
     from app.modules.orders.state import OrderDraft
@@ -213,7 +215,7 @@ async def test_new_confirmation_makes_a_new_idempotence_key(clean):
 
 
 async def test_client_hears_about_closing_only_once(clean, sent, monkeypatch):
-    order = await make_order(clean, created_minutes_ago=25 * 60)
+    order = await make_order(clean, created_minutes_ago=70)
     monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
     await state.clear_draft(PEER)
 
@@ -228,3 +230,39 @@ async def test_client_hears_about_closing_only_once(clean, sent, monkeypatch):
     async with clean() as session:
         row = await session.get(ClientNotice, (f"order:{order.id}", templates.PAYMENT_EXPIRED))
     assert row is not None and row.sent_at is not None
+
+
+async def test_no_reminder_once_the_link_is_dead(clean, sent, daytime):
+    """Главный урок от поддержки ЮKassa: ссылка живёт час.
+
+    После этого напоминать ею нельзя — раньше первое напоминание уходило
+    через 90 минут, то есть всегда с мёртвой ссылкой.
+    """
+    order = await make_order(clean, created_minutes_ago=75)
+
+    assert await watch._remind(order, payment(), datetime.now(timezone.utc)) is None
+    assert sent == []
+
+
+async def test_closed_invoice_message_waits_for_morning(clean, sent, monkeypatch):
+    """Ночью про закрытый счёт молчим, но утром договариваем."""
+    from app.modules.payment import service as payment_service
+
+    order = await make_order(clean, created_minutes_ago=70)
+    monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
+    await state.clear_draft(PEER)
+
+    # Ночь: счёт закрываем, клиенту не пишем.
+    monkeypatch.setattr(worktime, "is_quiet", lambda moment=None: True)
+    await payment_service.close_invoice(order, payment(), notice=templates.PAYMENT_EXPIRED)
+    assert sent == []
+
+    # Утро: догоняющий проход досказывает.
+    monkeypatch.setattr(worktime, "is_quiet", lambda moment=None: False)
+    told = await watch._tell_about_closed_invoices(datetime.now(timezone.utc))
+    assert told == 1
+    assert "Срок счёта по заказу" in sent[-1]
+
+    # И только один раз.
+    assert await watch._tell_about_closed_invoices(datetime.now(timezone.utc)) == 0
+    assert len(sent) == 1
