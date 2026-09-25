@@ -78,3 +78,24 @@ svg{display:block;max-width:100%}
 h2,h3,h4{page-break-after:avoid}
 figure,.note,.warn,.risk,.legend{page-break-inside:avoid}
 thead{display:table-header-group}
+
+/* таймлайн часа на оплату */
+.timeline{position:relative;margin:10pt 0 6pt;padding-left:14pt;border-left:2px solid var(--accent)}
+.timeline .step{position:relative;margin-bottom:8pt;page-break-inside:avoid}
+.timeline .step::before{content:"";position:absolute;left:-19pt;top:3pt;width:8pt;height:8pt;border-radius:50%;background:#fff;border:2px solid var(--accent)}
+.timeline .step.s-warn::before{border-color:var(--warm)}
+.timeline .step.s-stop::before{border-color:var(--red);background:var(--red-soft)}
+.timeline .t{font-weight:700;font-size:8.6pt;color:var(--accent);display:inline-block;min-width:44pt}
+.timeline .step.s-warn .t{color:var(--warm)}
+.timeline .step.s-stop .t{color:var(--red)}
+.fixed{display:inline-block;font-size:7pt;padding:.5pt 4pt;border-radius:7px;background:var(--accent-soft);color:var(--accent);font-weight:700;margin-left:3pt;vertical-align:1pt}
+.new{display:inline-block;font-size:7pt;padding:.5pt 4pt;border-radius:7px;background:#e8eefb;color:#2b4f99;font-weight:700;margin-left:3pt;vertical-align:1pt}
+.tpl{font-family:"DejaVu Sans Mono",monospace;font-size:7.9pt;white-space:pre-wrap;background:#fff;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:4px;padding:5pt 7pt;margin:2pt 0 7pt;page-break-inside:avoid}
+.tpl-title{font-size:8.2pt;font-weight:700;margin-top:7pt}
+.tpl-when{font-size:7.8pt;color:var(--muted)}
+
+/* заголовок шаблона не должен оставаться без текста внизу страницы */
+.tpl-title{page-break-after:avoid;break-after:avoid}
+/* компактнее, чтобы таблица изменений помещалась на страницу с оглавлением */
+.toc div{padding:2.4pt 0}
+.changes td,.changes th{padding:2.6pt 5pt;font-size:8.1pt}
