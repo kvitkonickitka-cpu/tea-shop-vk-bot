@@ -3,538 +3,576 @@
 <link rel="stylesheet" href="style.css"></head><body>
 
 <section class="cover">
-  <div class="kicker">tea-shop-vk-bot</div>
+  <div class="kicker">tea-shop-vk-bot · редакция 25.09.2026</div>
   <h1>Что происходит<br>на стороне клиента</h1>
-  <div class="sub">Все пути, по которым идёт человек, написавший в сообщество: от вопроса про чай до трек-номера. С примерами сообщений и разбором рисков.</div>
+  <div class="sub">Все пути, по которым идёт человек, написавший в сообщество: от вопроса про чай до трек-номера — с оплатой, напоминаниями, возвратами и тем, что видит менеджер.</div>
   <div class="meta">
-    <p><b>Собрано по коду</b>, а не по замыслу: ветка <code>main</code>, 24 сентября 2026.</p>
-    <p><b>Режим на момент сборки:</b> оплата ЮKassa включена (тестовый магазин), Почта России выключена, первым предлагается пункт выдачи Ozon.</p>
-    <p><b>Как читать примеры.</b> Реплики с зелёной меткой «дословно из кода» — это текст, который клиент получит буква в букву: он собран программой. Остальные реплики бота формулирует Claude по инструкции, поэтому слова будут другими — смысл и порядок те же.</p>
+    <p><b>Собрано по коду</b> ветки <code>feature/client-flow-fixes</code>, ревизия <code>ba17583</code> — она же сейчас в боевой ревизии контейнера.</p>
+    <p><b>Режим:</b> оплата ЮKassa включена на тестовом магазине 1475067; ссылка на оплату живёт час; почта клиента необязательна; Почта России выключена; первым предлагается пункт выдачи Ozon.</p>
+    <p><b>Часы:</b> бот отвечает на сообщения круглосуточно. По своей инициативе он не пишет с 23:00 до 09:00 по Москве. Менеджер работает с 10:00 до 23:00, все семь дней.</p>
+    <p><b>Как читать примеры.</b> Реплики с пометкой «дословно из кода» клиент получит буква в букву — их собирает программа по шаблонам из <code>app/messages/templates.py</code>. Остальные реплики бота формулирует Claude по инструкции: смысл и порядок те же, слова будут другими.</p>
   </div>
 </section>
 
 <section class="section">
 <h2>Содержание</h2>
 <div class="toc">
-  <div><b>1. Карта маршрутов</b><span>что происходит с любым входящим сообщением</span></div>
-  <div><b>2. Состояния заказа</b><span>от «хочу чай» до трек-номера</span></div>
-  <div><b>3. Сценарий А</b><span>вопрос про чай — самый частый путь</span></div>
-  <div><b>4. Сценарий Б</b><span>заказ с пунктом выдачи Ozon и оплатой</span></div>
-  <div><b>5. Сценарий В</b><span>заказ через СДЭК: пункт выдачи и курьер</span></div>
-  <div><b>6. Сценарий Г</b><span>когда подключается живой менеджер</span></div>
-  <div><b>7. Сценарий Д</b><span>фото, голосовые и заказ из витрины ВК</span></div>
-  <div><b>8. После оплаты</b><span>деньги, отправление, чек, трек, возврат</span></div>
-  <div><b>9. Где клиент может застрять</b><span>тупики и обрывы</span></div>
-  <div><b>10. Риски и недочёты</b><span>таблица с приоритетами</span></div>
-  <div><b>11. Что чинить первым</b><span>короткий список</span></div>
+  <div><b>Что изменилось с прошлой редакции</b><span>коротко, списком</span></div>
+  <div><b>1. Карта маршрутов</b><span>две двери: клиент пишет — бот пишет сам</span></div>
+  <div><b>2. Состояния заказа</b><span>черновик, счёт, попытки оплаты</span></div>
+  <div><b>3. Сценарий А</b><span>вопрос про чай</span></div>
+  <div><b>4. Сценарий Б</b><span>заказ через Ozon и оплата</span></div>
+  <div><b>5. Сценарий В</b><span>заказ через СДЭК</span></div>
+  <div><b>6. Час на оплату</b><span>напоминания, истечение, новая ссылка</span></div>
+  <div><b>7. После оплаты</b><span>все исходы: деньги, возвраты, доставка</span></div>
+  <div><b>8. Менеджер</b><span>вопросы, контроль ответа, очередь, ручной счёт</span></div>
+  <div><b>9. Фото, голосовые, витрина ВК</b><span>нестандартные входы</span></div>
+  <div><b>10. Риски и недочёты</b><span>что осталось</span></div>
+  <div><b>11. Что делать дальше</b><span>по порядку</span></div>
+  <div><b>Приложение</b><span>все тексты бота дословно</span></div>
 </div>
 
-<h3>Три двери, через которые клиент попадает к боту</h3>
-<table>
-  <tr><th style="width:26%">Событие ВК</th><th>Кто инициатор</th><th>Что получает клиент</th></tr>
-  <tr><td><code>message_new</code></td><td>Клиент написал в сообщество</td><td>Ответ бота: консультация, расчёт доставки, ссылка на оплату</td></tr>
-  <tr><td><code>message_reply</code></td><td>Менеджер ответил руками из приложения ВК</td><td>Ответ менеджера. Бот молчит, но запоминает ответ и больше не пишет «передал менеджеру»</td></tr>
-  <tr><td><code>market_order_new</code></td><td>Клиент оформил заказ в витрине ВК, минуя диалог</td><td>Сообщение с суммой и двумя вариантами доставки СДЭК</td></tr>
+<h3>Что изменилось с прошлой редакции</h3>
+<table class="changes">
+  <tr><th style="width:32%">Было</th><th>Стало</th></tr>
+  <tr><td>Инструкция обещала «ссылку пришлёт менеджер»</td><td>Шаг оплаты подставляется по настройке; бот сам выдаёт ссылку <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Срок счёта — наши «сутки»; напоминание через 90 минут уходило с мёртвой ссылкой</td><td>Срок — час, как у ЮKassa; напоминания через 25 минут и за 10 до конца <span class="fixed">исправлено</span></td></tr>
+  <tr><td>О закрытии счёта клиент не узнавал</td><td>Узнаёт всегда; ночью — утром <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Без почты заказ не оформлялся</td><td>Почта необязательна, чек на телефон <span class="new">см. риск №1</span></td></tr>
+  <tr><td>При переоформлении создавался новый заказ; оплата по старой ссылке терялась</td><td>Тот же номер заказа, все попытки оплаты помнятся; старые деньги принимаются <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Двойная оплата не обрабатывалась</td><td>Вторые деньги возвращаются автоматически, с чеком <span class="new">новое</span></td></tr>
+  <tr><td>Клиент молчал при отказе банка, возврате, зависшем чеке, отказе СДЭКа</td><td>На каждое — своё сообщение, ровно одно <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Уведомление менеджеру терялось при таймауте телеграма</td><td>Очередь с повторами, после 10 неудач — в ВК администратору <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Вопрос мог висеть без ответа вечно</td><td>Через 2 рабочих часа — напоминание менеджеру и слово клиенту <span class="new">новое</span></td></tr>
+  <tr><td>Витринный заказ считал СДЭК без НДС</td><td>Идёт общим путём, как заказ из переписки <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Фото без подписи игнорировалось</td><td>Фото видит Claude; голосовые и файлы названы словами <span class="fixed">исправлено</span></td></tr>
 </table>
-
-<div class="note"><b>Сколько бот помнит</b>
-Последние 20 сообщений переписки. Всё, что раньше, для него не существует: клиент, вернувшийся через месяц, начинает почти с чистого листа — но незакрытый черновик заказа при этом жив и хранится в базе без срока давности.</div>
 </section>
 
 <section class="section">
 <h2>1. Карта маршрутов</h2>
-<p>Так выглядит путь любого сообщения — от нажатия «отправить» до ответа. Серые ветки — места, где клиент не получает ничего.</p>
+<p>У бота две двери. Через первую приходит клиент со своим сообщением — и получает ответ в любое время суток. Через вторую бот выходит сам: раз в пять минут таймер проверяет платежи, заказы и вопросы и, если есть новости, пишет клиенту или менеджеру.</p>
 
 <figure>
-<svg viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="10">
+<svg viewBox="0 0 700 430" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="9.5">
   <defs>
-    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#5f6b64"/>
-    </marker>
-    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#b6bfb8"/>
-    </marker>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5f6b64"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2f6f4e"/></marker>
   </defs>
-  <g stroke="#5f6b64" stroke-width="1.2" marker-end="url(#a)" fill="none">
-    <path d="M150,54 V78"/><path d="M150,112 V136"/><path d="M150,170 V196"/>
-    <path d="M150,230 V256"/><path d="M150,290 V316"/><path d="M150,350 V376"/>
-    <path d="M150,410 V436"/>
-  </g>
-  <g stroke="#b6bfb8" stroke-width="1.2" marker-end="url(#ag)" fill="none">
-    <path d="M250,95 H420"/><path d="M250,153 H420"/><path d="M250,333 H420"/>
-  </g>
-  <g stroke="#2f6f4e" stroke-width="1.2" marker-end="url(#a)" fill="none">
-    <path d="M250,213 H420"/><path d="M250,273 H420"/>
+
+  <text x="150" y="20" text-anchor="middle" font-weight="bold" fill="#2f6f4e" font-size="10.5">Клиент пишет</text>
+  <text x="530" y="20" text-anchor="middle" font-weight="bold" fill="#9a5b1e" font-size="10.5">Бот пишет сам</text>
+
+  <g stroke="#5f6b64" stroke-width="1.2" fill="none" marker-end="url(#a)">
+    <path d="M150,58 V78"/><path d="M150,110 V130"/><path d="M150,162 V182"/><path d="M150,214 V234"/><path d="M150,266 V286"/>
+    <path d="M530,58 V78"/><path d="M530,110 V130"/><path d="M530,162 V182"/><path d="M530,214 V234"/>
   </g>
 
   <g>
-    <rect x="50" y="30" width="200" height="24" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="150" y="46" text-anchor="middle" fill="#1b1f1d">Клиент отправил сообщение</text>
-
-    <rect x="50" y="78" width="200" height="34" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="150" y="93" text-anchor="middle">Вебхук ВК: проверка секрета</text>
-    <text x="150" y="106" text-anchor="middle" fill="#5f6b64" font-size="8.5">app/api/vk.py</text>
-
-    <rect x="50" y="136" width="200" height="34" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="150" y="151" text-anchor="middle">Событие уже обрабатывали?</text>
-    <text x="150" y="164" text-anchor="middle" fill="#5f6b64" font-size="8.5">дедупликация по event_id</text>
-
-    <rect x="50" y="196" width="200" height="34" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="150" y="211" text-anchor="middle">Очередь или обработка на месте</text>
-    <text x="150" y="224" text-anchor="middle" fill="#5f6b64" font-size="8.5">у ВК ~8 секунд на ответ</text>
-
-    <rect x="50" y="256" width="200" height="34" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="150" y="271" text-anchor="middle">Разбор вложений</text>
-    <text x="150" y="284" text-anchor="middle" fill="#5f6b64" font-size="8.5">фото скачиваются, прочее — словами</text>
-
-    <rect x="50" y="316" width="200" height="34" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="150" y="331" text-anchor="middle">Есть текст или вложение?</text>
-    <text x="150" y="344" text-anchor="middle" fill="#5f6b64" font-size="8.5">пустое — молчим</text>
-
-    <rect x="50" y="376" width="200" height="34" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="150" y="391" text-anchor="middle">Claude + инструменты этапа</text>
-    <text x="150" y="404" text-anchor="middle" fill="#5f6b64" font-size="8.5">до 4 кругов, лимит 35 секунд</text>
-
-    <rect x="50" y="436" width="200" height="24" rx="5" fill="#2f6f4e"/>
-    <text x="150" y="452" text-anchor="middle" fill="#fff">Ответ уходит клиенту</text>
+    <rect x="50" y="30" width="200" height="28" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+    <text x="150" y="48" text-anchor="middle">Сообщение в сообщество</text>
+    <rect x="50" y="78" width="200" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+    <text x="150" y="92" text-anchor="middle">Вебхук ВК: секрет, повтор?</text>
+    <text x="150" y="104" text-anchor="middle" fill="#5f6b64" font-size="8">повтор события — пропуск</text>
+    <rect x="50" y="130" width="200" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+    <text x="150" y="144" text-anchor="middle">Очередь сообщений</text>
+    <text x="150" y="156" text-anchor="middle" fill="#5f6b64" font-size="8">ответ ВК сразу, разбор отдельно</text>
+    <rect x="50" y="182" width="200" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+    <text x="150" y="196" text-anchor="middle">Вложения</text>
+    <text x="150" y="208" text-anchor="middle" fill="#5f6b64" font-size="8">фото — Claude, прочее — словами</text>
+    <rect x="50" y="234" width="200" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+    <text x="150" y="248" text-anchor="middle">Claude + инструменты этапа</text>
+    <text x="150" y="260" text-anchor="middle" fill="#5f6b64" font-size="8">до 4 кругов, лимит 35 секунд</text>
+    <rect x="50" y="286" width="200" height="28" rx="5" fill="#2f6f4e"/>
+    <text x="150" y="304" text-anchor="middle" fill="#fff">Ответ клиенту — круглосуточно</text>
   </g>
 
-  <g font-size="9">
-    <rect x="420" y="82" width="230" height="26" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="435" y="99" fill="#5f6b64">Секрет не совпал → 403, клиент молчит</text>
-
-    <rect x="420" y="140" width="230" height="26" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="435" y="157" fill="#5f6b64">Повтор от ВК → пропускаем молча</text>
-
-    <rect x="420" y="200" width="230" height="26" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="435" y="217" fill="#1b1f1d">С очередью ответ приходит с задержкой</text>
-
-    <rect x="420" y="260" width="230" height="26" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="435" y="277" fill="#1b1f1d">Голосовое/видео/файл — названы словами</text>
-
-    <rect x="420" y="320" width="230" height="26" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="435" y="337" fill="#5f6b64">Ни текста, ни вложений → ответа нет</text>
+  <g>
+    <rect x="430" y="30" width="200" height="28" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
+    <text x="530" y="48" text-anchor="middle">Таймер, раз в 5 минут</text>
+    <rect x="430" y="78" width="200" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+    <text x="530" y="92" text-anchor="middle">Очередь уведомлений менеджеру</text>
+    <text x="530" y="104" text-anchor="middle" fill="#5f6b64" font-size="8">дослать то, что не ушло</text>
+    <rect x="430" y="130" width="200" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+    <text x="530" y="144" text-anchor="middle">Платежи и счета</text>
+    <text x="530" y="156" text-anchor="middle" fill="#5f6b64" font-size="8">напоминания, истечение, чеки</text>
+    <rect x="430" y="182" width="200" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+    <text x="530" y="196" text-anchor="middle">Заказы СДЭК · вопросы без ответа</text>
+    <text x="530" y="208" text-anchor="middle" fill="#5f6b64" font-size="8">трек, отказ, напоминание менеджеру</text>
+    <rect x="430" y="234" width="200" height="32" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
+    <text x="530" y="248" text-anchor="middle">Шаблон + журнал отправок</text>
+    <text x="530" y="260" text-anchor="middle" fill="#5f6b64" font-size="8">одно событие — одно сообщение</text>
   </g>
+
+  <g stroke="#9a5b1e" stroke-width="1.2" fill="none" marker-end="url(#a)">
+    <path d="M530,266 V290 H270"/>
+  </g>
+  <text x="400" y="284" text-anchor="middle" fill="#9a5b1e" font-size="8">с 09:00 до 23:00</text>
+
+  <g stroke="#2f6f4e" stroke-width="1.2" fill="none" marker-end="url(#g)"><path d="M530,266 V340 H640 V360"/></g>
+  <rect x="560" y="360" width="130" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
+  <text x="625" y="374" text-anchor="middle">Менеджеру</text>
+  <text x="625" y="386" text-anchor="middle" fill="#5f6b64" font-size="8">телеграм, запасной — ВК</text>
+
+  <text x="50" y="345" fill="#5f6b64" font-size="8.5">Всё, что бот сказал сам, записывается в историю диалога как его реплика —</text>
+  <text x="50" y="358" fill="#5f6b64" font-size="8.5">иначе на следующем ходу модель не знала бы, что клиенту уже написали.</text>
 </svg>
-<figcaption>Путь сообщения. Зелёным — то, что доходит до клиента; серым — места, где он остаётся без ответа.</figcaption>
+<figcaption>Левая колонка работает всегда. Правая выходит к клиенту только с 09:00 до 23:00 по Москве; к менеджеру — в любое время.</figcaption>
 </figure>
 
 <div class="warn"><b>Что видит клиент, когда что-то ломается</b>
-Claude не ответил или упал — приходит «Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом.» Если ход упёрся в лимит кругов и модель не написала ни слова — «Записала, спасибо! Подскажите, если нужно что-то поправить 🙏». Второе выглядит нормально, но означает, что действие клиента, возможно, не выполнено.</div>
+Claude не ответил или упал — «Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом.» Ход упёрся в лимит, а модель не написала ни слова — «Записала, спасибо! Подскажите, если нужно что-то поправить 🙏». Второе выглядит нормально, но значит, что действие клиента могло не выполниться.</div>
 </section>
 <section class="section">
 <h2>2. Состояния заказа</h2>
-<p>Заказ собирается только инструментами: Claude его не «помнит», а на каждом этапе ему доступны лишь те инструменты, которые уместны сейчас. Поэтому бот физически не может, например, подтвердить заказ до расчёта доставки.</p>
+<p>Заказ собирается только инструментами: Claude его не «помнит». На каждом этапе модели доступны лишь уместные инструменты — подтвердить заказ до расчёта доставки физически нельзя.</p>
 
 <figure>
-<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="9.5">
-  <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-    <path d="M0,0 L10,5 L0,10 z" fill="#2f6f4e"/></marker></defs>
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="9.3">
+  <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2f6f4e"/></marker>
+  <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9a5b1e"/></marker></defs>
 
-  <g stroke="#2f6f4e" stroke-width="1.3" marker-end="url(#b)" fill="none">
-    <path d="M118,44 H168"/><path d="M288,44 H338"/><path d="M458,44 H508"/>
-    <path d="M590,68 V104 H60 V140"/>
-    <path d="M180,152 H230"/><path d="M350,152 H400"/><path d="M520,152 H570"/>
-    <path d="M590,176 V212 H60 V248"/>
-    <path d="M180,260 H240"/>
+  <g stroke="#2f6f4e" stroke-width="1.3" fill="none" marker-end="url(#b)">
+    <path d="M118,44 H158"/><path d="M288,44 H328"/><path d="M458,44 H498"/>
+    <path d="M590,68 V96 H99 V124"/>
+    <path d="M180,140 H220"/><path d="M340,140 H380"/><path d="M500,140 H540"/>
+    <path d="M615,164 V196 H99 V226"/>
+    <path d="M180,242 H240"/>
+  </g>
+  <g stroke="#9a5b1e" stroke-width="1.3" fill="none" marker-end="url(#r)" stroke-dasharray="4 3">
+    <path d="M99,258 V300 H300"/>
+    <path d="M430,300 H470 V164"/>
   </g>
 
-  <g>
-    <rect x="18" y="28" width="100" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="68" y="42" text-anchor="middle">нет черновика</text>
-    <text x="68" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">обычный разговор</text>
+  <rect x="18" y="28" width="100" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
+  <text x="68" y="42" text-anchor="middle">нет черновика</text><text x="68" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">разговор</text>
+  <rect x="158" y="28" width="130" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+  <text x="223" y="42" text-anchor="middle">propose_order</text><text x="223" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">сверка с ассортиментом</text>
+  <rect x="328" y="28" width="130" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
+  <text x="393" y="42" text-anchor="middle">awaiting_delivery</text><text x="393" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">спрашиваем город</text>
+  <rect x="498" y="28" width="185" height="40" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+  <text x="590" y="44" text-anchor="middle">set_delivery_method</text><text x="590" y="57" text-anchor="middle" fill="#5f6b64" font-size="8">живой расчёт у перевозчика</text>
 
-    <rect x="168" y="28" width="120" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="228" y="42" text-anchor="middle">propose_order</text>
-    <text x="228" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">сверка с ассортиментом</text>
+  <rect x="18" y="124" width="162" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
+  <text x="99" y="138" text-anchor="middle">awaiting_confirmation</text><text x="99" y="150" text-anchor="middle" fill="#5f6b64" font-size="8">цена названа, пункт выбран</text>
+  <rect x="220" y="124" width="120" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+  <text x="280" y="138" text-anchor="middle">set_recipient</text><text x="280" y="150" text-anchor="middle" fill="#5f6b64" font-size="8">ФИО, телефон, почта?</text>
+  <rect x="380" y="124" width="120" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+  <text x="440" y="138" text-anchor="middle">confirm_order</text><text x="440" y="150" text-anchor="middle" fill="#5f6b64" font-size="8">проверка полноты</text>
+  <rect x="540" y="124" width="150" height="40" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
+  <text x="615" y="140" text-anchor="middle">счёт ЮKassa, попытка N</text><text x="615" y="153" text-anchor="middle" fill="#5f6b64" font-size="8">ссылка живёт 60 минут</text>
 
-    <rect x="338" y="28" width="120" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="398" y="42" text-anchor="middle">awaiting_delivery</text>
-    <text x="398" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">спрашиваем город</text>
+  <rect x="18" y="226" width="162" height="32" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
+  <text x="99" y="240" text-anchor="middle">клиент платит</text><text x="99" y="252" text-anchor="middle" fill="#5f6b64" font-size="8">чек на почту или телефон</text>
+  <rect x="240" y="226" width="220" height="32" rx="5" fill="#2f6f4e"/>
+  <text x="350" y="240" text-anchor="middle" fill="#fff">payment.succeeded</text><text x="350" y="252" text-anchor="middle" fill="#cfe1d5" font-size="8">только теперь заводится отправление</text>
 
-    <rect x="508" y="28" width="165" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="590" y="42" text-anchor="middle">set_delivery_method</text>
-    <text x="590" y="54" text-anchor="middle" fill="#5f6b64" font-size="8">живой расчёт у перевозчика</text>
+  <rect x="300" y="284" width="130" height="32" rx="5" fill="#fff" stroke="#9a5b1e"/>
+  <text x="365" y="298" text-anchor="middle">счёт истёк / отказ</text><text x="365" y="310" text-anchor="middle" fill="#5f6b64" font-size="8">payment_expired</text>
+  <text x="475" y="235" fill="#9a5b1e" font-size="8">«да» — новая</text>
+  <text x="475" y="246" fill="#9a5b1e" font-size="8">попытка, тот же</text>
+  <text x="475" y="257" fill="#9a5b1e" font-size="8">номер заказа</text>
 
-    <rect x="18" y="140" width="162" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="99" y="154" text-anchor="middle">awaiting_confirmation</text>
-    <text x="99" y="166" text-anchor="middle" fill="#5f6b64" font-size="8">цена названа, пункт выбран</text>
-
-    <rect x="230" y="140" width="120" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="290" y="154" text-anchor="middle">set_recipient</text>
-    <text x="290" y="166" text-anchor="middle" fill="#5f6b64" font-size="8">ФИО, телефон, почта</text>
-
-    <rect x="400" y="140" width="120" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="460" y="154" text-anchor="middle">confirm_order</text>
-    <text x="460" y="166" text-anchor="middle" fill="#5f6b64" font-size="8">проверка полноты</text>
-
-    <rect x="570" y="140" width="110" height="32" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
-    <text x="625" y="154" text-anchor="middle">счёт ЮKassa</text>
-    <text x="625" y="166" text-anchor="middle" fill="#5f6b64" font-size="8">awaiting_payment</text>
-
-    <rect x="18" y="248" width="162" height="32" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
-    <text x="99" y="262" text-anchor="middle">клиент платит</text>
-    <text x="99" y="274" text-anchor="middle" fill="#5f6b64" font-size="8">ссылка ЮKassa, чек на почту</text>
-
-    <rect x="240" y="248" width="200" height="32" rx="5" fill="#2f6f4e"/>
-    <text x="340" y="262" text-anchor="middle" fill="#fff">payment.succeeded</text>
-    <text x="340" y="274" text-anchor="middle" fill="#cfe1d5" font-size="8">только теперь заводится отправление</text>
-
-    <rect x="460" y="248" width="220" height="32" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="570" y="262" text-anchor="middle">Ozon: номер сразу · СДЭК: сверка</text>
-    <text x="570" y="274" text-anchor="middle" fill="#5f6b64" font-size="8">клиенту уходит сообщение об оплате</text>
-  </g>
-  <text x="18" y="308" fill="#5f6b64" font-size="8.5">Зелёные блоки — инструменты Claude; песочные — деньги; серые — ожидание следующей реплики клиента.</text>
+  <text x="18" y="345" fill="#5f6b64" font-size="8.5">Зелёное — инструменты Claude; песочное — деньги; пунктир — неоплаченный счёт возвращает черновик на подтверждение.</text>
+  <text x="18" y="359" fill="#5f6b64" font-size="8.5">Все попытки оплаты заказа хранятся в order_payments: деньги по старой ссылке найдут свой заказ.</text>
 </svg>
-<figcaption>Путь заказа. Отправление у перевозчика создаётся только после оплаты — до этого в кабинетах СДЭКа и Ozon ничего нет.</figcaption>
+<figcaption>Отправление у перевозчика создаётся только после оплаты — до этого в кабинетах СДЭКа и Ozon ничего нет.</figcaption>
 </figure>
 
-<h3>Что бот проверяет перед подтверждением</h3>
-<p>Пока хоть одно не выполнено, <code>confirm_order</code> не пройдёт — вместо оформления бот вернётся с вопросом:</p>
+<h3>Что бот проверяет перед выставлением счёта</h3>
 <table>
-  <tr><th style="width:30%">Условие</th><th>Что услышит клиент, если не выполнено</th></tr>
-  <tr><td>Выбран пункт выдачи СДЭК</td><td>Просьба назвать адрес пункта, плюс ссылка на карту пунктов</td></tr>
-  <tr><td>Выбран пункт выдачи Ozon</td><td>Просьба назвать адрес пункта из списка или с карты Ozon</td></tr>
-  <tr><td>Записаны ФИО и телефон</td><td>Просьба назвать получателя — без них отправление не завести</td></tr>
-  <tr><td>Записана электронная почта</td><td>Просьба назвать почту: чек ЮKassa доставляется только письмом</td></tr>
+  <tr><th style="width:32%">Условие</th><th>Что услышит клиент, если не выполнено</th></tr>
+  <tr><td>Выбран пункт выдачи СДЭК или Ozon</td><td>Просьба назвать адрес пункта — и ссылка на карту</td></tr>
+  <tr><td>Записаны ФИО и телефон</td><td>Просьба назвать получателя</td></tr>
+  <tr><td>Телефон целый, 11 цифр</td><td>«Телефон не похож на настоящий, назовите номер целиком» — до выставления счёта, а не отказом ЮKassa после «оформляйте»</td></tr>
+  <tr><td>Почта</td><td><b>Не проверяется.</b> Бот спрашивает один раз: «если хотите чек на почту — напишите её, иначе чек придёт по номеру телефона» (см. риск №1)</td></tr>
 </table>
 </section>
 
 <section class="section">
 <h2>3. Сценарий А: вопрос про чай</h2>
-<p>Самый частый путь и единственный, где не участвует ни один инструмент. Бот отвечает по ассортименту, который подгружается в каждый запрос.</p>
-
+<p>Самый частый путь и единственный без инструментов. Бот отвечает по ассортименту, который подкладывается в каждый запрос.</p>
 <div class="chat">
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Привет! Что посоветуете из улунов?</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Здравствуйте! Из улунов сейчас есть Те Гуань Инь — мягкий, цветочный, 800 ₽ за 100 г, и Да Хун Пао —поплотнее, с обжаркой, 1100 ₽. Если любите послаще во вкусе, берите Те Гуань Инь 🍃</div></div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Здравствуйте! Из улунов сейчас есть Те Гуань Инь — мягкий, цветочный, 800 ₽. Если любите послаще во вкусе, это ваш вариант 🍃</div></div>
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>А как он выглядит?</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Вот ссылка на товар с фотографиями: vk.com/market-…/product-… Там же видно фасовку.</div></div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Вот карточка с фотографиями: vk.ru/market/product/… Там же видно фасовку.</div></div>
 </div>
 
 <div class="note"><b>Границы, которые бот держит сам</b>
-Не советует чай «для здоровья» — вопросы про лечебные свойства, лекарства, беременность уходят менеджеру. Не сравнивает магазин с конкурентами и маркетплейсами. Не обсуждает политику и новости. Не принимает номер карты и коды из СМС — только официальную ссылку на оплату. Не предлагает товар, которого нет в наличии. Не выдумывает сорта и цены: если в ассортименте ответа нет, зовёт менеджера.</div>
+Не советует чай «для здоровья» — лечебные свойства, лекарства, беременность уходят менеджеру. Не сравнивает с конкурентами и маркетплейсами. Не обсуждает политику и новости. Не принимает номер карты и коды из СМС — только официальную ссылку на оплату. Не предлагает то, чего нет в наличии, и не выдумывает сорта и цены: нет ответа в ассортименте — зовёт менеджера.</div>
 
-<div class="risk"><b>Где это может подвести</b>
-Ассортимент собирается из товаров сообщества. Если товар в ВК описан скупо, бот честно скажет, что не знает, и позовёт менеджера — для клиента это выглядит как «бот не в курсе своего товара». Чем подробнее карточки, тем реже эскалации.</div>
+<div class="warn"><b>Ассортимент пока в файле</b>
+Товары лежат в <code>catalog.json</code> внутри образа — сейчас там одна тестовая позиция. Витрину ВК групповым токеном прочитать нельзя (ВК отвечает ошибкой 27), нужен токен администратора. Пока его нет, любая правка цены или наличия — это деплой.</div>
 </section>
+
 <section class="section">
-<h2>4. Сценарий Б: заказ с пунктом выдачи Ozon</h2>
-<p>Основной путь покупки. Ozon предлагается первым: на живом расчёте до Москвы он вышел 121 ₽ против 397 ₽ у СДЭКа. Платит клиент, поэтому порядок — про цену, которую он увидит первой.</p>
+<h2>4. Сценарий Б: заказ через Ozon</h2>
+<p>Основной путь покупки. Ozon предлагается первым: на живом расчёте до Москвы вышло 121 ₽ против 397 ₽ у СДЭКа.</p>
 
 <div class="chat">
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Беру Те Гуань Инь, одну пачку</div></div>
-  <div class="sys">propose_order — товар сверяется с ассортиментом, создаётся черновик</div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Записала: Те Гуань Инь × 1 — 800 ₽. Дешевле всего выйдет пункт выдачи Ozon — заберёте сами. Если нужно быстрее, есть пункт СДЭК, он дороже, но идёт в полтора-два раза меньше. В какой город везём?</div></div>
+  <div class="sys">propose_order — сверка с ассортиментом, черновик создан</div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Записала: Те Гуань Инь × 1 — 800 ₽. Дешевле всего пункт выдачи Ozon — заберёте сами. Если нужно быстрее — пункт СДЭК, дороже, но идёт в полтора-два раза меньше. В какой город везём?</div></div>
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Краснодар</div></div>
-  <div class="sys">set_delivery_method(ozon_pvz, «Краснодар») — поиск по своей копии каталога, проверка доступности у Ozon, расчёт checkout</div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Доставка Ozon в Краснодар — около 117 ₽, 4 дня. Итого 917 ₽ за Те Гуань Инь × 1 и доставку.<br><br>Пункты, которые я вижу: 1) ул. Ставропольская, 230; 2) ул. Красная, 176; 3) ул. Ставропольская, 2. Это не весь список — все пункты города видно на карте ozon.ru/geo. Выберите удобный и назовите адрес, я найду 🙂</div></div>
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Давайте на Ставропольской 230</div></div>
-  <div class="sys">set_delivery_method(ozon_pvz, «Краснодар», pickup_point=«Ставропольская 230») — пересчёт по выбранному пункту, пункт фиксируется в заказе</div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Готово: пункт выдачи Ozon, ул. Ставропольская, 230. Доставка 117 ₽, срок 4 дня, итого 917 ₽. Теперь нужны ФИО получателя, телефон и почта — на почту придёт чек.</div></div>
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Иванов Иван Иванович, +7 918 000-00-00, ivanov@mail.ru</div></div>
-  <div class="sys">set_recipient — данные записаны в черновик</div>
+  <div class="sys">set_delivery_method(ozon_pvz) — поиск по своей копии каталога по основам слов: «Краснодарский край» больше не совпадает с «Краснодар»</div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Доставка Ozon в Краснодар — около 117 ₽, 4 дня. Итого около 917 ₽.<br>Пункты, которые я вижу: 1) ул. Ставропольская, 230; 2) ул. Красная, 176. Это не весь список — все пункты на карте ozon.ru/geo. Назовите удобный 🙂</div></div>
+  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>На Ставропольской 230</div></div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Готово: пункт выдачи Ozon, ул. Ставропольская, 230. Доставка 117 ₽, итого 917 ₽. Нужны ФИО получателя и телефон. Если хотите получить чек на почту — напишите её, иначе чек придёт по номеру телефона.</div></div>
+  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Иванов Иван, +7 918 123-45-67. Почту не надо</div></div>
+  <div class="sys">set_recipient — телефон проверен (11 цифр), почта не требуется</div>
   <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Записала. Оформляем заказ на 917 ₽?</div></div>
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Да</div></div>
-  <div class="sys">confirm_order → счёт ЮKassa с чеком. Отправление в Ozon пока НЕ создаётся</div>
-  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Заказ оформлен. Оплатить: https://yoomoney.ru/checkout/payments/v2/contract?orderId=…<br>После оплаты пришлём чек на почту и передадим заказ в доставку.</div></div>
+  <div class="sys">confirm_order → счёт ЮKassa с чеком на телефон. Отправление в Ozon пока НЕ создаётся</div>
+  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Заказ оформлен. Оплатить: https://yoomoney.ru/checkout/payments/v2/contract?orderId=…<br>После оплаты пришлём чек на номер +7 *** ***-45-67 и передадим заказ в доставку.</div></div>
 </div>
 
 <div class="note"><b>Почему цена сначала «около»</b>
-У Ozon нет цены «до города»: расчёт требует кода конкретного пункта. Бот считает по первому подходящему пункту и называет сумму сразу — чтобы клиент не ждал цену до конца выбора, — а после выбора пересчитывает. Разница обычно рубль-другой, но она есть, и бот честно говорит «около».</div>
+У Ozon нет цены «до города»: расчёт требует кода пункта. Бот считает по первому подходящему пункту и называет сумму сразу, а после выбора пересчитывает — разница обычно рубль-другой.</div>
 
-<div class="warn"><b>Если названный адрес не нашёлся</b>
-Копия каталога Ozon неполная — она наполняется по кругу и на любой момент отстаёт. Тогда бот говорит, что такого пункта у него нет, показывает пункты города и просит выбрать из них или назвать адрес иначе. Клиент при этом не в тупике, но тратит лишний круг.</div>
-
-<h3>Что происходит сразу после нажатия «Оплатить»</h3>
 <div class="chat">
-  <div class="sys">ЮKassa присылает уведомление payment.succeeded → заказ помечается оплаченным ровно один раз → создаётся отправление Ozon → карточка уходит менеджеру</div>
-  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>✅ Оплата получена, спасибо!<br>Заказ №128 на 917 руб.<br>Чек придёт на ivanov@mail.ru.<br>Отправление Ozon: 0123-4567-8 — по нему посылку видно в приложении и на сайте Ozon, там же отслеживается доставка.</div></div>
+  <div class="sys">клиент оплатил → payment.succeeded → заказ помечен оплаченным ровно один раз → отправление Ozon → карточка менеджеру</div>
+  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>✅ Оплата получена, спасибо!<br>Заказ №128 на 917 руб.<br>Чек придёт на номер +7 *** ***-45-67.<br>Отправление Ozon: 0123-4567-8 — по нему посылку видно в приложении и на сайте Ozon, там же отслеживается доставка.</div></div>
 </div>
 </section>
 
 <section>
-<h2>5. Сценарий В: заказ через СДЭК</h2>
-<p>Отличий от Ozon два: пункт опознаётся по коду из списка пунктов города, а заявка перевозчику подтверждается не сразу — СДЭК отвечает асинхронно.</p>
-
+<h2 style="margin-top:12pt">5. Сценарий В: заказ через СДЭК</h2>
+<p>Отличий от Ozon два: пункт опознаётся по коду из списка пунктов города, а заявка перевозчику подтверждается не сразу — ответ СДЭКа узнаёт таймер.</p>
 <div class="chat">
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>А побыстрее можно? Нужно к выходным</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Тогда СДЭК: до пункта выдачи в Краснодаре — 398 ₽, 2 дня. Курьером до двери дороже, около 650 ₽. Какой вариант?</div></div>
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Пункт выдачи</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Нужен адрес самого пункта, а не только город. Вот карта, чтобы выбрать ближайший: cdek.ru/ru/offices — назовите адрес, я найду.</div></div>
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Красная 176</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Нашла: пункт выдачи СДЭК, ул. Красная, 176. Доставка 398 ₽, срок 2 дня, итого 1198 ₽. Нужны ФИО, телефон и почта для чека.</div></div>
-</div>
-
-<p>Дальше всё как в сценарии Б — до момента оплаты. А вот после неё пути расходятся:</p>
-
-<table>
-  <tr><th style="width:22%">Шаг</th><th style="width:39%">Ozon</th><th>СДЭК</th></tr>
-  <tr><td>Создание отправления</td><td>Синхронно: номер известен сразу</td><td>Заявка принимается, результат приходит позже</td></tr>
-  <tr><td>Что клиент получает сразу</td><td>Номер отправления и где следить</td><td>Обещание прислать трек-номер</td></tr>
-  <tr><td>Когда приходит трек</td><td>—</td><td>Отдельным сообщением, когда СДЭК выдаст накладную</td></tr>
-  <tr><td>Если перевозчик отказал</td><td>Клиенту — «менеджер свяжется», менеджеру — предупреждение</td><td>Клиенту не приходит ничего, менеджеру — предупреждение</td></tr>
-</table>
-
-<div class="chat">
-  <div class="sys">Сверка по таймеру узнала номер накладной у СДЭКа</div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Тогда СДЭК: до пункта выдачи в Краснодаре — 398 ₽, 2 дня. Нужен адрес самого пункта — вот карта: cdek.ru/ru/offices.</div></div>
+  <div class="sys">…дальше как в сценарии Б, до оплаты…</div>
+  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>✅ Оплата получена, спасибо!<br>Заказ №128 на 917 руб.<br>Чек придёт на ivanov@mail.ru.<br>Передаём посылку в СДЭК. Трек-номер пришлём сюда, как только СДЭК его выдаст.</div></div>
+  <div class="sys">таймер узнал номер накладной у СДЭКа</div>
   <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Посылка по заказу №128 передана в СДЭК.<br>Трек-номер: 1234567890<br>Отследить: https://www.cdek.ru/ru/tracking</div></div>
 </div>
-
-<div class="risk"><b>Дыра в этом сценарии</b>
-Если СДЭК отклонил заявку по уже оплаченному заказу, клиент об этом не узнаёт: предупреждение уходит только в телеграм-чат заказов. Человек заплатил, получил «трек пришлём» — и тишина, пока менеджер не вмешается вручную.</div>
+<p>Если СДЭК заявку отклонил или молчит дольше получаса — по оплаченному заказу клиент получает «заминку с доставкой», менеджер — текст ошибки. По неоплаченному клиенту не пишем: его ведёт менеджер.</p>
 </section>
-<section>
-<h2 style="margin-top:12pt">6. Сценарий Г: подключается живой менеджер</h2>
-<p>Эскалация — это не сбой, а штатный путь. Клиент никогда не слышит слова «эскалация», «тикет» или «обращение»: для него это просто «уточню и вернусь».</p>
+<section class="section">
+<h2>6. Час на оплату</h2>
+<p>Ссылка ЮKassa живёт один час. Это их срок, а не наш: если за час клиент не открыл ссылку и не выбрал способ оплаты, ЮKassa сама отменяет платёж. В документации числа нет — подтверждено их поддержкой 25.09.2026. Весь сценарий ниже уложен в этот час.</p>
 
-<h3>Когда бот обязан позвать человека</h3>
+<div class="timeline">
+  <div class="step"><span class="t">0 мин</span> Клиент сказал «да». Счёт выставлен, ссылка отправлена.</div>
+  <div class="step"><span class="t">25 мин</span> Первое напоминание — мягкое, с той же ссылкой.
+    <div class="tpl">Напоминаю про заказ №128 на 917 руб. — он ждёт оплаты 🙂
+Оплатить: https://yoomoney.ru/checkout/…
+Если что-то нужно поменять или передумали — просто напишите.</div></div>
+  <div class="step s-warn"><span class="t">50 мин</span> Второе напоминание — с минутой, до которой счёт действителен.
+    <div class="tpl">Счёт по заказу №128 действителен до 17:35 по Москве.
+Оплатить: https://yoomoney.ru/checkout/…
+Если не успеете — ничего страшного, напишите, и я пришлю новую ссылку.</div></div>
+  <div class="step s-stop"><span class="t">60 мин</span> ЮKassa закрывает платёж (<code>expired_on_confirmation</code>). Заказ — <code>payment_expired</code>, черновик возвращается на подтверждение со всем составом.
+    <div class="tpl">Срок счёта по заказу №128 истёк.
+Если заказ актуален, напишите сюда: пришлю новую ссылку, состав и доставка сохранились.</div></div>
+  <div class="step"><span class="t">потом</span> Клиент пишет «да, актуально» — выставляется новая попытка оплаты. <b>Номер заказа тот же</b>, меняется только ключ платежа.</div>
+</div>
+
+<h3>Когда напоминание не уходит</h3>
+<table>
+  <tr><th style="width:38%">Ситуация</th><th>Что делает бот</th></tr>
+  <tr><td>Клиент писал в диалог за последние 30 минут</td><td>Молчит: разговор идёт, напоминание было бы глухим</td></tr>
+  <tr><td>Менеджер ответил в диалоге после выставления счёта</td><td>Молчит: заказ ведёт человек</td></tr>
+  <tr><td>Платёж уже не <code>pending</code> — оплачен или отменён</td><td>Молчит</td></tr>
+  <tr><td>Ссылка уже истекла</td><td>Молчит: напоминать мёртвой ссылкой хуже, чем не напоминать</td></tr>
+  <tr><td>Тихие часы, 23:00–09:00</td><td>Напоминание не отправляется вовсе — к утру счёт давно истечёт</td></tr>
+  <tr><td>Счёт истёк ночью</td><td>Сообщение «срок истёк» не теряется: утром его досылает таймер</td></tr>
+</table>
+
+<div class="risk"><b>Час — это коротко</b>
+Клиент, который отложил оплату до вечера, упрётся в истёкшую ссылку. Выход не потерян — «напишите, пришлю новую» и черновик с полным составом, — но это лишний круг. Сделать срок длиннее можно только через счета ЮKassa (<code>POST /invoices</code>, до 30 дней, час начинает тикать при открытии ссылки), и это <strong>только на боевом магазине</strong>.</div>
+
+<h3>Если клиент заплатил по старой ссылке</h3>
+<p>Отменить <code>pending</code> своим запросом нельзя, а закрывает его ЮKassa не мгновенно — старая ссылка какое-то время ещё принимает деньги. Все попытки оплаты заказа помнятся, поэтому такие деньги находят свой заказ.</p>
+<table>
+  <tr><th style="width:38%">Что произошло</th><th style="width:31%">Клиенту</th><th>Менеджеру</th></tr>
+  <tr><td>Оплачен закрытый счёт, других оплат нет</td><td>Обычное «Оплата получена»</td><td>«Оплачено — по закрытому счёту»</td></tr>
+  <tr><td>Заказ уже оплачен, пришли вторые деньги</td><td>«Пришла повторная оплата — вернули N ₽»</td><td>«Повторная оплата возвращена»</td></tr>
+  <tr><td>Вторые деньги, но ЮKassa отказала в возврате</td><td>«Разбираемся с возвратом»</td><td>🚨 «Вернуть вручную в кабинете»</td></tr>
+  <tr><td>Два <code>succeeded</code> пришли одновременно</td><td colspan="2">Одна посылка, один автоматический возврат — проверено тестом</td></tr>
+</table>
+</section>
+
+<section class="section">
+<h2>7. После оплаты: все исходы</h2>
+
+<figure>
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="9.3">
+  <defs><marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5f6b64"/></marker></defs>
+  <g stroke="#5f6b64" stroke-width="1.2" fill="none" marker-end="url(#c)">
+    <path d="M175,56 V78"/><path d="M525,56 V78"/>
+    <path d="M175,110 H320"/><path d="M525,110 H380"/>
+    <path d="M350,126 V150"/><path d="M350,182 V206"/>
+    <path d="M280,238 V258"/><path d="M430,238 V258"/>
+  </g>
+  <rect x="60" y="28" width="230" height="28" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
+  <text x="175" y="46" text-anchor="middle">Уведомление ЮKassa</text>
+  <rect x="410" y="28" width="230" height="28" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
+  <text x="525" y="46" text-anchor="middle">Таймер: уведомление не дошло?</text>
+  <rect x="60" y="78" width="230" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+  <text x="175" y="92" text-anchor="middle">Состояние спрашиваем у ЮKassa</text>
+  <text x="175" y="104" text-anchor="middle" fill="#5f6b64" font-size="8">тело уведомления не доверяем</text>
+  <rect x="410" y="78" width="230" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
+  <text x="525" y="92" text-anchor="middle">Тот же код доводит заказ</text>
+  <text x="525" y="104" text-anchor="middle" fill="#5f6b64" font-size="8">страховка</text>
+  <rect x="220" y="150" width="260" height="32" rx="5" fill="#2f6f4e"/>
+  <text x="350" y="164" text-anchor="middle" fill="#fff">Заказ помечается оплаченным — один раз</text>
+  <text x="350" y="176" text-anchor="middle" fill="#cfe1d5" font-size="8">иначе уехали бы две настоящие посылки</text>
+  <rect x="220" y="206" width="260" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+  <text x="350" y="220" text-anchor="middle">Отправление у перевозчика</text>
+  <text x="350" y="232" text-anchor="middle" fill="#5f6b64" font-size="8">Ozon — номер сразу, СДЭК — позже</text>
+  <rect x="160" y="258" width="240" height="30" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
+  <text x="280" y="277" text-anchor="middle">Клиенту — «Оплата получена»</text>
+  <rect x="420" y="258" width="220" height="30" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
+  <text x="530" y="277" text-anchor="middle">Менеджеру — карточка заказа</text>
+</svg>
+</figure>
+
+<table>
+  <tr><th style="width:27%">Что случилось</th><th style="width:40%">Что получает клиент</th><th>Что получает менеджер</th></tr>
+  <tr><td>Оплата прошла</td><td>«Оплата получена»: сумма, куда придёт чек, номер Ozon или обещание трека СДЭКа</td><td>Карточка «💰 Оплачено»</td></tr>
+  <tr><td>СДЭК выдал накладную</td><td>Трек-номер и ссылка на отслеживание</td><td>Карточка с номером накладной</td></tr>
+  <tr><td>Перевозчик не принял отправление</td><td>«Заказ передан в работу, менеджер свяжется»</td><td>«Завести руками»</td></tr>
+  <tr><td>СДЭК отклонил или завис</td><td>«С передачей в доставку возникла заминка, деньги в сохранности, менеджер свяжется сегодня»</td><td>Текст ошибки СДЭКа</td></tr>
+  <tr><td>Банк отказал</td><td>«Платёж не прошёл, можно другой картой — напишите, пришлю новую ссылку»; черновик возвращён</td><td>—</td></tr>
+  <tr><td>Срок счёта истёк</td><td>«Срок счёта истёк, пришлю новую ссылку»</td><td>«Оплата так и не пришла»</td></tr>
+  <tr><td>Отмена со стороны магазина</td><td>Ничего — причину объясняет менеджер</td><td>—</td></tr>
+  <tr><td>Менеджер оформил возврат</td><td>«Оформили возврат N ₽» — сумма возврата, не заказа</td><td>Карточка «↩️ Возврат»</td></tr>
+  <tr><td>Чек не зарегистрирован трое суток</td><td>«Чек задерживается на стороне кассы, придёт на …»</td><td>«Обращаться в поддержку ЮKassa»</td></tr>
+  <tr><td>ВК не принял сообщение клиенту</td><td>— (клиент запретил сообщения)</td><td>«Сообщение клиенту не доставлено, скажите сами»</td></tr>
+</table>
+
+<div class="note"><b>Как это не превращается в спам</b>
+Одно событие — одно сообщение: отметка ставится в базе до отправки, и кто её поставил, тот и пишет. ЮKassa повторяет уведомление до ответа 200, таймер видит заказ каждые пять минут — без отметки клиент получал бы одно и то же по кругу. Для верности <code>random_id</code> сообщения выводится из события: дубликат срежет и сам ВК.</div>
+</section>
+<section class="section">
+<h2>8. Менеджер</h2>
+
+<h3>Когда бот зовёт человека</h3>
 <div class="cols">
-<div>
-<ul>
-  <li>Клиент сам просит менеджера — в любой формулировке, даже в шутку</li>
-  <li>Жалоба, возврат, обмен, компенсация</li>
-  <li>Вопросы про здоровье: лечебные свойства, лекарства, беременность</li>
-  <li>Опт, партнёрство, поставки для кафе</li>
-</ul>
-</div>
-<div>
-<ul>
-  <li>Агрессия и провокации — бот не спорит, а передаёт диалог</li>
-  <li>В ассортименте нет ответа на вопрос</li>
-  <li>Сбой при выставлении счёта</li>
+<div><ul>
+  <li>Клиент просит менеджера — в любой формулировке, даже в шутку</li>
+  <li>Жалоба, возврат, обмен</li>
+  <li>Вопросы про здоровье</li>
+  <li>Опт и партнёрство</li>
+</ul></div>
+<div><ul>
+  <li>Агрессия — бот не спорит, передаёт</li>
+  <li>В ассортименте нет ответа</li>
+  <li>Счёт не удалось выставить</li>
   <li>Перевозчик не принял отправление</li>
-</ul>
-</div>
+</ul></div>
 </div>
 
 <div class="chat">
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Позовите живого человека</div></div>
-  <div class="sys">escalate_to_manager — вопрос записан, менеджеру уходит сообщение в телеграм со ссылкой на диалог</div>
+  <div class="sys">вопрос записан в базу, уведомление встало в очередь — и только после этого клиенту обещают ответ</div>
   <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Уточню это у менеджера и вернусь с ответом 🙏</div></div>
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>И ещё — у вас есть пуэр?</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Да, шу пуэр 2019 года, 950 ₽ за 100 г — землистый, с нотой чернослива 🍂</div></div>
-  <div class="sys">Пока вопрос висит, бот отвечает как обычно и про менеджера не напоминает</div>
   <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Ну и где менеджер?</div></div>
   <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Менеджер уже знает про этот вопрос и подключится, как только освободится 🙏</div></div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Менеджер (вручную из ВК)</span>Иван, добрый день! Да, отгружаем опт от 5 кг, скину прайс.</div></div>
-  <div class="sys">Ответ менеджера попадает в историю, вопрос закрывается: бот больше не пишет «передал менеджеру» и не выдаёт его слова за свои</div>
+  <div class="sys">прошло 2 часа рабочего времени (10:00–23:00) без ответа — напоминание менеджеру, клиенту одно сообщение</div>
+  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Вопрос у менеджера, он ответит здесь же, как только освободится 🙏</div></div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Менеджер (вручную из ВК)</span>Иван, добрый день! Да, отгружаем опт от 5 кг.</div></div>
+  <div class="sys">ответ менеджера закрывает вопрос: напоминания прекращаются, бот больше не говорит «передал»</div>
 </div>
 
-<div class="note"><b>Повторно не дёргаем</b>
-Пока вопрос открыт, второй раз менеджера по тому же поводу бот не зовёт, а на «ок», «спасибо», «понял» отвечает одним эмодзи — чтобы не превращать ожидание в переписку ни о чём. Исключение одно: заказ, которому нужна ссылка на оплату, уходит менеджеру даже поверх открытого вопроса — потерять его дороже.</div>
+<p>Рабочие минуты считаются только с 10:00 до 23:00 — вопрос, заданный ночью, ждёт с открытия, а не всю ночь. Сообщение клиенту на этом шаге отключается одной настройкой.</p>
 
-<div class="risk"><b>Слабое место</b>
-Если телеграм не ответил за две секунды, вопрос считается переданным (клиенту уже сказали «уточню»), но уведомление менеджеру не ушло. Остаётся только запись в базе и вечерний отчёт по диалогам. Для клиента это выглядит как менеджер, который никогда не придёт.</div>
+<h3>Уведомления больше не теряются</h3>
+<p>Раньше уведомление менеджеру было одной попыткой с таймаутом в две секунды: не успел телеграм — вопрос исчезал, хотя клиенту уже сказали «уточню». Теперь каждое уведомление сначала записывается в базу, потом отправляется:</p>
+<div class="timeline">
+  <div class="step"><span class="t">сразу</span> Запись в очередь → попытка отправить в телеграм.</div>
+  <div class="step"><span class="t">не ушло</span> Таймер повторяет: через минуту, две, четыре… до шести часов между попытками.</div>
+  <div class="step s-warn"><span class="t">10 раз</span> Запись уходит в отчёт отдельным блоком «Не доставлено менеджеру» — раз в сутки.</div>
+  <div class="step s-stop"><span class="t">и сразу</span> Сообщение администратору <b>в ВК</b> от имени сообщества: если лёг телеграм, отчёт о нём туда же тоже не дойдёт.</div>
+</div>
+
+<h3>Счёт по заказу — одной командой</h3>
+<p>Когда бот не смог выставить счёт, или клиент просит новую ссылку в переписке с человеком, менеджер делает это сам:</p>
+<div class="tpl">scripts/api.sh orders/128/invoice</div>
+<p>Команда идёт тем же кодом, что подтверждение в диалоге: те же проверки полноты (состав, ФИО, телефон, пункт выдачи), та же запись попытки. Ответ — ссылка, которую можно переслать клиенту; оплата по ней заведёт отправление сама. По неполному заказу команда скажет, чего не хватает, по оплаченному — откажет. Заказ, по которому счёт не выставился, теперь сохраняется, поэтому у команды всегда есть номер — он же указан в карточке эскалации.</p>
 </section>
 
 <section>
-<h2>7. Сценарий Д: фото, голосовые и витрина ВК</h2>
+<h2 style="margin-top:12pt">9. Фото, голосовые, витрина ВК</h2>
 
-<h3>Клиент прислал фотографию</h3>
 <div class="chat">
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>[фото упаковки чая] Это у вас брали, что за сорт?</div></div>
-  <div class="sys">Снимок скачивается (до двух на сообщение) и уходит Claude картинкой</div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Похоже на Да Хун Пао — по упаковке и крупному тёмному листу. Если нужна точность, подскажите, когда брали, уточню у менеджера 🍵</div></div>
+  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>[фото упаковки] Это у вас брали, что за сорт?</div></div>
+  <div class="sys">снимок скачан (до двух на сообщение) и отдан Claude картинкой; в историю — пометка [фото]</div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Похоже на Да Хун Пао — по упаковке и тёмному листу. Если нужна точность, уточню у менеджера 🍵</div></div>
+  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>[голосовое, 0:14]</div></div>
+  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Голосовые я, к сожалению, не слушаю — напишите, пожалуйста, текстом 🙏</div></div>
 </div>
 
-<h3>Клиент прислал голосовое или файл</h3>
-<div class="chat">
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>[голосовое сообщение, 0:14]</div></div>
-  <div class="sys">Показать модели нечего: вложение называется словами, в подсказку добавляется требование сказать об этом прямо</div>
-  <div class="turn from-bot"><div class="bubble"><span class="who">Бот</span>Голосовые я, к сожалению, не слушаю — напишите, пожалуйста, текстом, и я сразу помогу 🙏</div></div>
-</div>
-
-<div class="warn"><b>Что бот с фото всё-таки не умеет</b>
-Он видит картинку, но не сверяет её с ассортиментом — узнавание сорта по фото это догадка модели, а не факт из каталога. Для спорных случаев лучше, чтобы бот звал менеджера; сейчас это остаётся на усмотрение модели.</div>
-
-<h3>Заказ оформлен в витрине ВК, минуя диалог</h3>
-<p>Это отдельная дверь: клиент нажал «Оформить» в товарах сообщества. Заказ превращается в обычный черновик на этапе выбора доставки — дальше клиента ведут те же инструменты, что и в переписке.</p>
+<h3>Заказ из витрины ВК</h3>
+<p>Клиент нажал «Оформить» в товарах сообщества. Заказ превращается в обычный черновик на этапе выбора доставки — дальше всё как в сценарии Б: живой расчёт у перевозчика, счёт ЮKassa, отправление после оплаты.</p>
 <div class="chat">
   <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Заказ №41 принят: Те Гуань Инь × 2 — 1600 ₽.<br>Осталось выбрать доставку. Дешевле всего пункт выдачи Ozon — заберёте сами. Быстрее, но дороже — пункт выдачи СДЭК, ещё есть курьер СДЭК до двери.<br>В какой город везём? Адрес из заказа — «Краснодар, ул. Ставропольская, 230», везём туда?</div></div>
-  <div class="turn from-client"><div class="bubble"><span class="who">Клиент</span>Да, туда, пункт Ozon</div></div>
-  <div class="sys">дальше — сценарий Б без отличий: расчёт, пункт, получатель, счёт ЮKassa</div>
 </div>
-
-<div class="note"><b>Что изменилось</b>
-Раньше эта ветка считала СДЭК сама и называла цену тарифа без НДС и сборов — ту самую, из-за которой 320 ₽ расчёта превращались в 397 ₽ счёта; Ozon не предлагался, счёт не выставлялся. Теперь витринная ветка ничего не считает: она собирает черновик, а доставку считает перевозчик через обычный инструмент. Адрес из заказа переносится как подсказка — пункт выдачи клиент называет сам.</div>
-
-<div class="warn"><b>Чего здесь ещё не проверяли вживую</b>
-Схему полей заказа ВК не видели в бою. Состав приходит отдельным запросом (<code>market.getOrderItems</code>), разбор защитный: если он не удался, клиент слышит «заказ принят, уточняем доставку», а заказ уходит менеджеру на руки.</div>
-</section>
-<section>
-<h2 style="margin-top:12pt">8. После оплаты: что видит клиент и чего не видит</h2>
-
-<figure>
-<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="DejaVu Sans" font-size="9.5">
-  <defs><marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-    <path d="M0,0 L10,5 L0,10 z" fill="#5f6b64"/></marker></defs>
-  <g stroke="#5f6b64" stroke-width="1.2" marker-end="url(#c)" fill="none">
-    <path d="M175,58 V84"/><path d="M525,58 V84"/>
-    <path d="M175,116 H330"/><path d="M525,116 H370"/>
-    <path d="M350,132 V158"/><path d="M350,190 V216"/>
-    <path d="M280,248 V274"/><path d="M430,248 V274"/>
-  </g>
-  <g>
-    <rect x="60" y="30" width="230" height="28" rx="5" fill="#fbf1e4" stroke="#9a5b1e"/>
-    <text x="175" y="48" text-anchor="middle">Уведомление ЮKassa</text>
-    <rect x="410" y="30" width="230" height="28" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="525" y="48" text-anchor="middle">Догляд по таймеру (раз в 5 минут)</text>
-
-    <rect x="60" y="84" width="230" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="175" y="98" text-anchor="middle">Состояние платежа спрашиваем</text>
-    <text x="175" y="110" text-anchor="middle" fill="#5f6b64" font-size="8">у ЮKassa, а не берём из тела</text>
-    <rect x="410" y="84" width="230" height="32" rx="5" fill="#fff" stroke="#d9e0da"/>
-    <text x="525" y="98" text-anchor="middle">Страховка: уведомление не дошло</text>
-    <text x="525" y="110" text-anchor="middle" fill="#5f6b64" font-size="8">тот же код доводит заказ</text>
-
-    <rect x="230" y="158" width="240" height="32" rx="5" fill="#2f6f4e"/>
-    <text x="350" y="172" text-anchor="middle" fill="#fff">Заказ помечается оплаченным — один раз</text>
-    <text x="350" y="184" text-anchor="middle" fill="#cfe1d5" font-size="8">иначе уехали бы две настоящие посылки</text>
-
-    <rect x="230" y="216" width="240" height="32" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="350" y="230" text-anchor="middle">Создаётся отправление у перевозчика</text>
-    <text x="350" y="242" text-anchor="middle" fill="#5f6b64" font-size="8">и только теперь</text>
-
-    <rect x="150" y="274" width="260" height="46" rx="5" fill="#eaf2ec" stroke="#2f6f4e"/>
-    <text x="280" y="290" text-anchor="middle">Клиенту в ВК</text>
-    <text x="280" y="303" text-anchor="middle" fill="#5f6b64" font-size="8">сумма, куда придёт чек,</text>
-    <text x="280" y="314" text-anchor="middle" fill="#5f6b64" font-size="8">номер отправления или обещание трека</text>
-
-    <rect x="430" y="274" width="220" height="46" rx="5" fill="#f7f8f6" stroke="#d9e0da"/>
-    <text x="540" y="290" text-anchor="middle">Менеджеру в телеграм</text>
-    <text x="540" y="303" text-anchor="middle" fill="#5f6b64" font-size="8">карточка заказа, состояние чека,</text>
-    <text x="540" y="314" text-anchor="middle" fill="#5f6b64" font-size="8">все проблемы доставки</text>
-  </g>
-  <text x="60" y="352" fill="#5f6b64" font-size="8.5">Правая колонка внизу — всё, о чём клиент не узнаёт: проблемы адресуются человеку, а не ему.</text>
-</svg>
-<figcaption>После оплаты. Два входа сверху — обычное уведомление и страховка на случай, если оно потерялось.</figcaption>
-</figure>
-
-<h3>Все ветки после выставления счёта</h3>
-<table>
-  <tr><th style="width:26%">Что случилось</th><th style="width:37%">Что получает клиент</th><th>Что получает менеджер</th></tr>
-  <tr><td>Оплата прошла</td><td>Сообщение об оплате: сумма, почта для чека, номер Ozon или обещание трека СДЭКа</td><td>Карточка «💰 Оплачено»</td></tr>
-  <tr><td>СДЭК выдал накладную</td><td>Трек-номер и ссылка на отслеживание</td><td>Карточка с номером накладной</td></tr>
-  <tr><td>Перевозчик не принял отправление</td><td>«Заказ передан в работу, менеджер свяжется»</td><td>Предупреждение: завести руками</td></tr>
-  <tr><td>СДЭК отклонил заявку или не отвечает</td><td>«Задержка с оформлением доставки, менеджер разбирается; оплата у нас» — только по оплаченному заказу</td><td>Предупреждение с текстом ошибки</td></tr>
-  <tr><td>Клиент не оплатил за сутки</td><td>«Ссылка больше не действует, напишите — оформим заново по актуальным ценам»</td><td>«Оплата так и не пришла»</td></tr>
-  <tr><td>Платёж отменён</td><td>«Счёт отменён, оплата не прошла. Напишите — выставим заново»</td><td>—</td></tr>
-  <tr><td>Чек не регистрируется трое суток</td><td>«Чек задерживается на стороне кассы, разбираемся; придёт на почту»</td><td>Предупреждение: идти в поддержку ЮKassa</td></tr>
-  <tr><td>Менеджер оформил возврат</td><td>«Возврат оформлен: сумма. Деньги вернутся тем же способом, срок — за банком»</td><td>Карточка с суммой возврата</td></tr>
-</table>
-
-<div class="note"><b>Как это устроено, чтобы не стать спамом</b>
-Каждое сообщение уходит ровно один раз: состояние, которое его вызвало, меняется в том же шаге и в выборку больше не попадает, а ветка отмены сверх того сверяется со статусом заказа — ЮKassa повторяет уведомление, пока не получит 200. Про заминку с доставкой бот пишет только по оплаченному заказу: неоплаченный ведёт менеджер, и клиенту в нём пока нечего терять.</div>
-
-<div class="warn"><b>Что по-прежнему знает только менеджер</b>
-Внутренние подробности: текст ошибки перевозчика, номер заявки, статус чека у ЮKassa, ссылка на диалог. Клиент получает следствие и что делать дальше, а не диагностику.</div>
-</section>
-
-<section>
-<h2>9. Где клиент может застрять</h2>
-
-<h3>Тупик первый: нет почты — нет заказа</h3>
-<p>При включённой оплате <code>confirm_order</code> без электронной почты не проходит: чек ЮKassa доставляется только письмом. Клиент, который почту давать не хочет, упирается в цикл «назовите почту». Выйти из него бот может только эскалацией, и позовёт ли он менеджера — решает модель, отдельного правила на этот случай нет.</p>
-
-<h3>Тупик второй: пункта нет в нашей копии каталога</h3>
-<p>Клиент называет адрес с карты Ozon, бот его не находит, показывает свои пункты и просит выбрать. Если клиенту нужен именно тот пункт, круг повторяется. В каталоге сейчас около 6 % сети Ozon — вероятность промаха реальная.</p>
-
-<h3>Обрыв: заказ, к которому вернулись через неделю</h3>
-<p>Черновик хранится в базе без срока давности, а переписка — последние 20 сообщений. Клиент возвращается, бот видит черновик со старыми ценами; инструкция велит уточнить актуальность, но цены в черновике не пересчитываются сами. Наличие товара тоже проверяется один раз — при создании черновика. Теоретически можно оплатить то, что закончилось.</p>
-
-<h3>Обрыв: ход не уложился в лимит</h3>
-<p>За один ход модель может четыре раза попросить инструменты и потратить 35 секунд. На последнем круге инструменты отбираются — бот обязан ответить словами. Клиент получает осмысленный текст, но действие (например, расчёт доставки) может остаться невыполненным.</p>
-
-<div class="note"><b>Что работает надёжно</b>
-Повторные уведомления ЮKassa не приводят к двум посылкам. Потерянное уведомление подхватывает догляд по таймеру. Недоступная база не роняет бота — он уходит в память. Оборванный вебхук ВК не теряет сообщение: отметка «обработано» ставится только после ответа клиенту, и повтор пройдёт заново.</div>
+<p>Если состав заказа не разобрался — клиент слышит «заказ принят, уточним доставку», менеджер получает заказ на руки.</p>
 </section>
 <section class="section">
 <h2>10. Риски и недочёты</h2>
 <div class="legend">
   <span><span class="dot" style="background:#a33b34"></span> высокий — клиент теряет деньги, заказ или доверие</span>
-  <span><span class="dot" style="background:#9a5b1e"></span> средний — лишний круг, неточность, ручная работа менеджера</span>
+  <span><span class="dot" style="background:#9a5b1e"></span> средний — лишний круг, неточность, ручная работа</span>
   <span><span class="dot" style="background:#5f6b64"></span> низкий — шероховатость</span>
 </div>
 
 <table>
-  <thead><tr><th style="width:4%">#</th><th style="width:25%">Что не так</th><th style="width:36%">Как это выглядит для клиента</th><th style="width:10%">Риск</th><th>Где</th></tr></thead>
+  <thead><tr><th style="width:4%">#</th><th style="width:25%">Что не так</th><th style="width:38%">Как это выглядит для клиента</th><th style="width:9%">Риск</th><th>Где</th></tr></thead>
 
-  <tr><td>1</td><td>Вес и габариты посылки — заглушка: 200 г × количество, коробка 200×150×100 мм</td>
-      <td>Цена доставки названа по выдуманному весу. Тяжёлый заказ обойдётся дороже, чем оплатил клиент, — разницу платит магазин</td>
-      <td class="sev sev-high">высокий</td><td><code>shipping.weight_grams</code>, настройки Ozon</td></tr>
+  <tr><td>1</td><td><b>Почта необязательна — а на боевом магазине она обязательна</b></td>
+      <td>Сейчас работает: тестовый магазин принимает чек с одним телефоном. Но у боевого 1470686 фискализация «Чеки от ЮKassa», где в чеке допускается <b>только email</b> — это выяснено живым запросом и записано в нашей документации. При переходе на боевой каждый заказ без почты получит отказ ЮKassa на выставлении счёта</td>
+      <td class="sev sev-high">высокий</td><td><code>receipt_customer</code>, <code>confirm_order</code>; docs, раздел «Фискализация»</td></tr>
 
-  <tr><td>2</td><td>Схему полей витринного заказа ВК не проверяли вживую</td>
-      <td>Если состав не разберётся, клиент услышит «уточняем доставку» и дальше его поведёт менеджер руками</td>
+  <tr><td>2</td><td>Вес и габариты посылки — заглушка: 200 г × количество, коробка 200×150×100 мм</td>
+      <td>Цена доставки названа по выдуманному весу. Тяжёлый заказ обойдётся дороже, чем оплатил клиент — разницу платит магазин</td>
+      <td class="sev sev-high">высокий</td><td><code>shipping.weight_grams</code></td></tr>
+
+  <tr><td>3</td><td>Ссылка на оплату живёт час</td>
+      <td>Клиент, отложивший оплату, упирается в истёкшую ссылку и должен написать ещё раз. Выход есть, но это лишний круг и часть потерянных заказов</td>
+      <td class="sev sev-mid">средний</td><td>ограничение ЮKassa; лечится <code>POST /invoices</code> на боевом</td></tr>
+
+  <tr><td>4</td><td>Витринный заказ не проверен вживую</td>
+      <td>Схему полей ВК мы видели только в документации. Если состав не разберётся — заказ уйдёт менеджеру руками</td>
       <td class="sev sev-mid">средний</td><td><code>orders/service.py</code></td></tr>
 
-  <tr><td>3</td><td>Наличие и цены черновика не перепроверяются при подтверждении</td>
-      <td>Можно оформить и оплатить товар, который кончился, или по цене недельной давности</td>
-      <td class="sev sev-mid">средний</td><td><code>conversation._execute_confirm_order</code></td></tr>
-
-  <tr><td>4</td><td>Копия каталога Ozon — около 6 % сети</td>
+  <tr><td>5</td><td>Копия каталога Ozon — около 6 % сети</td>
       <td>Названный с карты пункт часто не находится: лишний круг, иногда отказ от Ozon в пользу СДЭКа</td>
-      <td class="sev sev-mid">средний</td><td><code>ozon_catalog</code>, выгрузка по таймеру</td></tr>
+      <td class="sev sev-mid">средний</td><td><code>ozon_catalog</code></td></tr>
 
-  <tr><td>5</td><td>Если в городе нашёлся ровно один пункт, он закрепляется автоматически</td>
-      <td>Клиент назвал только город, а бот отвечает «пункт выдачи: такой-то» — при неполном каталоге это может быть неудобный ему адрес</td>
+  <tr><td>6</td><td>Единственный найденный пункт Ozon закрепляется молча</td>
+      <td>Клиент назвал только город, а бот отвечает «пункт выдачи: такой-то» — при неполном каталоге это может быть неудобный адрес</td>
       <td class="sev sev-mid">средний</td><td>ветка <code>ozon_pvz</code></td></tr>
 
-  <tr><td>6</td><td>Уведомление менеджеру может не уйти, а клиенту уже сказано «передал»</td>
-      <td>Обещанный человек не появляется: вопрос остаётся только в базе и в вечернем отчёте</td>
-      <td class="sev sev-mid">средний</td><td><code>_notify_manager</code>, таймаут 2 с</td></tr>
+  <tr><td>7</td><td>Наличие и цены не перепроверяются при подтверждении</td>
+      <td>Можно оформить и оплатить то, что кончилось, или по цене недельной давности</td>
+      <td class="sev sev-mid">средний</td><td><code>_execute_confirm_order</code></td></tr>
 
-  <tr><td>7</td><td>Без электронной почты заказ не оформить, запасного пути нет</td>
-      <td>Клиент, не желающий давать почту, ходит по кругу «назовите почту»</td>
-      <td class="sev sev-mid">средний</td><td>проверка в <code>confirm_order</code></td></tr>
+  <tr><td>8</td><td>Ассортимент в файле внутри образа</td>
+      <td>Любая правка цены или наличия — деплой. Витрину ВК групповым токеном не прочитать</td>
+      <td class="sev sev-mid">средний</td><td><code>catalog.json</code>, <code>VK_USER_TOKEN</code></td></tr>
 
-  <tr><td>8</td><td>Черновик заказа хранится без срока давности, память переписки — 20 сообщений</td>
-      <td>Возврат к старому заказу: бот помнит состав, но не разговор вокруг него</td>
-      <td class="sev sev-mid">средний</td><td><code>state</code>, <code>history</code></td></tr>
-
-  <tr><td>9</td><td>Сорт чая по фотографии — догадка модели, каталог не участвует</td>
-      <td>Уверенный ответ может оказаться неверным, и проверить его клиенту нечем</td>
-      <td class="sev sev-mid">средний</td><td><code>attachments</code> + промпт</td></tr>
+  <tr><td>9</td><td>Сорт по фотографии — догадка модели</td>
+      <td>Уверенный ответ может оказаться неверным</td>
+      <td class="sev sev-mid">средний</td><td>вложения + промпт</td></tr>
 
   <tr><td>10</td><td>Ozon посчитал доставку иначе, чем назвали клиенту</td>
-      <td>Клиент не узнаёт: расхождение больше рубля уходит только в лог</td>
+      <td>Клиент не узнаёт: расхождение больше рубля — только в лог</td>
       <td class="sev sev-low">низкий</td><td><code>shipping._in_ozon</code></td></tr>
 
-  <tr><td>11</td><td>Менеджеру в телеграм пишется «Модуль оплаты не подключён»</td>
-      <td>Клиента не касается, но человек читает устаревшую причину и может решить, что касса отвалилась</td>
-      <td class="sev sev-low">низкий</td><td><code>_escalate_for_payment</code></td></tr>
-
-  <tr><td>12</td><td>Ответ приходит с задержкой, пока событие идёт через очередь</td>
+  <tr><td>11</td><td>Ответ через очередь приходит с задержкой</td>
       <td>Клиент успевает дописать второе сообщение и получить два ответа подряд</td>
-      <td class="sev sev-low">низкий</td><td><code>api/vk.py</code>, очередь</td></tr>
+      <td class="sev sev-low">низкий</td><td><code>api/vk.py</code></td></tr>
+
+  <tr><td>12</td><td>Каждый push в <code>main</code> запускает деплой</td>
+      <td>Клиента не касается, но каждый деплой сканирует образ в Yandex Cloud и стоит денег</td>
+      <td class="sev sev-low">низкий</td><td><code>.github/workflows/deploy-yandex.yml</code></td></tr>
 </table>
 </section>
 
 <section>
-<h2 style="margin-top:14pt">11. Что чинить первым</h2>
-
-<h3>Уже закрыто</h3>
-<p>Три пункта из первой редакции этого документа исправлены сразу после его сборки:</p>
-<ul>
-  <li><b>Инструкция по заказу знает про кассу.</b> Шаг оплаты подставляется по тому же условию, что и всё остальное про оплату, — флаг и ключи вместе. Бот больше не может пообещать менеджера за реплику до того, как сам выдаст ссылку.</li>
-  <li><b>Клиент узнаёт о плохих исходах.</b> Отмена счёта, неоплата за сутки, возврат, зависший чек и отказ перевозчика — на каждое есть сообщение в ВК, по одному разу.</li>
-  <li><b>Витринный заказ идёт общим путём.</b> Никакого своего расчёта СДЭКа и цены без НДС: черновик плюс обычные инструменты, Ozon первым, счёт ЮKassa.</li>
-</ul>
-
-<h3>Осталось — и первым тут вес</h3>
+<h2 style="margin-top:12pt">11. Что делать дальше</h2>
 <ol>
-  <li><b>Настоящие вес и габариты.</b> Пока в расчёт идёт 200 г за единицу товара, любая цена доставки приблизительна. Единственный пункт, где магазин теряет деньги на каждом заказе, а не в редком случае. Решается справочником весов в каталоге — по фасовке и упаковке.</li>
-  <li><b>Перепроверять наличие и цену</b> в момент подтверждения, а не только при создании черновика.</li>
-  <li><b>Не закреплять единственный найденный пункт Ozon молча</b> — спрашивать подтверждение, пока каталог неполон.</li>
-  <li><b>Догнать каталог Ozon.</b> Чем ближе он к полному, тем реже клиент слышит «такого пункта у меня нет».</li>
-  <li><b>Проверить витринный заказ вживую</b> — схему полей ВК мы пока видели только в документации.</li>
+  <li><b>Решить с почтой (риск №1) до перехода на боевой магазин.</b> Три пути: спросить поддержку ЮKassa, принимают ли «Чеки от ЮKassa» чек с одним телефоном; сделать почту обязательной на боевом и необязательной на тестовом — магазин можно опознать запросом <code>GET /me</code>; или один платёж на рубль на боевом с чеком на телефон. Самый дешёвый — вопрос в поддержку.</li>
+  <li><b>Настоящие вес и габариты.</b> Единственный пункт, где магазин теряет деньги на каждом заказе. Решается справочником весов по фасовке.</li>
+  <li><b>Переход на боевой магазин</b> — вместе с решением по почте и, если нужны сутки на оплату, с переходом на счета ЮKassa (<code>POST /invoices</code>).</li>
+  <li><b>Деплой только вручную</b> — убрать запуск по push в <code>main</code>, оставить кнопку в Actions.</li>
+  <li>Перепроверять наличие и цену при подтверждении; не закреплять единственный пункт Ozon молча; догнать каталог Ozon; проверить витринный заказ живьём.</li>
 </ol>
 
 <div class="note"><b>Что менять не нужно</b>
-Порядок «оплата → отправление» стоит оставить как есть: он защищает кабинеты перевозчиков от заказов, за которые никто не заплатил. Одноразовая отметка оплаты и догляд по таймеру — тоже: именно они не дают уехать двум посылкам и не теряют оплату при потерянном уведомлении.</div>
-
-<div class="meta" style="margin-top:14pt;border-top:1px solid var(--line);padding-top:8pt;font-size:8.4pt;color:var(--muted)">
-Документ собран по коду ветки <code>main</code>. Точные тексты помечены в примерах; остальные реплики бота формулирует модель, поэтому дословно они будут другими.
-</div>
+Порядок «оплата → отправление» защищает кабинеты перевозчиков от заказов, за которые никто не заплатил. Одноразовая отметка оплаты и таймер-страховка не дают уехать двум посылкам и не теряют оплату при потерянном уведомлении. Автовозврат двойной оплаты и приём денег по закрытому счёту закрывают случаи, в которых раньше деньги оставались ничьими.</div>
 </section>
+<section class="section">
+<h2>Приложение: все тексты бота</h2>
+<p>Всё, что бот отправляет по своей инициативе. Тексты вставлены в документ прямо из <code>app/messages/templates.py</code> при сборке — если шаблон поменяется, пересборка документа покажет новый. Номер заказа и суммы — примерные.</p>
+<h3>Клиенту в ВК</h3>
+<div class="tpl-title">Оплата прошла, Ozon <span class="tpl-when">— после payment.succeeded</span></div>
+<div class="tpl">✅ Оплата получена, спасибо!
+Заказ №128 на 917 руб.
+Чек придёт на ivanov@mail.ru.
+Отправление Ozon: 0123-4567-8 — по нему посылку видно в приложении и на сайте Ozon, там же отслеживается доставка.</div>
+<div class="tpl-title">Оплата прошла, СДЭК, чек на телефон <span class="tpl-when">— после payment.succeeded</span></div>
+<div class="tpl">✅ Оплата получена, спасибо!
+Заказ №128 на 917 руб.
+Чек придёт на номер +7 *** ***-45-67.
+Передаём посылку в СДЭК. Трек-номер пришлём сюда, как только СДЭК его выдаст.</div>
+<div class="tpl-title">Оплата прошла, перевозчик не принял <span class="tpl-when">— после payment.succeeded</span></div>
+<div class="tpl">✅ Оплата получена, спасибо!
+Заказ №128 на 917 руб.
+Чек придёт на ivanov@mail.ru.
+Заказ передан в работу, менеджер свяжется с вами по отправке.</div>
+<div class="tpl-title">Трек СДЭК <span class="tpl-when">— таймер узнал накладную</span></div>
+<div class="tpl">Посылка по заказу №128 передана в СДЭК.
+Трек-номер: 1234567890
+Отследить: https://www.cdek.ru/ru/tracking</div>
+<div class="tpl-title">Напоминание 1 <span class="tpl-when">— через 25 минут после счёта</span></div>
+<div class="tpl">Напоминаю про заказ №128 на 917 руб. — он ждёт оплаты 🙂
+Оплатить: https://yoomoney.ru/checkout/payments/v2/contract?orderId=…
+Если что-то нужно поменять или передумали — просто напишите.</div>
+<div class="tpl-title">Напоминание 2 <span class="tpl-when">— за 10 минут до истечения</span></div>
+<div class="tpl">Счёт по заказу №128 действителен до 17:35 по Москве.
+Оплатить: https://yoomoney.ru/checkout/payments/v2/contract?orderId=…
+Если не успеете — ничего страшного, напишите, и я пришлю новую ссылку.</div>
+<div class="tpl-title">Срок счёта истёк <span class="tpl-when">— через час; ночью — утром</span></div>
+<div class="tpl">Срок счёта по заказу №128 истёк.
+Если заказ актуален, напишите сюда: пришлю новую ссылку, состав и доставка сохранились.</div>
+<div class="tpl-title">Банк отказал <span class="tpl-when">— payment.canceled, отказ банка</span></div>
+<div class="tpl">Платёж по заказу №128 на 917 руб. не прошёл.
+Можно попробовать ещё раз или другой картой — напишите сюда, пришлю новую ссылку 🙏</div>
+<div class="tpl-title">Возврат <span class="tpl-when">— refund.succeeded от менеджера</span></div>
+<div class="tpl">Оформили возврат 300 ₽ по заказу №128.
+Сроки зачисления зависят от вашего банка.</div>
+<div class="tpl-title">Повторная оплата возвращена <span class="tpl-when">— вторые деньги по оплаченному заказу</span></div>
+<div class="tpl">По заказу №128 пришла повторная оплата — вернули 917 ₽.
+Заказ оплачен один раз и уже в работе, ничего делать не нужно. Срок зачисления возврата зависит от вашего банка.</div>
+<div class="tpl-title">Повторная оплата, возврат не прошёл <span class="tpl-when">— ЮKassa отказала в возврате</span></div>
+<div class="tpl">По заказу №128 пришла повторная оплата.
+Разбираемся с возвратом — менеджер свяжется с вами сегодня. Заказ оплачен один раз и уже в работе.</div>
+<div class="tpl-title">Чек задерживается <span class="tpl-when">— чек не зарегистрирован трое суток</span></div>
+<div class="tpl">Чек по заказу №128 пока не пришёл — задержка на стороне кассы.
+Мы уже разбираемся, чек придёт на ivanov@mail.ru.</div>
+<div class="tpl-title">Заминка с доставкой <span class="tpl-when">— СДЭК отклонил оплаченный заказ</span></div>
+<div class="tpl">Заказ №128 оплачен, с передачей в доставку возникла заминка.
+Деньги в сохранности, менеджер свяжется с вами сегодня.</div>
+<div class="tpl-title">Вопрос у менеджера <span class="tpl-when">— 2 рабочих часа без ответа</span></div>
+<div class="tpl">Вопрос у менеджера, он ответит здесь же, как только освободится 🙏</div>
+<h3>Менеджеру в телеграм</h3>
+<div class="tpl-title">Оплата не пришла</div>
+<div class="tpl">⚠️ Заказ №128: оплата так и не пришла
+Прошло больше 60 мин — срок ссылки ЮKassa, — платёж в статусе «pending». Счёт закрыт, черновик возвращён клиенту: он может оформить заново одним «да».</div>
+<div class="tpl-title">Чек не зарегистрирован</div>
+<div class="tpl">⚠️ Заказ №128: чек не зарегистрирован
+Статус чека «pending» больше трёх суток. По документации ЮKassa — обращаться в их поддержку.</div>
+<div class="tpl-title">Клиент недостижим</div>
+<div class="tpl">⚠️ Заказ №128: сообщение клиенту не доставлено
+Событие «paid». ВК ответил: 901 can&#x27;t send messages
+Скажите клиенту сами — бот повторять не будет.</div>
+<div class="tpl-title">Вопрос ждёт ответа</div>
+<div class="tpl">⏰ Вопрос клиента ждёт ответа 2 ч рабочего времени
+Есть ли опт?
 
-</body></html>
+Почему передано: нет данных в ассортименте
+
+https://vk.com/gim…?sel=…</div>
+<div class="tpl-title">Повторная оплата возвращена</div>
+<div class="tpl">↩️ Заказ №128: повторная оплата возвращена
+Платёж 2f5c…a71 на 917 руб — возврат 3a1b…c02, статус «succeeded».
+Заказ оплачен один раз, отправление в работе. Клиенту сказали.</div>
+<div class="tpl-title">Повторная оплата НЕ возвращена</div>
+<div class="tpl">🚨 Заказ №128: повторная оплата НЕ возвращена
+Платёж 2f5c…a71 на 917 руб.
+ЮKassa отказала: refund is not allowed
+Вернуть вручную в кабинете ЮKassa — деньги клиента у нас.</div>
+<div class="tpl-title">Администратору в ВК <span class="tpl-when">— уведомление не дошло в телеграм за 10 попыток</span></div>
+<div class="tpl">🚨 Уведомление менеджеру не доставлено в телеграм
+Тип: escalation, заказ №128. Попыток: 10.
+Ошибка: …
+
+Текст уведомления:
+…</div>
+<div class="meta" style="margin-top:14pt;border-top:1px solid var(--line);padding-top:8pt;font-size:8.3pt;color:var(--muted)">Документ собран по коду ветки <code>feature/client-flow-fixes</code>, ревизия <code>ba17583</code>. Пересобирается командой <code>python docs/client-flow/render.py</code>.</div>
+</section></body></html>

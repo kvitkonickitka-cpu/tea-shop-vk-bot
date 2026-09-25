@@ -133,8 +133,14 @@ yc serverless container revision get --id <ID> | grep DATABASE_URL
 
 ## Деплой
 
-`.github/workflows/deploy-yandex.yml` — на push в `main` и вручную
+`.github/workflows/deploy-yandex.yml` — **только вручную**
 (`workflow_dispatch`, кнопка Run workflow во вкладке Actions).
+
+Раньше деплой шёл и на каждый push в `main`. Каждый прогон сканирует
+Docker-образ в Yandex Cloud, и сканирование списывает деньги с баланса —
+за один день около 15 долларов. Запуск по push убран 25.09.2026: мерж кода
+в `main` больше не выкатывает ревизию. Что на самом деле в контейнере,
+показывает `scripts/api.sh health`, поле `revision`.
 
 Грабли `yc serverless container revision deploy`:
 
