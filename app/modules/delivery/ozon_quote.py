@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Сколько пунктов показываем клиенту. Больше — это уже не выбор, а список.
 _MAX_OPTIONS = 6
+# Сколько проверяем у Ozon на доступность, чтобы показать `_MAX_OPTIONS`.
+# Наш метод доставки обслуживает не каждый пункт: когда проверяли ровно
+# шесть, после отсева клиенту оставалось два-три, хотя рядом были ещё.
+_CHECK_POOL = 20
 
 
 @dataclass(frozen=True)
@@ -65,7 +69,7 @@ async def points_for(
     поиска и повторной проверки доступности у Ozon, — а у вебхука ВК на всё
     про всё около восьми секунд.
     """
-    found = await ozon_catalog.search(city, hint, limit=limit)
+    found = await ozon_catalog.search(city, hint, limit=max(limit, _CHECK_POOL))
     if not found.points:
         return Picked([], 0, 0, False)
 
@@ -83,10 +87,10 @@ async def points_for(
         # Проверка не прошла — отдаём что нашли: цену всё равно считает
         # следующий вызов, и он же откажет, если пункт не подходит.
         logger.exception("Не проверили доступность пунктов Ozon в «%s»", city)
-        return Picked(list(found.points), len(found.points), found.total, found.hint_matched)
+        return Picked(list(found.points)[:limit], len(found.points), found.total, found.hint_matched)
 
     return Picked(
-        [row for row in found.points if row.id in allowed],
+        [row for row in found.points if row.id in allowed][:limit],
         len(found.points),
         found.total,
         found.hint_matched,

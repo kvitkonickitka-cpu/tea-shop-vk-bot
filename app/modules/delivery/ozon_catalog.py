@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.database import get_session_factory
@@ -305,20 +306,48 @@ class Found:
     hint_matched: bool
 
 
-# Сколько строк города вытаскиваем из базы на отбор. Точный отбор идёт уже у
-# нас: в SQL уходит грубый фильтр по вхождению основы, и он захватывает
-# лишнее (на «краснодар» — весь Краснодарский край).
+# Сколько строк города вытаскиваем из базы на отбор. Точный отбор по
+# основам идёт уже у нас, в SQL — фильтр по целому слову (см. `_word_regex`).
 _CANDIDATE_LIMIT = 1000
 
 
-def _candidates(city_stems: list[str]):
-    """Грубая выборка по городу: всё, где основы города вообще встречаются.
+def _word_regex(base: str) -> str:
+    """Регулярка Postgres: целое слово с основой `base` и любым окончанием.
+
+    `stem()` срезает ровно одно окончание из `_ENDINGS`, значит любое слово
+    с этой основой — это основа плюс одно из них. Регулярка поэтому шире
+    точного отбора и ничего не теряет, а от подстроки отличается главным:
+    «краснодарский» под «краснодар» больше не подходит.
+
+    Раньше здесь был `LIKE '%краснодар%'`, и на Краснодар из базы вставала
+    вся краевая выборка — Анапа, Сочи, Армавир — первыми 1000 строками без
+    порядка. Отбор по городу шёл уже после потолка, и до него доживала лишь
+    часть краснодарских пунктов: 26.09.2026 бот нашёл на Ставропольской два
+    пункта там, где их около десяти.
+    """
+    endings = "|".join(re.escape(ending) for ending in _ENDINGS)
+    return f"(^| ){re.escape(base)}({endings})?( |$)"
+
+
+def _candidates(city_stems: list[str], hint_stems: list[str]):
+    """Выборка по городу: строки, где есть все слова города целиком.
 
     Закрытые пункты не показываем никогда — это дорога к запертой двери.
+    Сначала строки, где больше слов названного адреса: в городе размером с
+    Москву пунктов больше потолка, и названная улица не должна зависеть от
+    того, какие строки база отдала первыми.
     """
     statement = select(OzonDeliveryPoint).where(OzonDeliveryPoint.is_active.isnot(False))
     for part in city_stems[:3]:
-        statement = statement.where(OzonDeliveryPoint.search_text.contains(part))
+        statement = statement.where(OzonDeliveryPoint.search_text.op("~")(_word_regex(part)))
+    if hint_stems:
+        hits = sum(
+            case((OzonDeliveryPoint.search_text.op("~")(_word_regex(part)), 1), else_=0)
+            for part in hint_stems[:6]
+        )
+        statement = statement.order_by(hits.desc(), OzonDeliveryPoint.id)
+    else:
+        statement = statement.order_by(OzonDeliveryPoint.id)
     return statement.limit(_CANDIDATE_LIMIT)
 
 
@@ -362,7 +391,11 @@ async def search(city: str, hint: str = "", limit: int = 5) -> Found:
         return Found([], 0, False)
 
     async with session_factory() as session:
-        rows = (await session.execute(_candidates(city_stems))).scalars().all()
+        rows = (
+            await session.execute(
+                _candidates(city_stems, [stem(word) for word in hint_words if stem(word)])
+            )
+        ).scalars().all()
 
     scored: list[tuple[int, int, OzonDeliveryPoint]] = []
     for row in rows:
