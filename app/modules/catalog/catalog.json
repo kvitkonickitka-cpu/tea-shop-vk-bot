@@ -1,8 +1,8 @@
 [
   {
     "name": "Те Гуань Инь (тест)",
-    "price": 800,
-    "package_sizes": ["50 г", "100 г"],
+    "price": 100,
+    "package_sizes": ["100 г"],
     "in_stock": true,
     "gtin": "",
     "link": "https://vk.ru/market/product/te-guan-in-test-240363526-15534931",
