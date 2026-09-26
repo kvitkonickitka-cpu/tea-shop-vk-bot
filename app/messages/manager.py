@@ -102,7 +102,10 @@ async def notify(
     return True
 
 
-async def _try_send(notification_id: int, text: str, chat_id: str | None, attempts: int) -> bool:
+async def _try_send(
+    notification_id: int, text: str, chat_id: str | None, attempts: int
+) -> Exception | None:
+    """Отправить запись. None — ушло; иначе причина (попытка уже отмечена)."""
     try:
         await _send(text, chat_id)
     except Exception as error:
@@ -111,10 +114,10 @@ async def _try_send(notification_id: int, text: str, chat_id: str | None, attemp
             "Уведомление %s менеджеру не ушло (попытка %s): %s",
             notification_id, attempts + 1, error,
         )
-        return False
+        return error
 
     await _mark_sent(notification_id)
-    return True
+    return None
 
 
 async def _mark_sent(notification_id: int) -> None:
@@ -243,10 +246,17 @@ async def flush(limit: int = _FLUSH_LIMIT) -> dict:
 
     for notification_id, text, chat_id, attempts in pending:
         result["tried"] += 1
-        if await _try_send(notification_id, text, chat_id, attempts):
+        error = await _try_send(notification_id, text, chat_id, attempts)
+        if error is None:
             result["sent"] += 1
-        else:
-            result["failed"] += 1
+            continue
+        result["failed"] += 1
+        if isinstance(error, telegram_client.TelegramUnavailable):
+            # Telegram молчит — остальные записи ждали бы того же таймаута
+            # каждая и съели бы весь тик. Попытку им не засчитываем: они
+            # уйдут следующим тиком, когда Telegram оживёт.
+            result["postponed"] = len(pending) - result["tried"]
+            break
 
     return result
 

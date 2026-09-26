@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -269,3 +270,55 @@ def test_settings_survive_a_screen_name(monkeypatch):
 
     monkeypatch.setenv("ADMIN_VK_ID", "nikita_kvitko")
     assert Settings().admin_vk_id == "nikita_kvitko"
+
+
+async def test_flush_stops_when_telegram_is_silent(clean, monkeypatch):
+    """Молчащий Telegram не съедает тик: после первого таймаута досылка ждёт."""
+    for text in ("первое", "второе", "третье"):
+        async with clean() as session:
+            session.add(ManagerNotification(kind="escalation", payload=text, attempts=1))
+            await session.commit()
+
+    calls = []
+
+    async def silent(text, chat_id=None):
+        calls.append(text)
+        raise manager_messages.telegram_client.TelegramUnavailable("Telegram недоступен: ReadTimeout")
+
+    monkeypatch.setattr(manager_messages.telegram_client, "send_message", silent)
+    result = await manager_messages.flush()
+
+    assert calls == ["первое"]
+    assert result == {"tried": 1, "sent": 0, "failed": 1, "postponed": 2}
+    saved = await rows(clean)
+    # Остальным попытку не засчитали — они уйдут следующим тиком.
+    assert [r.attempts for r in saved] == [2, 1, 1]
+
+
+async def test_only_the_vk_webhook_hurries_telegram(monkeypatch):
+    from app.modules.dialog import telegram_client
+
+    seen = []
+
+    class FakeClient:
+        def __init__(self, timeout):
+            seen.append(timeout)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, *args, **kwargs):
+            request = httpx.Request("POST", "https://api.telegram.org")
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+    monkeypatch.setattr(telegram_client.httpx, "AsyncClient", FakeClient)
+
+    await telegram_client.send_message("из тика")
+    with telegram_client.hurry():
+        await telegram_client.send_message("из вебхука")
+    await telegram_client.send_message("снова из тика")
+
+    assert seen == [10, 2, 10]
