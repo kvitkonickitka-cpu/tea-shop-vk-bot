@@ -31,6 +31,8 @@ REMINDER_2 = "payment_reminder_2"
 ESCALATION_WAITING = "escalation_waiting"
 DOUBLE_PAYMENT = "double_payment"
 DOUBLE_PAYMENT_STUCK = "double_payment_stuck"
+CANCELED_PAID = "canceled_paid"
+CANCELED_PAID_STUCK = "canceled_paid_stuck"
 HANDED_OVER = "handed_over"
 DELIVERED = "delivered"
 NOT_DELIVERED = "not_delivered"
@@ -145,6 +147,23 @@ def double_payment_stuck(order) -> str:
         f"По заказу №{order.id} пришла повторная оплата.\n"
         "Разбираемся с возвратом — менеджер свяжется с вами "
         f"{worktime.working_day_phrase()}. Заказ оплачен один раз и уже в работе."
+    )
+
+
+def canceled_paid(order, refunded_amount) -> str:
+    return (
+        f"По отменённому заказу №{order.id} всё же прошла оплата — вернули "
+        f"{amount(refunded_amount)} ₽.\n"
+        "Срок зачисления возврата зависит от вашего банка. Если заказ всё-таки "
+        "нужен — напишите, оформлю заново."
+    )
+
+
+def canceled_paid_stuck(order) -> str:
+    return (
+        f"По отменённому заказу №{order.id} всё же прошла оплата.\n"
+        "Разбираемся с возвратом — менеджер свяжется с вами "
+        f"{worktime.working_day_phrase()}."
     )
 
 
@@ -280,6 +299,34 @@ def manager_double_payment_stuck(order, payment, error: str) -> str:
         f"Платёж {payment.id} на {amount(payment.amount)} руб.\n"
         f"ЮKassa отказала: {error}\n"
         "Вернуть вручную в кабинете ЮKassa — деньги клиента у нас."
+    )
+
+
+def manager_order_canceled(order) -> str:
+    return (
+        f"❌ <b>Заказ №{order.id} отменён клиентом</b>\n"
+        f"На {amount(order.total)} руб., не оплачен, отправление не заводили. "
+        "Счёт закрыт; если клиент всё же заплатит по старой ссылке, деньги "
+        "вернутся автоматически."
+    )
+
+
+def manager_canceled_paid(order, payment, refund) -> str:
+    return (
+        f"↩️ <b>Заказ №{order.id}: оплата отменённого заказа возвращена</b>\n"
+        f"Платёж {payment.id} на {amount(payment.amount)} руб — возврат "
+        f"{refund.id}, статус «{refund.status}».\n"
+        "Клиент отменил заказ до оплаты, отправление не заводили. Клиенту сказали."
+    )
+
+
+def manager_canceled_paid_stuck(order, payment, error: str) -> str:
+    return (
+        f"🚨 <b>Заказ №{order.id}: оплата отменённого заказа НЕ возвращена</b>\n"
+        f"Платёж {payment.id} на {amount(payment.amount)} руб.\n"
+        f"ЮKassa отказала: {error}\n"
+        "Вернуть вручную в кабинете ЮKassa — деньги клиента у нас, "
+        "отправление не заводили."
     )
 
 

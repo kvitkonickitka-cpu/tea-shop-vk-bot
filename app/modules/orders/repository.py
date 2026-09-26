@@ -191,6 +191,8 @@ async def close_payment(payment_id: str, *, refund_id: str | None = None) -> Non
 
 # Статус платежа у ЮKassa, означающий «деньги у нас».
 PAID = "succeeded"
+# Статус заказа, отменённого клиентом до оплаты (`orders/cancellation.py`).
+CANCELED = "canceled"
 
 
 async def claim_paid(
@@ -213,6 +215,10 @@ async def claim_paid(
     перевозчика», и заказ снова стал бы годен для повторного уведомления,
     то есть уехали бы две настоящие посылки. `payment_status` меняется
     ровно здесь и ровно один раз.
+
+    Отменённый клиентом заказ оплаченным не становится: отмена и оплата
+    могли встретиться, и кто первый — тот и прав. Деньги по отменённому
+    заказу возвращает `webhook.handle_paid`.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -231,7 +237,11 @@ async def claim_paid(
         row = (
             await session.execute(
                 update(Order)
-                .where(condition, Order.payment_status != PAID)
+                .where(
+                    condition,
+                    Order.payment_status != PAID,
+                    Order.status.is_distinct_from(CANCELED),
+                )
                 .values(
                     status="paid",
                     payment_id=payment_id,

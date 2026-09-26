@@ -20,6 +20,7 @@ from app.modules.dialog import (
     history as dialog_history,
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
+from app.modules.orders import cancellation
 from app.modules.orders import order_chat
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
@@ -241,6 +242,19 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "cancel_order",
+        "description": (
+            "Отменить заказ целиком, когда клиент явно просит отменить его или "
+            "передумал покупать («отмените заказ», «не надо, передумал»). "
+            "Инструмент сам отменит черновик и заказ, который ещё не оплачен, "
+            "— менеджер для этого не нужен. Оплаченный заказ он не отменяет и "
+            "скажет, что делать дальше. Не вызывай, если клиент меняет способ "
+            "доставки, пункт выдачи или состав («отмена, давайте через "
+            "Ozon») — это правка заказа, для неё свои инструменты."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "escalate_to_manager",
         "description": (
             "Передать вопрос клиента живому менеджеру. Есть два независимых "
@@ -310,7 +324,10 @@ def _tools_for_stage(stage: str | None) -> list[dict]:
         ]
     else:
         stage_tools = [by_name["propose_order"]]
-    return stage_tools + [by_name["escalate_to_manager"]]
+    # cancel_order доступен всегда: неоплаченный заказ живёт и без черновика
+    # (счёт выставлен — черновик убран), а отменить его клиент вправе на
+    # любом шаге.
+    return stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
 
 
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
@@ -1164,6 +1181,50 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     )
 
 
+async def _execute_cancel_order(peer_id: int) -> ToolExecution:
+    """Отмена по просьбе клиента: всё неоплаченное — сразу, без менеджера.
+
+    Раньше инструмента не было, и на «отмените заказ» бот звал менеджера,
+    даже когда отменять было нечего, кроме неоплаченного счёта.
+    """
+    outcome = await cancellation.cancel_for_client(peer_id)
+    paid = ", ".join(f"№{n}" for n in outcome.paid)
+    about_paid = (
+        f" Кроме того, у клиента есть оплаченный заказ {paid} — его бот не "
+        "отменяет: нужен возврат денег, а посылка, возможно, уже в пути. Если "
+        "клиент просит отменить и его — вызови escalate_to_manager."
+        if outcome.paid else ""
+    )
+
+    if outcome.canceled:
+        numbers = ", ".join(f"№{n}" for n in outcome.canceled)
+        reply = (
+            f"Отменила заказ {numbers} — оплачивать его не нужно. Если вы уже "
+            "успели заплатить, деньги вернутся автоматически. Захотите "
+            "заказать снова — напишите 🙂"
+        )
+    elif outcome.draft_dropped:
+        reply = "Хорошо, заказ не оформляю. Если передумаете — напишите 🙂"
+    elif outcome.paid:
+        return ToolExecution(
+            f"Неоплаченных заказов у клиента нет. Заказ {paid} уже оплачен — "
+            "отменить его бот не может: нужен возврат денег, а посылка, "
+            "возможно, уже в пути. Вызови escalate_to_manager: клиент просит "
+            f"отменить оплаченный заказ {paid}."
+        )
+    else:
+        return ToolExecution(
+            "Отменять нечего: у клиента нет ни черновика, ни неоплаченного "
+            "заказа. Уточни у клиента, что он имеет в виду."
+        )
+
+    if about_paid:
+        # Про оплаченный заказ модель должна решить сама — готовый текст
+        # умолчал бы о нём.
+        return ToolExecution(f"Сделано. Скажи клиенту: «{reply}»{about_paid}")
+    return ToolExecution(reply, client_reply=reply)
+
+
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
     if name == "propose_order":
         return ToolExecution(await _execute_propose_order(peer_id, tool_input))
@@ -1173,6 +1234,8 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return await _execute_confirm_order(peer_id)
     if name == "set_recipient":
         return ToolExecution(await _execute_set_recipient(peer_id, tool_input))
+    if name == "cancel_order":
+        return await _execute_cancel_order(peer_id)
     if name == "escalate_to_manager":
         return await _execute_escalate_to_manager(peer_id, tool_input)
     return ToolExecution(f"Неизвестный инструмент: {name}")
