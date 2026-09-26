@@ -235,3 +235,22 @@ async def test_deleted_cdek_order_is_reported_once(clean, world, monkeypatch):
     await delivery_watch.check_deliveries(DAY + timedelta(hours=3))
     assert len(calls) == 1
     assert len([t for t in world["manager"] if "не найден" in t]) == 1
+
+
+async def test_ozon_canceled_before_handover_is_polled_once(clean, world, monkeypatch):
+    """Отменённое до передачи отправление — конец: менеджеру один раз, опрос прекращается."""
+    await make_order(clean, cdek_uuid=None, ozon_posting="0002-1", delivery_method="ozon_pvz")
+    calls = []
+
+    async def posting_info(number):
+        calls.append(number)
+        return {"status": "canceled"}
+
+    monkeypatch.setattr(delivery_watch.ozon_client, "posting_info", posting_info)
+    first = await delivery_watch.check_deliveries(DAY)
+    assert first["trouble"] == 1 and first["not_delivered"] == 0
+
+    later = DAY + timedelta(hours=3)
+    await delivery_watch.check_deliveries(later)
+    assert calls == ["0002-1"]
+    assert len([t for t in world["manager"] if "заминка" in t]) == 1

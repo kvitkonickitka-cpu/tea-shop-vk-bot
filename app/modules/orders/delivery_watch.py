@@ -53,6 +53,11 @@ _OZON_WITH_CARRIER = {
 _OZON_TROUBLE = {"forming_failed", "not_accepted_to_delivery"}
 # Заказа нет в СДЭКе вовсе — такой больше не опрашиваем.
 CDEK_GONE = "СДЭК: заказ не найден (удалён в кабинете?)"
+# Отправление Ozon отменено до передачи — тоже конец: посылка никуда не
+# поедет, менеджеру про это уже сказали при смене статуса, а опрашивать его
+# каждый час ещё два месяца незачем. Отмена после передачи — другое дело:
+# это «не вручено», и отметку ставит `read_ozon`.
+OZON_CANCELED = "Ozon: canceled"
 
 # Статусы заказа, которые опрашивать незачем: регистрация у СДЭКа ещё не
 # подтверждена (этим занят `cdek_watch`), провалилась, или деньги вернули.
@@ -170,6 +175,14 @@ async def _due(now: datetime) -> list[Order]:
                         ),
                         Order.status != "refunded",
                         or_(Order.carrier_status.is_(None), Order.carrier_status != CDEK_GONE),
+                        # Через or_, а не not_(and_(...)): у нового заказа
+                        # статус перевозчика пустой, and_ с NULL даёт NULL,
+                        # и not_ выкинул бы из опроса все такие заказы.
+                        or_(
+                            Order.carrier_status.is_(None),
+                            Order.carrier_status != OZON_CANCELED,
+                            Order.handed_over_at.is_not(None),
+                        ),
                         Order.created_at > now - _GIVE_UP_AFTER,
                         or_(
                             Order.carrier_checked_at.is_(None),

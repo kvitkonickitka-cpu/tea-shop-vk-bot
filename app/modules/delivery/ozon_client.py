@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -46,6 +47,30 @@ _token_expires_at: float = 0.0
 # Кука от защиты Ozon живёт между запросами: без неё каждый вызов начинался
 # бы с редиректа, то есть стоил бы вдвое дороже.
 _cookies = httpx.Cookies()
+
+# Одно соединение на все вызовы, а не новое на каждый. Одной куки защите
+# Ozon мало: пропуск держится, пока жив и клиент, который его получил. С
+# клиентом на каждый вызов редирект был у **каждого** запроса — выгрузка
+# каталога на тике давала в логах десятки «Ozon перенаправил запрос» в
+# секунду и тратила вдвое больше запросов. Проверено 26.09.2026 живыми
+# запросами: пять вызовов новыми клиентами — пять редиректов, общим — один.
+_client: httpx.AsyncClient | None = None
+_client_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _shared_client() -> httpx.AsyncClient:
+    """Общий клиент — заново, если прежний закрыт или живёт в другом цикле.
+
+    Клиент httpx привязан к циклу событий, в котором открыл соединения. В
+    контейнере цикл один, а в тестах у каждого свой — со старым клиентом
+    там падало бы «Event loop is closed».
+    """
+    global _client, _client_loop
+    loop = asyncio.get_running_loop()
+    if _client is None or _client.is_closed or _client_loop is not loop:
+        _client = httpx.AsyncClient(timeout=_TIMEOUT_SECONDS)
+        _client_loop = loop
+    return _client
 
 
 class OzonError(RuntimeError):
@@ -184,14 +209,14 @@ async def call(path: str, payload: dict) -> dict:
     if not is_configured():
         raise OzonError("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы")
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-        token = await _get_token(client)
-        response = await _post(
-            client,
-            f"{settings.ozon_api_base_url}{path}",
-            payload,
-            {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        )
+    client = _shared_client()
+    token = await _get_token(client)
+    response = await _post(
+        client,
+        f"{settings.ozon_api_base_url}{path}",
+        payload,
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
 
     if response.status_code >= 400:
         raise OzonError(f"Ozon отказал на {path} — {_describe_failure(response)}")
