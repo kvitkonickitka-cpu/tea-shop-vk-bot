@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
 from app.modules import events
+from app.modules.dialog import telegram_client
 from app.modules.queue import client as queue_client
 
 logger = logging.getLogger(__name__)
@@ -38,5 +39,7 @@ async def vk_callback(request: Request) -> Response:
             # не уложиться в таймаут, чем потерять сообщение клиента совсем.
             logger.exception("Не удалось поставить событие в очередь, обрабатываем на месте")
 
-    await events.process_event(body)
+    # На месте — значит под секундомером VK: Telegram здесь ждём коротко.
+    with telegram_client.hurry():
+        await events.process_event(body)
     return _OK
