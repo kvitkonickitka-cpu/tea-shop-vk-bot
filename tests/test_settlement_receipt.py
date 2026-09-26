@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import base64
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -42,7 +42,6 @@ def world(monkeypatch):
         box["client"].append(text)
 
     monkeypatch.setattr(settings, "settlement_receipt_enabled", True)
-    monkeypatch.setattr(settings, "yookassa_mark_code_encoding", "base64")
     monkeypatch.setattr(yookassa_client, "create_receipt", create_receipt)
     monkeypatch.setattr(settlement.order_chat, "send", to_manager)
     monkeypatch.setattr(delivery_events.order_chat, "send", to_manager)
@@ -98,7 +97,7 @@ async def test_receipt_composition(clean, world):
         assert item["quantity"] == 1
         assert item["amount"] == {"value": "800.00", "currency": "RUB"}
         assert item["mark_mode"] == "0"
-        assert base64.b64decode(item["mark_code_info"]["gs_1m"]).decode() == raw
+        assert item["mark_code_info"]["gs_1m"] == raw
     assert delivery[0]["description"] == "Доставка: Ozon, пункт выдачи: Ставропольская 230"
     assert delivery[0]["amount"]["value"] == "117.00"
 
@@ -115,12 +114,16 @@ async def test_receipt_composition(clean, world):
     assert "итоговый чек" in world["client"][-1]
 
 
-async def test_raw_encoding_keeps_gs(clean, world, monkeypatch):
-    monkeypatch.setattr(settings, "yookassa_mark_code_encoding", "raw")
+async def test_code_goes_raw_with_escaped_gs(clean, world):
+    """Как просит ЮKassa: без base64, GS в JSON — как \\u001d."""
     order = await make_order(clean)
     await delivery_events.record(order.id, delivery_events.DELIVERED, source="тест")
     gs_1m = world["receipts"][-1]["items"][0]["mark_code_info"]["gs_1m"]
     assert gs_1m == CODE_1 and GS in gs_1m
+    # То, что уйдёт по сети: httpx сериализует тело стандартным json.
+    wire = json.dumps({"gs_1m": gs_1m}, ensure_ascii=False)
+    assert "SERIAL0000001\\u001d93dGVz" in wire
+    assert GS not in wire
 
 
 async def test_one_receipt_per_order(clean, world):
