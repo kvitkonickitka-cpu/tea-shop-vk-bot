@@ -116,3 +116,38 @@ async def clean(db):
             )
             await session.commit()
     return db
+
+
+@pytest.fixture(autouse=True)
+def daytime(monkeypatch):
+    """Без явного времени тесты живут днём, а не по настенным часам.
+
+    Иначе после 23:00 по Москве тихие часы глушили сообщения клиенту, и
+    тесты, проверяющие эти сообщения, падали по ночам. Тесты про тихие
+    часы передают время явно или подменяют `is_quiet` сами — им это не
+    мешает.
+    """
+    from datetime import datetime
+
+    from app.core import worktime
+
+    real = worktime.is_quiet
+    noon = datetime.now(worktime.MSK).replace(hour=14, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(
+        worktime, "is_quiet", lambda moment=None: real(moment if moment is not None else noon)
+    )
+
+
+# Домены, у которых в тестах «нет почтового сервера». Остальные считаются
+# живыми: в сеть тесты не ходят.
+DEAD_MAIL_DOMAINS = {"yandex.ry", "gmial.com", "test.ru", "example.com"}
+
+
+@pytest.fixture(autouse=True)
+def mail_dns(monkeypatch):
+    from app.modules.orders import contacts
+
+    async def fake(domain: str):
+        return domain not in DEAD_MAIL_DOMAINS
+
+    monkeypatch.setattr(contacts, "_has_mail_server", fake)

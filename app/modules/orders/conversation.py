@@ -21,6 +21,7 @@ from app.modules.dialog import (
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import cancellation
+from app.modules.orders import contacts
 from app.modules.orders import order_chat
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
@@ -770,22 +771,35 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
     # Телефон проверяем здесь, а не узнаём из отказа ЮKassa: её ошибка
     # приходит на выставлении счёта, когда клиент уже сказал «оформляйте», и
-    # выглядит поломкой вместо простого «уточните номер».
-    if not yookassa_client.phone_is_valid(phone):
+    # выглядит поломкой вместо простого «уточните номер». Храним в одном
+    # виде, +7XXXXXXXXXX: клиент пишет через восьмёрку, со скобками, без
+    # кода страны, а перевозчик и менеджер должны видеть одно и то же.
+    normalized_phone = contacts.normalize_phone(phone)
+    if normalized_phone is None:
         return (
-            f"Телефон «{phone}» не похож на настоящий: нужны 11 цифр, как "
-            "+7 900 123-45-67. Попроси клиента назвать номер целиком и вызови "
-            "инструмент ещё раз — остальное уже записано."
+            f"Телефон «{phone}» не похож на российский номер: нужны 11 цифр, "
+            "как +7 900 123-45-67. Попроси клиента назвать номер целиком и "
+            "вызови инструмент ещё раз — остальное уже записано."
         )
+    phone = normalized_phone
 
-    # Почту проверяем тем же манером, что и телефон: опечатку клиент
-    # поправит сейчас, а отказ ЮKassa на выставлении счёта выглядел бы
-    # поломкой.
-    if email and not yookassa_client.email_is_valid(email):
-        return (
-            f"Почта «{email}» не похожа на адрес: нужен вид name@example.ru. "
-            "Попроси клиента написать её ещё раз и вызови инструмент снова."
-        )
+    # Почта критична: «Чеки от ЮKassa» шлют чек только письмом, и адрес с
+    # опечаткой ЮKassa примет — чек уйдёт в никуда. Поэтому проверяем не
+    # только вид адреса, но и что домен вообще принимает почту.
+    if email:
+        checked = await contacts.check_email(email)
+        if not checked.ok:
+            hint = (
+                f" Возможно, клиент имел в виду {checked.suggestion} — спроси, "
+                "так ли это, а не записывай сам."
+                if checked.suggestion else ""
+            )
+            return (
+                f"Почта не записана: {checked.problem}.{hint} Попроси клиента "
+                "проверить адрес и вызови инструмент снова — ФИО и телефон "
+                "передай вместе с ним."
+            )
+        email = checked.email
 
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone

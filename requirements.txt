@@ -6,3 +6,4 @@ anthropic
 sqlalchemy[asyncio]
 asyncpg
 boto3
+dnspython
