@@ -1,4 +1,4 @@
-"""Доставка «как в прошлый раз» для клиента, который уже заказывал.
+"""Доставка и получатель «как в прошлый раз» для клиента, который уже заказывал.
 
 Постоянному клиенту незачем заново называть город и искать пункт на карте:
 посылку он уже получал, и проще всего спросить «отправить туда же?». Одно
@@ -74,35 +74,43 @@ def _from_order(order: Order) -> LastDelivery | None:
     return LastDelivery(order.id, order.delivery_method, city, place)
 
 
-async def last_for(peer_id: int) -> LastDelivery | None:
-    """Куда клиент получил последний удачный заказ. None — такого нет."""
+async def _successful_orders(peer_id: int) -> list[Order]:
+    """Последние удачные заказы клиента, от новых к старым.
+
+    Удачный — оплачен, не возвращён, не отменён и не вернулся непрошенным.
+    """
     try:
         session_factory = get_session_factory()
     except RuntimeError:
-        return None
+        return []
 
     try:
         async with session_factory() as session:
-            orders = (
-                await session.execute(
-                    select(Order)
-                    .where(
-                        Order.peer_id == peer_id,
-                        Order.payment_status == orders_repository.PAID,
-                        Order.status.not_in(("refunded", orders_repository.CANCELED)),
-                        Order.not_delivered_at.is_(None),
+            return list(
+                (
+                    await session.execute(
+                        select(Order)
+                        .where(
+                            Order.peer_id == peer_id,
+                            Order.payment_status == orders_repository.PAID,
+                            Order.status.not_in(("refunded", orders_repository.CANCELED)),
+                            Order.not_delivered_at.is_(None),
+                        )
+                        .order_by(Order.created_at.desc())
+                        .limit(5)
                     )
-                    .order_by(Order.created_at.desc())
-                    .limit(5)
-                )
-            ).scalars().all()
+                ).scalars().all()
+            )
     except Exception:
         # Подсказка — удобство, а не условие заказа: без неё клиент просто
-        # выберет доставку как обычно.
-        logger.exception("Не узнали прошлую доставку peer_id=%s", peer_id)
-        return None
+        # назовёт всё как обычно.
+        logger.exception("Не узнали прошлые заказы peer_id=%s", peer_id)
+        return []
 
-    for order in orders:
+
+async def last_for(peer_id: int) -> LastDelivery | None:
+    """Куда клиент получил последний удачный заказ. None — такого нет."""
+    for order in await _successful_orders(peer_id):
         found = _from_order(order)
         if found is not None:
             return found
@@ -117,4 +125,48 @@ def suggestion(last: LastDelivery) -> str:
         "назови этот адрес дословно. Согласится — вызови ровно "
         f"{last.tool_call()}: инструмент заново найдёт пункт, проверит его "
         "и посчитает цену. Захочет иначе — предложи доставку как обычно."
+    )
+
+
+@dataclass(frozen=True)
+class LastRecipient:
+    order_id: int
+    name: str
+    phone: str
+    email: str
+
+    def spoken(self) -> str:
+        parts = [self.name, self.phone] + ([self.email] if self.email else [])
+        return ", ".join(parts)
+
+    def tool_call(self) -> str:
+        email = f', email="{self.email}"' if self.email else ""
+        return f'set_recipient(name="{self.name}", phone="{self.phone}"{email})'
+
+
+async def last_recipient_for(peer_id: int) -> LastRecipient | None:
+    """На кого клиент оформлял последний удачный заказ.
+
+    Отбор тот же, что и для доставки. Данные получателя клиент называл сам
+    в этом же диалоге, так что показать их ему обратно — не утечка, а
+    удобство.
+    """
+    for order in await _successful_orders(peer_id):
+        details = order.details or {}
+        name = (details.get("recipient_name") or "").strip()
+        phone = (details.get("recipient_phone") or "").strip()
+        if name and phone:
+            return LastRecipient(
+                order.id, name, phone, (details.get("recipient_email") or "").strip()
+            )
+    return None
+
+
+def recipient_suggestion(last: LastRecipient) -> str:
+    """Что сказать модели: предложить прошлого получателя одним «да»."""
+    return (
+        f"В прошлый раз (заказ №{last.order_id}) получателем был: {last.spoken()}. "
+        "Вместо того чтобы спрашивать ФИО, телефон и почту заново, спроси, "
+        "оформить ли на те же данные, — назови их клиенту дословно. Согласится "
+        f"— вызови ровно {last.tool_call()}. Захочет другие — спроси новые."
     )

@@ -93,3 +93,47 @@ async def test_new_client_gets_the_usual_advice(clean):
     )
     assert "Первым предлагай пункт выдачи Ozon" in result
     await state.clear_draft(PEER)
+
+
+async def test_last_recipient_is_offered_after_delivery(clean, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.modules.delivery import ozon_client, ozon_quote
+    from app.modules.orders.state import OrderDraft
+
+    await make_order(
+        clean, minutes_ago=60,
+        details={"address": "Краснодар", "ozon_point_address": "Краснодар, Ставропольская, 230",
+                 "recipient_name": "Квитко Никита Александрович",
+                 "recipient_phone": "+79214477622", "recipient_email": "k@yandex.ru"},
+    )
+    point = SimpleNamespace(id=437468, address="Краснодар, Ставропольская улица, 230")
+
+    async def picked(draft, city, hint=""):
+        return ozon_quote.Picked([point], 1, 1, True)
+
+    async def price(draft, point_id):
+        return ozon_client.Quote(delivery_cost=107.0, insurance_cost=10.0, days=5)
+
+    monkeypatch.setattr(conversation.ozon_quote, "is_ready", lambda: True)
+    monkeypatch.setattr(conversation, "_ozon_points", picked)
+    monkeypatch.setattr(conversation, "_ozon_price", price)
+    await state.set_draft(PEER, OrderDraft(
+        items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 100}],
+        items_total=100.0, stage="awaiting_delivery",
+    ))
+
+    result = await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская 230"}
+    )
+
+    text = result.tool_result
+    assert "Квитко Никита Александрович, +79214477622, k@yandex.ru" in text
+    assert 'set_recipient(name="Квитко Никита Александрович", phone="+79214477622", email="k@yandex.ru")' in text
+    await state.clear_draft(PEER)
+
+
+async def test_no_recipient_offer_without_a_successful_order(clean):
+    await make_order(clean, minutes_ago=5, status="canceled",
+                     details={"recipient_name": "А", "recipient_phone": "+79000000000"})
+    assert await repeat_delivery.last_recipient_for(PEER) is None

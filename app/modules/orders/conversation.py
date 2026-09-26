@@ -778,6 +778,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         if method in ("cdek_pvz", "cdek_courier", "ozon_pvz")
         else "Спроси, готов ли он оформить заказ."
     )
+    if method in ("cdek_pvz", "cdek_courier", "ozon_pvz") and not draft.details.get("recipient_name"):
+        # Постоянному клиенту — прошлый получатель одним «да», а не три
+        # вопроса заново.
+        last = await repeat_delivery.last_recipient_for(peer_id)
+        if last is not None:
+            next_step = "Потом: " + repeat_delivery.recipient_suggestion(last)
     return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + next_step)
 
 
@@ -1374,6 +1380,14 @@ async def _handle_turn(
         last = await repeat_delivery.last_for(peer_id)
         if last is not None:
             system_prompt += f"\n{repeat_delivery.suggestion(last)}"
+    elif (
+        draft is not None
+        and draft.delivery_method in ("cdek_pvz", "cdek_courier", "ozon_pvz")
+        and not draft.details.get("recipient_name")
+    ):
+        last_recipient = await repeat_delivery.last_recipient_for(peer_id)
+        if last_recipient is not None:
+            system_prompt += f"\n{repeat_delivery.recipient_suggestion(last_recipient)}"
 
     if attached and attached.notes:
         # Подсказку добавляем только когда есть что объяснять: постоянная
