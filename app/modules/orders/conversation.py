@@ -23,6 +23,7 @@ from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import cancellation
 from app.modules.orders import contacts
 from app.modules.orders import order_chat
+from app.modules.orders import repeat_delivery
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -433,6 +434,11 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     # Первым идёт Ozon: на живом расчёте он вышел 121 руб против 397 у
     # СДЭКа. Платит за доставку клиент, так что порядок — это про то, какую
     # цену он увидит первой, а не про нашу выгоду.
+    # Постоянному клиенту первым предлагаем то, куда он уже получал: одно
+    # «да» вместо города, пункта и карты.
+    last = await repeat_delivery.last_for(peer_id)
+    if last is not None:
+        return result + "\n" + repeat_delivery.suggestion(last)
     result += (
         "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
         "Ozon — он заметно дешевле, клиент забирает посылку сам. Если нужно "
@@ -772,6 +778,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         if method in ("cdek_pvz", "cdek_courier", "ozon_pvz")
         else "Спроси, готов ли он оформить заказ."
     )
+    if method in ("cdek_pvz", "cdek_courier", "ozon_pvz") and not draft.details.get("recipient_name"):
+        # Постоянному клиенту — прошлый получатель одним «да», а не три
+        # вопроса заново.
+        last = await repeat_delivery.last_recipient_for(peer_id)
+        if last is not None:
+            next_step = "Потом: " + repeat_delivery.recipient_suggestion(last)
     return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + next_step)
 
 
@@ -1362,6 +1374,20 @@ async def _handle_turn(
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
     system_prompt += f"\n\n{order_flow_prompt()}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
+    if draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
+        # То же предложение, что в ответе propose_order, — и для черновика
+        # из витрины ВК, который собирается без propose_order.
+        last = await repeat_delivery.last_for(peer_id)
+        if last is not None:
+            system_prompt += f"\n{repeat_delivery.suggestion(last)}"
+    elif (
+        draft is not None
+        and draft.delivery_method in ("cdek_pvz", "cdek_courier", "ozon_pvz")
+        and not draft.details.get("recipient_name")
+    ):
+        last_recipient = await repeat_delivery.last_recipient_for(peer_id)
+        if last_recipient is not None:
+            system_prompt += f"\n{repeat_delivery.recipient_suggestion(last_recipient)}"
 
     if attached and attached.notes:
         # Подсказку добавляем только когда есть что объяснять: постоянная
