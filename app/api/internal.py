@@ -497,7 +497,9 @@ async def quote_ozon(request: Request):
             )
         except Exception as error:
             logger.exception("Не посчитали доставку Ozon в пункт %s", point.id)
-            row["ошибка расчёта"] = str(error)[:200]
+            # Тип обязателен: у таймаута httpx текст пустой, и в выводе
+            # оставалось «ошибка расчёта: ""» без единой подсказки.
+            row["ошибка расчёта"] = f"{type(error).__name__}: {error}"[:200]
         else:
             row["доставка"] = quote.delivery_cost
             row["страховка"] = quote.insurance_cost
