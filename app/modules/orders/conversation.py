@@ -21,6 +21,7 @@ from app.modules.dialog import (
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import cancellation
+from app.modules.orders import contacts
 from app.modules.orders import order_chat
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
@@ -770,22 +771,35 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
 
     # Телефон проверяем здесь, а не узнаём из отказа ЮKassa: её ошибка
     # приходит на выставлении счёта, когда клиент уже сказал «оформляйте», и
-    # выглядит поломкой вместо простого «уточните номер».
-    if not yookassa_client.phone_is_valid(phone):
+    # выглядит поломкой вместо простого «уточните номер». Храним в одном
+    # виде, +7XXXXXXXXXX: клиент пишет через восьмёрку, со скобками, без
+    # кода страны, а перевозчик и менеджер должны видеть одно и то же.
+    normalized_phone = contacts.normalize_phone(phone)
+    if normalized_phone is None:
         return (
-            f"Телефон «{phone}» не похож на настоящий: нужны 11 цифр, как "
-            "+7 900 123-45-67. Попроси клиента назвать номер целиком и вызови "
-            "инструмент ещё раз — остальное уже записано."
+            f"Телефон «{phone}» не похож на российский номер: нужны 11 цифр, "
+            "как +7 900 123-45-67. Попроси клиента назвать номер целиком и "
+            "вызови инструмент ещё раз — остальное уже записано."
         )
+    phone = normalized_phone
 
-    # Почту проверяем тем же манером, что и телефон: опечатку клиент
-    # поправит сейчас, а отказ ЮKassa на выставлении счёта выглядел бы
-    # поломкой.
-    if email and not yookassa_client.email_is_valid(email):
-        return (
-            f"Почта «{email}» не похожа на адрес: нужен вид name@example.ru. "
-            "Попроси клиента написать её ещё раз и вызови инструмент снова."
-        )
+    # Почта критична: «Чеки от ЮKassa» шлют чек только письмом, и адрес с
+    # опечаткой ЮKassa примет — чек уйдёт в никуда. Поэтому проверяем не
+    # только вид адреса, но и что домен вообще принимает почту.
+    if email:
+        checked = await contacts.check_email(email)
+        if not checked.ok:
+            hint = (
+                f" Возможно, клиент имел в виду {checked.suggestion} — спроси, "
+                "так ли это, а не записывай сам."
+                if checked.suggestion else ""
+            )
+            return (
+                f"Почта не записана: {checked.problem}.{hint} Попроси клиента "
+                "проверить адрес и вызови инструмент снова — ФИО и телефон "
+                "передай вместе с ним."
+            )
+        email = checked.email
 
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone
@@ -1188,14 +1202,13 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
     даже когда отменять было нечего, кроме неоплаченного счёта.
     """
     outcome = await cancellation.cancel_for_client(peer_id)
-    paid = ", ".join(f"№{n}" for n in outcome.paid)
-    about_paid = (
-        f" Кроме того, у клиента есть оплаченный заказ {paid} — его бот не "
-        "отменяет: нужен возврат денег, а посылка, возможно, уже в пути. Если "
-        "клиент просит отменить и его — вызови escalate_to_manager."
-        if outcome.paid else ""
-    )
 
+    # Отменили хоть что-то — просьба клиента выполнена, отвечаем готовым
+    # текстом. Про оплаченные заказы здесь молчим: раньше результат
+    # дописывал «есть ещё оплаченный — если клиент про него, зови
+    # менеджера», и модель на простое «заказ отмени» звала менеджера, хотя
+    # неоплаченный заказ уже был отменён. Если клиент имел в виду
+    # оплаченный, он скажет, и следующий вызов уйдёт в ветку ниже.
     if outcome.canceled:
         numbers = ", ".join(f"№{n}" for n in outcome.canceled)
         reply = (
@@ -1203,26 +1216,22 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
             "успели заплатить, деньги вернутся автоматически. Захотите "
             "заказать снова — напишите 🙂"
         )
-    elif outcome.draft_dropped:
+        return ToolExecution(reply, client_reply=reply)
+    if outcome.draft_dropped:
         reply = "Хорошо, заказ не оформляю. Если передумаете — напишите 🙂"
-    elif outcome.paid:
+        return ToolExecution(reply, client_reply=reply)
+    if outcome.paid:
+        paid = ", ".join(f"№{n}" for n in outcome.paid)
         return ToolExecution(
             f"Неоплаченных заказов у клиента нет. Заказ {paid} уже оплачен — "
             "отменить его бот не может: нужен возврат денег, а посылка, "
             "возможно, уже в пути. Вызови escalate_to_manager: клиент просит "
             f"отменить оплаченный заказ {paid}."
         )
-    else:
-        return ToolExecution(
-            "Отменять нечего: у клиента нет ни черновика, ни неоплаченного "
-            "заказа. Уточни у клиента, что он имеет в виду."
-        )
-
-    if about_paid:
-        # Про оплаченный заказ модель должна решить сама — готовый текст
-        # умолчал бы о нём.
-        return ToolExecution(f"Сделано. Скажи клиенту: «{reply}»{about_paid}")
-    return ToolExecution(reply, client_reply=reply)
+    return ToolExecution(
+        "Отменять нечего: у клиента нет ни черновика, ни неоплаченного "
+        "заказа. Уточни у клиента, что он имеет в виду."
+    )
 
 
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
@@ -1382,6 +1391,15 @@ async def _handle_turn(
             (block, await spent.tool(_execute_tool(peer_id, block.name, block.input)))
             for block in tool_use_blocks
         ]
+        for block, execution in executions:
+            # Без этой строки по логам не понять, почему бот ответил так, а
+            # не иначе: видно только время хода. Данные клиента сюда не
+            # пишем — только инструмент и начало его результата.
+            logger.info(
+                "ход peer_id=%s: %s → %s%s",
+                peer_id, block.name, execution.tool_result[:160].replace("\n", " "),
+                " [готовый ответ]" if execution.client_reply is not None else "",
+            )
 
         # Если у последнего инструмента есть готовый ответ клиенту, отдаём его
         # напрямую. Второй запрос к Claude нужен лишь чтобы пересказать то же

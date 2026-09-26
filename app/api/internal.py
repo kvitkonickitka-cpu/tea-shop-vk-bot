@@ -15,6 +15,7 @@ from app.modules.marking import packing, pool as marking_pool
 from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import (
+    cancellation,
     cdek_watch,
     delivery_events,
     delivery_watch,
@@ -280,6 +281,22 @@ async def mark_delivery_event(order_id: int, request: Request):
         }
     logger.info("Заказ %s: событие %s отмечено вручную", order_id, kind)
     return {"заказ": order_id, "событие": kind, "отмечено": True}
+
+
+@router.post("/internal/orders/{order_id}/cancel")
+async def cancel_order(order_id: int, request: Request):
+    """Отменить заказ руками — клиенту ничего не пишет.
+
+        scripts/api.sh orders/12/cancel            неоплаченный
+        scripts/api.sh "orders/12/cancel?paid=1"   и оплаченный (тестовый)
+
+    Оплаченный отменяется только с `paid=1`: деньги сами не вернутся и
+    отправление у перевозчика не отменится.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    paid_too = request.query_params.get("paid") in ("1", "true", "да")
+    return await cancellation.cancel_by_manager(order_id, paid_too=paid_too)
 
 
 @router.post("/internal/orders/{order_id}/settlement-receipt")

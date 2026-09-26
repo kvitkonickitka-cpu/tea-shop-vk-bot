@@ -129,7 +129,7 @@ async def test_set_recipient_rejects_a_broken_phone(clean, monkeypatch):
     answer = await conversation._execute_set_recipient(
         PEER, {"name": "Иванов Иван", "phone": "123", "email": "a@b.ru"}
     )
-    assert "не похож на настоящий" in answer
+    assert "не похож на российский номер" in answer
     draft = await state.get_draft(PEER)
     assert "recipient_phone" not in draft.details
 
@@ -145,7 +145,7 @@ async def test_set_recipient_rejects_a_broken_email(clean, monkeypatch):
     answer = await conversation._execute_set_recipient(
         PEER, {"name": "Иванов Иван", "phone": "79181234567", "email": "ivan.mail.ru"}
     )
-    assert "не похожа на адрес" in answer
+    assert "не похоже на адрес почты" in answer
     draft = await state.get_draft(PEER)
     assert "recipient_email" not in draft.details
 

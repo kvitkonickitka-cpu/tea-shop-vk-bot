@@ -149,3 +149,42 @@ async def _close_invoices(order: Order) -> None:
             logger.info(
                 "Заказ %s: ЮKassa не отменила счёт %s — %s", order.id, payment_id, error
             )
+
+
+async def cancel_by_manager(order_id: int, *, paid_too: bool = False) -> dict:
+    """Отменить заказ служебной командой — `orders/<N>/cancel`.
+
+    Нужна для хвостов: заказы, «оплаченные» в тестовом магазине ЮKassa,
+    числятся оплаченными навсегда — вернуть по ним нечего, а бот видит их
+    и на просьбу клиента об отмене зовёт менеджера. Оплаченный заказ
+    отменяется только с явным `paid=1`: деньги сами не вернутся и
+    отправление у перевозчика не отменится — это делается отдельно.
+    Клиенту команда ничего не пишет.
+    """
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+    if order.status in (STATUS_CANCELED, "refunded"):
+        return {"заказ": order_id, "действий": f"нет, уже «{order.status}»"}
+    is_paid = order.payment_status == orders_repository.PAID
+    if is_paid and not paid_too:
+        return {
+            "заказ": order_id,
+            "действий": "нет",
+            "почему": (
+                "заказ оплачен: команда не вернёт деньги и не отменит "
+                "отправление у перевозчика. Если всё равно отменить (например, "
+                "это оплата тестового магазина) — добавь ?paid=1"
+            ),
+            "отправление": order.ozon_posting or order.cdek_uuid or "нет",
+        }
+
+    await orders_repository.set_state(order_id, status=STATUS_CANCELED)
+    if not is_paid:
+        await _close_invoices(order)
+    logger.info("Заказ %s отменён служебной командой (оплачен: %s)", order_id, is_paid)
+    result = {"заказ": order_id, "отменён": True, "был статус": order.status}
+    if is_paid:
+        result["помни"] = "деньги сами не вернутся, отправление у перевозчика не отменено"
+        result["отправление"] = order.ozon_posting or order.cdek_uuid or "нет"
+    return result

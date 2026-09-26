@@ -214,3 +214,43 @@ async def test_other_clients_orders_are_untouched(clean, world):
     async with clean() as session:
         rows = (await session.execute(select(OrderPayment))).scalars().all()
     assert all(row.closed_at is None for row in rows)
+
+
+async def test_unpaid_cancel_is_answered_even_with_paid_leftovers(clean, world):
+    """Оплаченные хвосты тестового магазина не мешают отменить неоплаченный.
+
+    26.09.2026: на «заказ отмени» бот отменил неоплаченный заказ, но из-за
+    приписки про оплаченные тестовые заказы позвал менеджера.
+    """
+    await make_order(clean, status="paid", payment_status="succeeded", payment_id="pay-old")
+    unpaid = await make_order(clean, payment_id="pay-new")
+
+    execution = await conversation._execute_cancel_order(PEER)
+
+    assert execution.client_reply and f"№{unpaid.id}" in execution.client_reply
+    assert "escalate_to_manager" not in execution.tool_result
+
+
+async def test_manager_cancels_a_test_paid_order_only_when_asked(clean, world):
+    order = await make_order(clean, status="paid", payment_status="succeeded")
+
+    refused = await cancellation.cancel_by_manager(order.id)
+    assert refused["действий"] == "нет"
+    assert (await fresh(clean, order.id)).status == "paid"
+
+    done = await cancellation.cancel_by_manager(order.id, paid_too=True)
+    assert done["отменён"] is True
+    assert (await fresh(clean, order.id)).status == cancellation.STATUS_CANCELED
+    # Клиенту служебная отмена ничего не пишет.
+    assert world["client"] == []
+
+    # После этого на просьбу клиента бот не зовёт менеджера.
+    execution = await conversation._execute_cancel_order(PEER)
+    assert "Отменять нечего" in execution.tool_result
+
+
+async def test_manager_cancels_an_unpaid_order(clean, world):
+    order = await make_order(clean)
+    done = await cancellation.cancel_by_manager(order.id)
+    assert done["отменён"] is True
+    assert world["canceled"] == ["pay-1"]
