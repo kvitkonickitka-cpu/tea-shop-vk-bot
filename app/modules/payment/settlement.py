@@ -29,7 +29,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -86,15 +85,15 @@ def was_sent(order: Order) -> bool:
 
 
 def encode_mark(code: str) -> str:
-    """Код маркировки для `mark_code_info.gs_1m`.
+    """Код маркировки для `mark_code_info.gs_1m` — строкой как есть.
 
-    Какой вид правильный — base64 или строка как есть — документация ЮKassa
-    однозначно не говорит, поэтому это настройка
-    (`YOOKASSA_MARK_CODE_ENCODING`). В обоих видах код целиком, с GS.
+    Ответ поддержки ЮKassa 26.09.2026: только поле `gs_1m`, **без base64**,
+    код целиком — с криптохвостом и разделителями GS. В JSON разделитель
+    уходит как `\u001d`: так его записывает любой сериализатор JSON, потому
+    что управляющие символы в строке экранируются всегда. Пример в их статье
+    про чек зачёта выглядел как base64 и сбивал с толку — не он.
     """
-    if settings.yookassa_mark_code_encoding.strip().lower() == "raw":
-        return code
-    return base64.b64encode(code.encode("utf-8")).decode("ascii")
+    return code
 
 
 def idempotence_key(order_id: int, attempt: int) -> str:
