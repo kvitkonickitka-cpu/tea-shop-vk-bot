@@ -177,9 +177,12 @@ TOOLS = [
             "уже с ним. Для Ozon инструмент вместе с ценой вернёт список "
             "пунктов выдачи города — перечисли их клиенту и спроси, какой "
             "ему удобнее. "
-            "Не вызывай инструмент повторно, если способ доставки не менялся: "
-            "чтобы прислать карту пунктов или просто ответить на вопрос, "
-            "инструмент не нужен — ответь словами."
+            "Когда клиент хочет другой пункт выдачи или спрашивает, какие "
+            "пункты есть на улице или в районе, — вызови инструмент снова, "
+            "с этим адресом в pickup_point: список пунктов бывает только из "
+            "инструмента, по памяти и из прошлых сообщений его не называй. "
+            "Без такого повода повторно не вызывай: чтобы прислать карту "
+            "пунктов или ответить на другой вопрос, инструмент не нужен."
         ),
         "input_schema": {
             "type": "object",
@@ -199,7 +202,9 @@ TOOLS = [
                     "type": "string",
                     "description": (
                         "Адрес пункта выдачи, который назвал клиент — для "
-                        "cdek_pvz и ozon_pvz. Поле необязательное: без него "
+                        "cdek_pvz и ozon_pvz. Ровно то, что клиент сказал про "
+                        "этот заказ: номер дома из прошлых заказов не "
+                        "подставляй, даже если улица та же. Поле необязательное: без него "
                         "цена всё равно посчитается, а адрес спросишь "
                         "следующим сообщением. Для Ozon инструмент заодно "
                         "вернёт список пунктов города, чтобы клиент выбрал."
@@ -616,7 +621,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
             picked = ozon_quote.Picked([], 0, 0, False)
 
-        points, found, total_points = picked.points, picked.found, picked.total
+        points, found, total_points = list(picked.points), picked.found, picked.total
 
         if hint and not picked.hint_matched:
             # Адрес с карты Ozon может не найтись у нас: копия каталога
@@ -653,17 +658,29 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         # цифры, которая, скорее всего, не изменится. А если где-то всё-таки
         # изменится — второй вызов с выбранным пунктом пересчитает, и до
         # подтверждения клиент услышит верную сумму.
-        point = points[0]
-        try:
-            quote = await _ozon_price(draft, point.id)
-        except Exception:
-            logger.exception(
-                "Не посчитали доставку Ozon в пункт %s для peer_id=%s", point.id, peer_id
-            )
+        #
+        # Пункт, на котором расчёт упал, не повод отправлять клиента в СДЭК:
+        # проверка доступности его пропустила, а checkout отказал (26.09.2026,
+        # Краснодар, Ставропольская 159). Пробуем следующий, а отказавший
+        # убираем из списка — выбрать его клиент всё равно не сможет.
+        quote = None
+        for candidate in list(points):
+            try:
+                quote = await _ozon_price(draft, candidate.id)
+            except Exception as error:
+                logger.warning(
+                    "Не посчитали доставку Ozon в пункт %s для peer_id=%s — %s: %s",
+                    candidate.id, peer_id, type(error).__name__, error,
+                )
+                points.remove(candidate)
+                continue
+            break
+        if quote is None:
             return ToolExecution(
                 "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
                 "а если он хочет именно Ozon — вызови escalate_to_manager."
             )
+        point = points[0]
 
         draft.details["address"] = city
         # Тот же урок, что и с СДЭКом: страховку Ozon выставляет отдельной

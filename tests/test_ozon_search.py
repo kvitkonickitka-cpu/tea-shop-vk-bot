@@ -74,3 +74,46 @@ def test_word_regex_keeps_every_form_of_the_word():
     assert pattern.search("г краснодар ставропольская 230")
     assert pattern.search("краснодара")
     assert not pattern.search("краснодарский анапа")
+
+
+async def test_failed_price_falls_back_to_the_next_point(clean, monkeypatch):
+    """Checkout отказал по первому пункту — считаем по следующему, не шлём в СДЭК."""
+    from types import SimpleNamespace
+
+    from app.modules.delivery import ozon_client, ozon_quote
+    from app.modules.orders import conversation, state
+    from app.modules.orders.state import OrderDraft
+
+    peer = 9900
+    points = [
+        SimpleNamespace(id=93999, address="Краснодар, Ставропольская улица, 159"),
+        SimpleNamespace(id=88405, address="Краснодар, Ставропольская улица, 129"),
+        SimpleNamespace(id=95166, address="Краснодар, Ставропольская улица, 268"),
+    ]
+
+    async def picked(draft, city, hint=""):
+        return ozon_quote.Picked(points, 3, 22, True)
+
+    async def price(draft, point_id):
+        if point_id == 93999:
+            raise RuntimeError("")
+        return ozon_client.Quote(delivery_cost=107.0, insurance_cost=10.0, days=5)
+
+    monkeypatch.setattr(conversation.ozon_quote, "is_ready", lambda: True)
+    monkeypatch.setattr(conversation, "_ozon_points", picked)
+    monkeypatch.setattr(conversation, "_ozon_price", price)
+    await state.set_draft(peer, OrderDraft(
+        items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 100}],
+        items_total=100.0, stage="awaiting_delivery",
+    ))
+
+    result = await conversation._execute_set_delivery_method(
+        peer, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"}
+    )
+
+    assert "недоступен" not in result.tool_result
+    assert "159" not in result.tool_result
+    assert "129" in result.tool_result and "268" in result.tool_result
+    assert (await state.get_draft(peer)).delivery_cost == 117.0
+    # Список, которым пользуется вызывающий, не испорчен.
+    assert len(points) == 3
