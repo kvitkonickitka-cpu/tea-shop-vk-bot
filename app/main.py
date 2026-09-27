@@ -26,7 +26,7 @@ app = FastAPI(title=settings.app_name, debug=settings.debug)
 @app.middleware("http")
 async def fresh_catalog(request: Request, call_next):
     # Каталог из Google Таблицы кладёт в базу тик расписания; здесь каждый
-    # контейнер подтягивает его в память — не чаще раза в минуту. Путь
+    # контейнер подтягивает его в память — отпечаток сверяет раз в 5 секунд. Путь
     # сообщения клиента в Google не ходит: у вебхука ВК около восьми секунд.
     await catalog_sheet.ensure_fresh()
     return await call_next(request)
