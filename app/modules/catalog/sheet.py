@@ -61,6 +61,7 @@ _COLUMNS = {
     "gtin": "gtin",
     "ссылка": "link",
     "описание": "description",
+    "с чем советуем": "recommended",
 }
 _REQUIRED = ("name", "price")
 
@@ -162,8 +163,29 @@ def parse_csv(text: str) -> Parsed:
             "gtin": gtin,
             "link": values.get("link", ""),
             "description": values.get("description", ""),
+            "recommended": [
+                part.strip()
+                for part in values.get("recommended", "").split(",")
+                if part.strip()
+            ],
+            "_row": number,
         }
         result.items.append(item)
+
+    # «С чем советуем» ссылается на названия из той же таблицы, поэтому
+    # проверяется, когда прочитаны все строки. Опечатка в названии — такая
+    # же ошибка, как пустая цена: иначе бот советовал бы то, чего нет.
+    names = {item["name"].casefold(): item["name"] for item in result.items}
+    for item in result.items:
+        row = item.pop("_row")
+        unknown = [name for name in item["recommended"] if name.casefold() not in names]
+        if unknown:
+            result.errors.append(
+                f"строка {row} «{item['name']}»: в «С чем советуем» нет такого "
+                f"товара в таблице — {', '.join(unknown)}"
+            )
+            continue
+        item["recommended"] = [names[name.casefold()] for name in item["recommended"]]
 
     if not result.items and not result.errors:
         result.errors.append("в таблице нет ни одного товара")

@@ -78,6 +78,38 @@ async def build_catalog_context() -> str:
         link = item.get("link")
         if link:
             line += f" Ссылка на товар (в т.ч. с фото): {link}"
+        recommended = item.get("recommended") or []
+        if recommended:
+            line += f" С чем советуем: {', '.join(recommended)}."
         lines.append(line)
 
     return "\n".join(lines)
+
+
+def upsell_for(draft_items: list[dict], items: list[dict] | None = None) -> dict | None:
+    """Одна позиция для допродажи — или None.
+
+    Только из столбца «С чем советуем» у товаров черновика: первая, которая
+    есть в наличии и которой ещё нет в черновике. Пустой столбец — ничего не
+    предлагаем: придумывать допродажу модели нельзя.
+    """
+    items = load_items() if items is None else items
+    in_draft = {str(row.get("name", "")).casefold() for row in draft_items}
+    for row in draft_items:
+        product = find_item(str(row.get("name", "")), items)
+        for name in (product or {}).get("recommended") or []:
+            candidate = find_item(name, items)
+            if (
+                candidate
+                and candidate.get("in_stock", True)
+                and candidate["name"].casefold() not in in_draft
+            ):
+                return candidate
+    return None
+
+
+def cheapest_in_stock_price(items: list[dict] | None = None) -> float | None:
+    """Цена самой дешёвой пачки в наличии — мерка «можно добавить ещё пачку»."""
+    items = load_items() if items is None else items
+    prices = [float(item["price"]) for item in items if item.get("in_stock", True)]
+    return min(prices) if prices else None

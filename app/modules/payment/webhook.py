@@ -182,7 +182,11 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         items=order.items or [],
         details=order.details or {},
         items_total=float(order.items_total or 0),
-        delivery_cost=float(order.delivery_cost or 0),
+        # При бесплатной доставке клиенту 0, а сверять расчёт Ozon надо с
+        # настоящей ценой перевозчика.
+        delivery_cost=float(
+            (order.details or {}).get("carrier_delivery_cost", order.delivery_cost) or 0
+        ),
         order_key=(order.details or {}).get("order_key", ""),
         order_id=order.id,
     )

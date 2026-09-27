@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.config import settings
+from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
 from app.messages import manager as manager_messages, templates
@@ -269,6 +269,32 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "add_to_order",
+        "description": (
+            "Добавить товары в уже собранный черновик — когда клиент согласился "
+            "на предложенное дополнение или сам решил докупить. Названия — как в "
+            "ассортименте. Если доставка уже была посчитана, она сбросится: вес "
+            "и цена посылки изменились, инструмент скажет, как пересчитать."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "quantity": {"type": "integer"},
+                        },
+                        "required": ["name", "quantity"],
+                    },
+                }
+            },
+            "required": ["items"],
+        },
+    },
+    {
         "name": "cancel_order",
         "description": (
             "Отменить заказ целиком, когда клиент явно просит отменить его или "
@@ -342,12 +368,15 @@ def _tools_for_stage(stage: str | None) -> list[dict]:
     # «не хватает инструмента для расчёта».
     by_name = {tool["name"]: tool for tool in TOOLS}
     if stage == "awaiting_delivery":
-        stage_tools = [by_name["set_delivery_method"], by_name["set_recipient"]]
+        stage_tools = [
+            by_name["set_delivery_method"], by_name["set_recipient"], by_name["add_to_order"],
+        ]
     elif stage == "awaiting_confirmation":
         stage_tools = [
             by_name["set_delivery_method"],
             by_name["set_recipient"],
             by_name["confirm_order"],
+            by_name["add_to_order"],
         ]
     else:
         stage_tools = [by_name["propose_order"]]
@@ -371,6 +400,77 @@ def _load_tariffs() -> dict:
         return json.load(f)
 
 
+def _apply_free_delivery(draft: OrderDraft) -> str:
+    """Порог бесплатной доставки: доставка клиенту 0, настоящая цена — в деталях.
+
+    Настоящую стоимость у перевозчика храним: платит её магазин, и менеджеру
+    с отчётами она нужна. В чек ЮKassa позиция доставки с нулём не попадает —
+    сумма чека должна сходиться с платежом, а нулевых позиций касса не берёт.
+    Возвращает строку для модели (или пустую).
+    """
+    threshold = free_delivery_threshold()
+    if draft.delivery_cost is None or threshold is None:
+        return ""
+    carrier_cost = draft.details.get("carrier_delivery_cost", draft.delivery_cost)
+    if draft.items_total >= threshold:
+        draft.details["carrier_delivery_cost"] = carrier_cost
+        draft.delivery_cost = 0
+        return (
+            f"Доставка для клиента бесплатная: сумма товаров от "
+            f"{templates.amount(threshold)} ₽. Скажи об этом клиенту.\n"
+        )
+    # Сумма опустилась ниже порога (клиент убрал позицию) — снова платная.
+    if "carrier_delivery_cost" in draft.details:
+        draft.delivery_cost = draft.details.pop("carrier_delivery_cost")
+    return ""
+
+
+def _first_sentence(text: str, limit: int = 160) -> str:
+    text = (text or "").strip()
+    for mark in (". ", "! ", "? "):
+        if mark in text:
+            text = text.split(mark, 1)[0] + mark.strip()
+            break
+    return text[:limit]
+
+
+def _offer_upsell(draft: OrderDraft, catalog: list[dict]) -> str:
+    """Подсказка модели: что предложить дополнительно и сколько до порога.
+
+    Позицию выбирает код, а не модель: только из «С чем советуем» у товаров
+    черновика. Нет подсказки — нет допродажи. Предлагаем один раз на
+    черновик: отметка `upsell_offered` гасит подсказку навсегда.
+    """
+    lines = []
+    if not draft.details.get("upsell_offered"):
+        candidate = catalog_service.upsell_for(draft.items, catalog)
+        if candidate is not None:
+            draft.details["upsell_offered"] = True
+            draft.details["upsell_item"] = candidate["name"]
+            reason = _first_sentence(candidate.get("description", ""))
+            lines.append(
+                f"Предложи дополнить: {candidate['name']} ({candidate['price']} ₽) — "
+                + (f"причина из описания товара: «{reason}»" if reason else "одной фразой, почему")
+                + ". Один раз, в том же сообщении, где спрашиваешь город. Согласится — "
+                "вызови add_to_order."
+            )
+    gap = _threshold_gap(draft.items_total)
+    if gap is not None:
+        lines.append(
+            f"До бесплатной доставки не хватает {templates.amount(gap)} ₽ — скажи "
+            "об этом в том же предложении, где предлагаешь дополнить."
+        )
+    return "".join(f"\n{line}" for line in lines)
+
+
+def _threshold_gap(items_total: float) -> float | None:
+    """Сколько не хватает до бесплатной доставки. None — порога нет или он пройден."""
+    threshold = free_delivery_threshold()
+    if threshold is None or items_total >= threshold:
+        return None
+    return round(threshold - items_total, 2)
+
+
 def _describe_draft(draft: OrderDraft | None) -> str:
     if draft is None:
         return "Активного черновика заказа у клиента нет."
@@ -379,6 +479,11 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     for item in draft.items:
         lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} ₽")
     lines.append(f"Сумма товаров: {draft.items_total} ₽")
+    gap = _threshold_gap(draft.items_total)
+    if gap is not None:
+        lines.append(f"До бесплатной доставки не хватает {templates.amount(gap)} ₽.")
+    elif draft.details.get("carrier_delivery_cost") is not None:
+        lines.append("Доставка для клиента бесплатная: сумма товаров прошла порог.")
     if draft.delivery_label:
         lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} ₽")
 
@@ -443,12 +548,14 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
 
     items_total = sum(i["price"] * i["quantity"] for i in resolved)
     draft = OrderDraft(items=resolved, items_total=items_total, stage="awaiting_delivery")
+    upsell_line = _offer_upsell(draft, catalog)
     await state.set_draft(peer_id, draft)
 
     lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} ₽" for i in resolved]
     result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} ₽"
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
+    result += upsell_line
     # Пункт выдачи называем первым и объясняем почему: клиенту проще
     # согласиться на вариант, который уже предложен, чем выбирать из списка.
     # Первым идёт Ozon: на живом расчёте он вышел 121 руб против 397 у
@@ -756,6 +863,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
+    free_note = _apply_free_delivery(draft)
     await state.set_draft(peer_id, draft)
 
     total = draft.items_total + draft.delivery_cost
@@ -776,6 +884,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     head += f"Состав заказа (перечисли клиенту названия и количество, а не "
     head += f"только сумму): {items_line} — {draft.items_total} ₽\n"
     head += f"Итого с доставкой: {total} ₽\n"
+    head += free_note
 
     # Формулировку отдаём модели: с очередью второй заход к Claude перестал
     # быть роскошью, а живой текст клиенту приятнее нашего шаблона. Пока
@@ -1249,6 +1358,81 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     )
 
 
+async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
+    """Дополнить состав черновика — минимальный путь для допродажи.
+
+    Раньше состав после propose_order поменять было нельзя вовсе: на этапе
+    доставки инструмента для этого не было, а propose_order там недоступен.
+    """
+    draft = await state.get_draft(peer_id)
+    if draft is None or draft.stage not in ("awaiting_delivery", "awaiting_confirmation"):
+        return "Нет черновика заказа. Если клиент хочет купить — вызови propose_order."
+    if draft.details.get("order_id"):
+        return (
+            "По этому заказу уже выставлялся счёт — состав так не меняют. Предложи "
+            "оформить дополнение отдельным заказом или вызови escalate_to_manager."
+        )
+
+    catalog = catalog_service.load_items()
+    added, unresolved = [], []
+    for wanted in tool_input.get("items", []):
+        match = _find_catalog_item(catalog, wanted.get("name", ""))
+        quantity = int(wanted.get("quantity") or 1)
+        if not match or not match.get("in_stock", True) or quantity < 1:
+            unresolved.append(wanted.get("name", ""))
+            continue
+        for row in draft.items:
+            if row["name"] == match["name"]:
+                row["quantity"] += quantity
+                break
+        else:
+            draft.items.append({"name": match["name"], "quantity": quantity, "price": match["price"]})
+        added.append(f"{match['name']} × {quantity}")
+
+    if not added:
+        return (
+            f"Не нашли в наличии: {', '.join(unresolved)}. Уточни у клиента название."
+        )
+
+    draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
+    recalc = ""
+    if draft.delivery_method:
+        # Вес и объявленная ценность выросли — прежняя цена доставки неверна.
+        previous = {
+            "method": draft.delivery_method,
+            "city": draft.details.get("address", ""),
+            "point": draft.details.get("ozon_point_address")
+            or (draft.delivery_label or "").split(": ", 1)[-1],
+        }
+        draft.delivery_method = None
+        draft.delivery_label = None
+        draft.delivery_cost = None
+        for key in ("carrier_delivery_cost", "ozon_point_id", "ozon_point_address", "delivery_point"):
+            draft.details.pop(key, None)
+        draft.stage = "awaiting_delivery"
+        recalc = (
+            "\nДоставку надо посчитать заново: вызови set_delivery_method с "
+            f"method={previous['method']}, address=«{previous['city']}»"
+            + (f", pickup_point=«{previous['point']}»" if previous["point"] else "")
+            + " — клиенту переспрашивать не нужно."
+        )
+    await state.set_draft(peer_id, draft)
+
+    lines = [f"{row['name']} x{row['quantity']} = {row['price'] * row['quantity']} ₽" for row in draft.items]
+    result = (
+        f"Добавлено: {', '.join(added)}. Состав теперь:\n" + "\n".join(lines)
+        + f"\nСумма товаров: {draft.items_total} ₽"
+    )
+    if unresolved:
+        result += f"\nНе нашли в наличии: {', '.join(unresolved)}."
+    gap = _threshold_gap(draft.items_total)
+    if gap is not None:
+        result += f"\nДо бесплатной доставки не хватает {templates.amount(gap)} ₽."
+    elif free_delivery_threshold() is not None:
+        result += "\nСумма товаров прошла порог — доставка будет бесплатной."
+    return result + recalc
+
+
 async def _execute_cancel_order(peer_id: int) -> ToolExecution:
     """Отмена по просьбе клиента: всё неоплаченное — сразу, без менеджера.
 
@@ -1297,6 +1481,8 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return await _execute_confirm_order(peer_id)
     if name == "set_recipient":
         return ToolExecution(await _execute_set_recipient(peer_id, tool_input))
+    if name == "add_to_order":
+        return ToolExecution(await _execute_add_to_order(peer_id, tool_input))
     if name == "cancel_order":
         return await _execute_cancel_order(peer_id)
     if name == "escalate_to_manager":

@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     handover_promise: str = "в течение 1–2 дней"
     handover_days: int = 2
 
+    # Порог бесплатной доставки по сумме товаров, в рублях. Пусто — порога
+    # нет. Строкой, а не числом: пустая переменная окружения иначе роняла бы
+    # запуск на разборе настроек (так уже было с ADMIN_VK_ID).
+    free_delivery_threshold: str = ""
+
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.
     catalog_sheet_csv_url: str = ""
@@ -226,3 +231,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def free_delivery_threshold() -> float | None:
+    """Порог бесплатной доставки или None, если его нет или он записан криво."""
+    raw = (settings.free_delivery_threshold or "").strip().replace(" ", "").replace(",", ".")
+    try:
+        value = float(raw) if raw else 0.0
+    except ValueError:
+        return None
+    return value if value > 0 else None
