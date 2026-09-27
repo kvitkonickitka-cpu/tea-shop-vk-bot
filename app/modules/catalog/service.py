@@ -8,6 +8,12 @@ CATALOG_PATH = Path(__file__).parent / "catalog.json"
 
 
 def load_items() -> list[dict]:
+    """Ассортимент: из Google Таблицы, если она подключена и прочитана, иначе из образа."""
+    from app.modules.catalog import sheet
+
+    from_sheet = sheet.current_items()
+    if from_sheet is not None:
+        return from_sheet
     with CATALOG_PATH.open(encoding="utf-8") as f:
         return json.load(f)
 

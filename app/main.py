@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.api.health import router as health_router
 from app.api.internal import router as internal_router
@@ -10,6 +10,7 @@ from app.api.vk import router as vk_router
 from app.core import diagnostics
 from app.core.config import settings
 from app.core.database import init_models, is_available
+from app.modules.catalog import sheet as catalog_sheet
 
 logging.basicConfig(level=logging.INFO)
 # httpx на уровне INFO пишет полный адрес каждого запроса, а в адресе бывают
@@ -19,6 +20,17 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+
+
+@app.middleware("http")
+async def fresh_catalog(request: Request, call_next):
+    # Каталог из Google Таблицы кладёт в базу тик расписания; здесь каждый
+    # контейнер подтягивает его в память — не чаще раза в минуту. Путь
+    # сообщения клиента в Google не ходит: у вебхука ВК около восьми секунд.
+    await catalog_sheet.ensure_fresh()
+    return await call_next(request)
+
 
 app.include_router(health_router)
 app.include_router(internal_router)

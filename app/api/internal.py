@@ -10,7 +10,7 @@ from app.core import heartbeat, worktime
 from app.core.config import settings
 from app.messages import manager as manager_messages, templates
 from app.modules import events
-from app.modules.catalog import vk_market
+from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
 from app.modules.dialog import escalation_watch, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
@@ -130,6 +130,10 @@ async def _run_scheduled() -> dict:
     result["open_questions"] = await _run_task(
         "Вопросы без ответа", escalation_watch.check_open_questions()
     )
+
+    # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
+    # каталог Ozon забирает весь остаток бюджета.
+    result["catalog_sheet"] = await _run_task("Каталог из таблицы", catalog_sheet.refresh())
 
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
@@ -421,6 +425,32 @@ async def probe_vk_market(request: Request):
         "Витрина ВК: товаров %s, получено %s",
         result.get("всего товаров в магазине"),
         result.get("получено за один запрос"),
+    )
+    return result
+
+
+@router.post("/internal/catalog/sheet")
+async def catalog_from_sheet(request: Request):
+    """Прочитать Google Таблицу каталога сейчас, не дожидаясь тика.
+
+        scripts/api.sh catalog/sheet
+
+    Отвечает, применилась ли таблица, и если нет — какие строки с ошибками.
+    Заодно показывает, что бот продаёт после чтения.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    result = await catalog_sheet.refresh(force=True)
+    from app.modules.catalog import service as catalog_service
+
+    result["бот продаёт"] = [
+        f"{item['name']} — {item['price']} руб."
+        + ("" if item.get("in_stock", True) else " (нет в наличии)")
+        + (f", GTIN {item['gtin']}" if item.get("gtin") else "")
+        for item in catalog_service.load_items()
+    ]
+    result["источник"] = (
+        "Google Таблица" if catalog_sheet.current_items() is not None else "catalog.json в образе"
     )
     return result
 
