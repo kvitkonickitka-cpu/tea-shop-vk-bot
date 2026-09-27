@@ -38,6 +38,8 @@ HANDED_OVER = "handed_over"
 DELIVERED = "delivered"
 NOT_DELIVERED = "not_delivered"
 DRAFT_NUDGE = "draft_nudge_sent"
+AT_PICKUP = "at_pickup_point"
+PICKUP_EXPIRING = "pickup_expiring"
 
 
 def amount(value) -> str:
@@ -46,6 +48,17 @@ def amount(value) -> str:
         return f"{float(value):g}"
     except (TypeError, ValueError):
         return str(value)
+
+
+_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def day_month(day) -> str:
+    """«5 октября» — дата без года: срок хранения всегда в ближайшие дни."""
+    return f"{day.day} {_MONTHS[day.month - 1]}"
 
 
 def composition(items: list[dict]) -> str:
@@ -285,6 +298,35 @@ def delivered(order, *, receipt_email: str = "") -> str:
         )
     lines.append("Будет здорово, если напишете, как вам чай.")
     return "\n".join(lines)
+
+
+def at_pickup_point(order, *, carrier: str, address: str = "", storage_until=None,
+                    postamat: bool = False) -> str:
+    """3.16 / 3.17. Посылка ждёт в пункте выдачи.
+
+    «Хранится до» — только если перевозчик отдал дату: придуманный срок
+    хуже никакого. Код получения у Ozon — в приложении, у СДЭКа — в SMS.
+    """
+    place = f"в постамате {carrier}" if postamat else f"в пункте выдачи {carrier}"
+    head = f"Посылка по заказу №{order.id} ждёт вас {place}" + (f": {address}." if address else ".")
+    storage = f"Хранится до {day_month(storage_until)}." if storage_until else ""
+    if carrier == "Ozon":
+        lines = [head, "Код для получения — в приложении Ozon, в разделе заказов.", storage]
+    else:
+        lines = [
+            head, storage,
+            f"Как получить, {carrier} сообщит в SMS. Если что-то пойдёт не так — пишите сюда.",
+        ]
+    return "\n".join(line for line in lines if line)
+
+
+def pickup_expiring(order, storage_until) -> str:
+    """3.18. Срок хранения заканчивается — за день до него."""
+    return (
+        f"Посылка по заказу №{order.id} ждёт в пункте выдачи до {day_month(storage_until)}. "
+        "После этого её вернут нам — заберите, пожалуйста, до этой даты 🙏\n"
+        "Если не успеваете — напишите, подскажем, что можно сделать."
+    )
 
 
 def not_delivered(order) -> str:

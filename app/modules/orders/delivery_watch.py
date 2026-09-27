@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, not_, or_, select
 
+from app.core import worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages import client as client_messages, templates
@@ -45,6 +46,11 @@ _CDEK_NOT_YET = {"CREATED", "ACCEPTED", "REMOVED", "INVALID"}
 _CDEK_DELIVERED = {"DELIVERED", "POSTOMAT_RECEIVED"}
 _CDEK_NOT_DELIVERED = {"NOT_DELIVERED"}
 _CDEK_TROUBLE = {"REMOVED", "INVALID"}
+# Посылка ждёт клиента: «Принят на склад до востребования» (пункт выдачи) и
+# «Заложен в постамат». Код пункта — из официального SDK СДЭКа
+# (cdek-it/sdk2.0, Constants.php); постамата в SDK нет, он из протокола.
+_CDEK_AT_PICKUP = {"ACCEPTED_AT_PICK_UP_POINT", "POSTOMAT_POSTED"}
+_CDEK_POSTAMAT = {"POSTOMAT_POSTED"}
 
 # Ozon Доставка: статусы отправления из спецификации Delivery API.
 _OZON_WITH_CARRIER = {
@@ -52,6 +58,19 @@ _OZON_WITH_CARRIER = {
     "delivered",
 }
 _OZON_TROUBLE = {"forming_failed", "not_accepted_to_delivery"}
+_OZON_AT_PICKUP = "in_delivery_point"
+
+# Где перевозчик мог бы отдать дату окончания хранения. Ни в SDK СДЭКа, ни в
+# известной нам части Delivery API Ozon такого поля не нашлось, поэтому
+# смотрим по возможным именам, а при первой посылке в пункте пишем в лог,
+# какие поля пришли на самом деле, — по нему список и уточним. Нашлось —
+# «Хранится до» в сообщении и напоминание за день; нет — ни того, ни другого.
+_STORAGE_KEYS = (
+    "keep_free_until", "storage_date_end", "storage_end_date", "storage_until",
+    "storage_expiration_date", "storage_expired_at", "shelf_life_date",
+    "pickup_deadline", "storage_deadline",
+)
+_STORAGE_HINTS = ("stor", "keep", "until", "expir", "deadline", "shelf")
 # Заказа нет в СДЭКе вовсе — такой больше не опрашиваем.
 CDEK_GONE = "СДЭК: заказ не найден (удалён в кабинете?)"
 # Отправление Ozon отменено до передачи — тоже конец: посылка никуда не
@@ -85,6 +104,14 @@ class Observation:
     # отметка стояла их временем, а не временем опроса.
     handed_over_at: datetime | None = None
     finished_at: datetime | None = None
+    # Посылка ждёт клиента в пункте выдачи или постамате.
+    at_pickup: bool = False
+    postamat: bool = False
+    at_pickup_at: datetime | None = None
+    storage_until: date | None = None
+    # Какие поля ответа похожи на срок хранения — для лога, без данных
+    # клиента.
+    storage_fields: str = ""
 
 
 def _parse_time(raw) -> datetime | None:
@@ -99,6 +126,37 @@ def _parse_time(raw) -> datetime | None:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _storage_date(raw) -> date | None:
+    moment = _parse_time(raw)
+    if moment is not None:
+        # Дата у перевозчика — местная, но до дня: переводим в Москву, чтобы
+        # «до 5 октября» не съехало на 4-е из-за UTC.
+        return worktime.to_msk(moment).date() if "T" in str(raw) else moment.date()
+    return None
+
+
+def _find_storage(data: dict) -> tuple[date | None, str]:
+    """Срок хранения из ответа перевозчика и какие похожие поля там были."""
+    found, seen = None, []
+
+    def walk(node, depth: int, path: str) -> None:
+        nonlocal found
+        if not isinstance(node, dict) or depth > 2:
+            return
+        for key, value in node.items():
+            name = f"{path}{key}"
+            if isinstance(value, dict):
+                walk(value, depth + 1, f"{name}.")
+                continue
+            if any(hint in str(key).lower() for hint in _STORAGE_HINTS):
+                seen.append(f"{name}={str(value)[:40]}")
+            if found is None and key in _STORAGE_KEYS:
+                found = _storage_date(value)
+
+    walk(data, 0, "")
+    return found, ", ".join(seen)
 
 
 def read_cdek(data: dict) -> Observation:
@@ -116,7 +174,15 @@ def read_cdek(data: dict) -> Observation:
         times = [t for t in times if t is not None]
         return min(times) if times else None
 
+    finished = bool(codes & (_CDEK_DELIVERED | _CDEK_NOT_DELIVERED))
+    at_pickup = bool(codes & _CDEK_AT_PICKUP) and not finished
+    storage_until, storage_fields = _find_storage(entity) if at_pickup else (None, "")
     return Observation(
+        at_pickup=at_pickup,
+        postamat=bool(codes & _CDEK_POSTAMAT),
+        at_pickup_at=first_time(lambda code: code in _CDEK_AT_PICKUP),
+        storage_until=storage_until,
+        storage_fields=storage_fields,
         handed_over_at=first_time(lambda code: code and code not in _CDEK_NOT_YET),
         finished_at=first_time(lambda code: code in _CDEK_DELIVERED | _CDEK_NOT_DELIVERED),
         status=f"СДЭК: {latest.get('name') or latest_code or 'нет статуса'}"
@@ -133,7 +199,13 @@ def read_ozon(info: dict, *, handed_over: bool) -> Observation:
     status = str(info.get("status") or "")
     canceled = status == "canceled"
     changed = _parse_time(info.get("status_changed_at"))
+    at_pickup = status == _OZON_AT_PICKUP
+    storage_until, storage_fields = _find_storage(info) if at_pickup else (None, "")
     return Observation(
+        at_pickup=at_pickup,
+        at_pickup_at=changed if at_pickup else None,
+        storage_until=storage_until,
+        storage_fields=storage_fields,
         handed_over_at=changed if status in _OZON_WITH_CARRIER else None,
         finished_at=changed if status == "delivered" or (canceled and handed_over) else None,
         status=f"Ozon: {status or 'нет статуса'}",
@@ -210,6 +282,11 @@ async def _save(order: Order, observation: Observation | None, now: datetime) ->
                 # Номер накладной нужен клиенту в новости о передаче, а та
                 # может уйти утром, когда ответа СДЭКа под рукой уже нет.
                 row.details = {**(row.details or {}), "cdek_number": observation.cdek_number}
+            if observation.storage_until and row.storage_until != observation.storage_until:
+                # Срок могли продлить — берём последний, что сказал перевозчик.
+                row.storage_until = observation.storage_until
+            if observation.postamat and not (row.details or {}).get("postamat"):
+                row.details = {**(row.details or {}), "postamat": True}
         await session.commit()
 
 
@@ -217,7 +294,7 @@ async def check_deliveries(now: datetime | None = None) -> dict:
     """Спросить перевозчиков о посылках в пути и отметить события."""
     result = {
         "checked": 0, "handed_over": 0, "delivered": 0, "not_delivered": 0,
-        "trouble": 0, "failed": 0, "told": 0,
+        "trouble": 0, "failed": 0, "told": 0, "at_pickup": 0,
     }
     try:
         get_session_factory()
@@ -255,6 +332,19 @@ async def check_deliveries(now: datetime | None = None) -> dict:
             result["trouble"] += 1
             await order_chat.send(order, templates.manager_carrier_trouble(order, observation.status))
 
+        # «В пункте выдачи» раньше «передан»: если опрос застал оба сразу,
+        # клиент получает одно сообщение — что посылка ждёт его, — а не два
+        # подряд. Отметку передачи событие ставит само.
+        if observation.at_pickup and order.at_pickup_at is None:
+            logger.info(
+                "Заказ %s: посылка в пункте выдачи; поля про хранение: %s",
+                order.id, observation.storage_fields or "нет",
+            )
+            if await delivery_events.record(
+                order.id, delivery_events.AT_PICKUP, source=delivery_events.SOURCE_CARRIER,
+                at=observation.at_pickup_at,
+            ):
+                result["at_pickup"] += 1
         if observation.with_carrier and order.handed_over_at is None:
             if await delivery_events.record(
                 order.id, delivery_events.HANDED_OVER, source=delivery_events.SOURCE_CARRIER,
@@ -275,6 +365,7 @@ async def check_deliveries(now: datetime | None = None) -> dict:
                 result["not_delivered"] += 1
 
     result["told"] = await delivery_events.tell_pending_clients(now)
+    result["storage_reminders"] = await delivery_events.remind_storage_ending(now)
     result["not_handed_over"] = await report_not_handed_over(now)
     return result
 

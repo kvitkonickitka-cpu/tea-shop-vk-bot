@@ -103,6 +103,8 @@ _MISSING_COLUMNS = (
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS settlement_note VARCHAR",
     # Продающая часть: когда пришли деньги, «в пункте выдачи», срок хранения.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS at_pickup_at TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS storage_until DATE",
 )
 
 

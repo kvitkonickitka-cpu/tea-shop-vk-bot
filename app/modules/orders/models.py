@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -63,6 +63,13 @@ class Order(Base):
     not_delivered_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Посылка ждёт в пункте выдачи или постамате — тоже событие, один раз.
+    # И до какого дня её там держат: только если перевозчик дату отдал, свою
+    # не придумываем — напоминание с неверной датой хуже никакого.
+    at_pickup_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    storage_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     # Сборка со сканированием кодов маркировки: когда и кто нажал «Собрано».
     # После отметки коды закреплены за заказом и уходят в закрывающий чек.
     packed_at: Mapped[Optional[datetime]] = mapped_column(
