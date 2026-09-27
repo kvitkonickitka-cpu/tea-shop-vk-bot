@@ -70,7 +70,7 @@ async def build_catalog_context() -> str:
         if not item.get("in_stock", True):
             continue
 
-        line = f"- {item['name']} ({item['price']} руб."
+        line = f"- {item['name']} ({item['price']} ₽"
         package_sizes = item.get("package_sizes")
         if package_sizes:
             line += f", упаковки: {', '.join(package_sizes)}"

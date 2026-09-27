@@ -42,6 +42,9 @@ class Order(Base):
     # нет, и без этой копии заводить его было бы нечем.
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Когда пришли деньги. Ставится вместе с `payment_status = succeeded`, один
+    # раз. От него считаются обещанный срок сдачи перевозчику и чек по 54-ФЗ.
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Судьба посылки у перевозчика. Отметки ставятся один раз, первым, кто
     # узнал: опросом перевозчика или ручной командой. По ним же идёт

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from app.core.config import settings
 from app.modules.delivery import cdek_client, ozon_client
-from app.messages import manager as manager_messages
+from app.messages import manager as manager_messages, templates
 from app.modules.dialog import vk_client
 
 logger = logging.getLogger(__name__)
@@ -45,17 +45,15 @@ def weight_grams(items: list[dict]) -> int:
     return settings.cdek_default_package_weight_grams * quantity
 
 
-async def _warn_manager(peer_id: int, carrier: str) -> None:
-    text = (
-        f"⚠️ Заказ оплачен, но в {carrier} не уехал — завести руками.\n"
-        f"Диалог: {vk_client.dialog_link(peer_id)}"
-    )
+async def _warn_manager(peer_id: int, carrier: str, order_id=None) -> None:
+    text = templates.manager_carrier_failed(order_id, carrier, vk_client.dialog_link(peer_id))
     # Через очередь: оплаченный заказ, о котором менеджер не узнал, — это
     # посылка, которую никто не отправит. Потерять такое уведомление из-за
     # таймаута телеграма нельзя.
     await manager_messages.notify(
         manager_messages.CARRIER_FAILED,
         text,
+        order_id=order_id,
         peer_id=peer_id,
         chat_id=settings.telegram_orders_chat_id or None,
     )
@@ -70,24 +68,29 @@ async def register(
     items_total: float,
     delivery_cost: float | None = None,
     order_key: str = "",
+    order_id: int | None = None,
 ) -> Registered:
     """Завести отправление у того перевозчика, которого выбрал клиент."""
     details = details or {}
     number = order_key or f"vk{peer_id}-{int(time.time())}"
 
     if delivery_method in CDEK_METHODS:
-        return Registered(cdek_uuid=await _in_cdek(peer_id, number, items, details))
+        return Registered(
+            cdek_uuid=await _in_cdek(peer_id, number, items, details, order_id)
+        )
     if delivery_method in OZON_METHODS:
         return Registered(
             ozon_posting=await _in_ozon(
-                peer_id, number, items, details, items_total, delivery_cost
+                peer_id, number, items, details, items_total, delivery_cost, order_id
             )
         )
     # Способ без перевозчика — заводить нечего, и это не ошибка.
     return Registered()
 
 
-async def _in_cdek(peer_id: int, number: str, items: list[dict], details: dict) -> str | None:
+async def _in_cdek(
+    peer_id: int, number: str, items: list[dict], details: dict, order_id: int | None = None
+) -> str | None:
     try:
         registered = await cdek_client.register_order(
             number=number,
@@ -102,7 +105,7 @@ async def _in_cdek(peer_id: int, number: str, items: list[dict], details: dict) 
         )
     except Exception:
         logger.exception("Не завели заказ в СДЭКе для peer_id=%s", peer_id)
-        await _warn_manager(peer_id, "СДЭК")
+        await _warn_manager(peer_id, "СДЭК", order_id)
         return None
 
     logger.info("Заказ %s заведён в СДЭКе: uuid=%s", number, registered.uuid)
@@ -116,6 +119,7 @@ async def _in_ozon(
     details: dict,
     items_total: float,
     delivery_cost: float | None,
+    order_id: int | None = None,
 ) -> str | None:
     try:
         posting = await ozon_client.create_order(
@@ -133,7 +137,7 @@ async def _in_ozon(
         )
     except Exception:
         logger.exception("Не завели заказ в Ozon для peer_id=%s", peer_id)
-        await _warn_manager(peer_id, "Ozon")
+        await _warn_manager(peer_id, "Ozon", order_id)
         return None
 
     # Цену сверяем с тем, что назвали клиенту: Ozon считает заново на

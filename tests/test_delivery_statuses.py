@@ -115,7 +115,7 @@ async def test_watch_walks_the_parcel(clean, world, monkeypatch):
 
     first = await delivery_watch.check_deliveries(DAY)
     assert first["handed_over"] == 1
-    assert "принята СДЭКом" in world["client"][-1]
+    assert "передана в СДЭК" in world["client"][-1]
     assert "1100285492" in world["client"][-1]
 
     # Через час — вручено.

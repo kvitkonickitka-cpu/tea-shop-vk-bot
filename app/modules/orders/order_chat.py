@@ -14,6 +14,7 @@ import logging
 from app.core.config import settings
 from app.messages import manager as manager_messages
 from app.modules.dialog import vk_client
+from app.messages.templates import amount
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -41,12 +42,12 @@ def card(order: Order, cdek_number: str | None = None) -> str:
     lines = [f"🧾 <b>Заказ №{order.id}</b>"]
     for item in order.items or []:
         total = item.get("price", 0) * item.get("quantity", 1)
-        lines.append(f"{item.get('name', 'товар')} × {item.get('quantity', 1)} — {total} руб.")
+        lines.append(f"{item.get('name', 'товар')} × {item.get('quantity', 1)} — {amount(total)} ₽")
 
     delivery = DELIVERY_LABELS.get(order.delivery_method or "", order.delivery_method or "—")
     lines.append(
-        f"Товары {order.items_total} руб. + доставка {order.delivery_cost} руб. "
-        f"= <b>{order.total} руб.</b>"
+        f"Товары {amount(order.items_total)} ₽ + доставка {amount(order.delivery_cost or 0)} ₽ "
+        f"= <b>{amount(order.total)} ₽</b>"
     )
     lines.append(f"Доставка: {delivery}")
     if cdek_number:

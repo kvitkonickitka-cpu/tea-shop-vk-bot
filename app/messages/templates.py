@@ -9,7 +9,7 @@
 
 - клиент получает следствие и что делать дальше, а не диагностику. Код
   ошибки перевозчика, статус чека у ЮKassa и номер заявки — менеджеру;
-- сумма без хвоста «.0»: 917 руб., а не 917.0;
+- сумма без хвоста «.0» и со знаком рубля: 917 ₽, а не 917.0 руб.;
 - никаких обещаний, которых мы не контролируем: срок зачисления возврата
   зависит от банка, и так и написано.
 """
@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from app.core import worktime
+from app.core.config import settings
 
 # Типы событий: они же ключи журнала отправок, поэтому строки постоянные.
 PAID = "paid"
@@ -71,32 +72,63 @@ def receipt_destination(email: str, phone: str) -> str:
 
 
 def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bool = False) -> str:
+    """Оплата получена. Посылка в этот момент ещё не собрана — так и говорим.
+
+    Раньше номер отправления Ozon подавался так, будто посылка уже едет, а
+    СДЭКу «передаём посылку» писалось, когда её никто ещё не собирал.
+    """
     lines = [
         "✅ Оплата получена, спасибо!",
-        f"Заказ №{order.id} на {amount(order.total)} руб.",
+        f"Заказ №{order.id} на {amount(order.total)} ₽.",
         f"Чек придёт на {receipt_destination(email, phone)}.",
     ]
+    promise = settings.handover_promise
     if posting:
-        # Клиенту важно не столько само отправление, сколько что делать
-        # дальше: номер он увидит в приложении Ozon и там же будет следить
-        # за доставкой, без нас и без менеджера.
         lines.append(
-            f"Отправление Ozon: {posting} — по нему посылку видно в приложении "
-            "и на сайте Ozon, там же отслеживается доставка."
+            f"Соберём посылку и сдадим в Ozon {promise}. Номер отправления: "
+            f"{posting}. Напишем, когда посылка поедет и когда приедет в пункт выдачи."
         )
     elif cdek:
-        lines.append("Передаём посылку в СДЭК. Трек-номер пришлём сюда, как только СДЭК его выдаст.")
+        lines.append(
+            f"Соберём посылку и сдадим в СДЭК {promise}. Трек-номер пришлём сюда, "
+            "как только оформим отправление."
+        )
     else:
-        lines.append("Заказ передан в работу, менеджер свяжется с вами по отправке.")
+        lines.append(
+            "Заказ в работе. Для передачи в доставку нужно участие менеджера — "
+            "он напишет вам здесь."
+        )
+    return "\n".join(lines)
+
+
+def invoice_ready(*, total, link: str, email: str = "", phone: str = "") -> str:
+    """Счёт выставлен — ответ на «да» в диалоге.
+
+    Не «заказ оформлен»: до оплаты клиент читал это как «всё готово». Сумма
+    рядом со ссылкой снимает вопрос «а сколько там», срок ссылки задаёт
+    ожидание, ссылка на условия — то, что покупатель принимает, когда платит.
+    """
+    lines = [
+        f"Счёт на {amount(total)} ₽ готов: {link}",
+        f"Ссылка действует {settings.payment_invoice_ttl_minutes} минут. После "
+        f"оплаты пришлём чек на {receipt_destination(email, phone)} и сразу "
+        "передадим заказ в доставку.",
+    ]
+    if settings.conditions_url:
+        lines.append(f"Условия покупки, доставки и возврата: {settings.conditions_url}")
     return "\n".join(lines)
 
 
 def cdek_track(order, number: str, tracking_url: str) -> str:
-    # «Оформлена», а не «передана»: СДЭК выдаёт накладную при регистрации,
-    # а посылку мы сдаём в отделение позже. О приёмке — отдельная новость.
+    # Накладная — это оформление, а не передача: СДЭК выдаёт номер через
+    # минуты после оплаты, а посылка в это время лежит у нас. Прежнее
+    # «передана в СДЭК» противоречило треку со статусом «заказ создан».
     return (
-        f"Посылка по заказу №{order.id} оформлена в СДЭКе.\n"
-        f"Трек-номер: {number}\nОтследить: {tracking_url}"
+        f"Оформили отправление в СДЭК по заказу №{order.id}.\n"
+        f"Трек-номер: {number}\n"
+        "Пока по треку будет статус «заказ создан» — посылку ещё собираем. "
+        "Напишем, когда сдадим её в СДЭК.\n"
+        f"Отследить: {tracking_url}"
     )
 
 
@@ -112,9 +144,10 @@ def shipment_trouble(order) -> str:
 def payment_declined(order) -> str:
     """Банк или платёжная система отказали."""
     return (
-        f"Платёж по заказу №{order.id} на {amount(order.total)} руб. не прошёл.\n"
-        "Можно попробовать ещё раз или другой картой — напишите сюда, пришлю "
-        "новую ссылку 🙏"
+        f"Платёж по заказу №{order.id} на {amount(order.total)} ₽ не прошёл. Если "
+        "банк успел заблокировать сумму на карте, она вернётся автоматически.\n"
+        "Можно попробовать ещё раз, другой картой или другим способом — напишите "
+        "сюда, пришлю новую ссылку 🙏"
     )
 
 
@@ -137,8 +170,8 @@ def double_payment(order, refunded_amount) -> str:
     return (
         f"По заказу №{order.id} пришла повторная оплата — вернули "
         f"{amount(refunded_amount)} ₽.\n"
-        "Заказ оплачен один раз и уже в работе, ничего делать не нужно. "
-        "Срок зачисления возврата зависит от вашего банка."
+        "Заказ оплачен один раз и уже в работе, ничего делать не нужно. Срок "
+        "зачисления возврата зависит от банка, чек возврата придёт на ту же почту."
     )
 
 
@@ -168,26 +201,32 @@ def canceled_paid_stuck(order) -> str:
 
 
 def refunded(order, refund_amount) -> str:
+    # Чек возврата приходит в обоих случаях: при полном возврате ЮKassa
+    # собирает его сама по чеку платежа, при частичном мы передаём `receipt`
+    # (`yookassa_client.create_refund(full=False)`).
     return (
         f"Оформили возврат {amount(refund_amount)} ₽ по заказу №{order.id}.\n"
-        "Сроки зачисления зависят от вашего банка."
+        "Деньги вернутся тем же способом, которым вы платили; срок зачисления "
+        "зависит от банка.\n"
+        "Чек возврата придёт на почту, которую вы указывали при заказе."
     )
 
 
 def receipt_delayed(order, *, email: str = "", phone: str = "") -> str:
     return (
-        f"Чек по заказу №{order.id} пока не пришёл — задержка на стороне кассы.\n"
-        f"Мы уже разбираемся, чек придёт на {receipt_destination(email, phone)}."
+        f"Чек по заказу №{order.id} ещё не сформировался — задержка на стороне "
+        f"кассы. С оплатой всё в порядке, чек придёт на "
+        f"{receipt_destination(email, phone)}."
     )
 
 
 def reminder_1(order, link: str) -> str:
     """Мягкое напоминание про выставленный счёт."""
     return (
-        f"Напоминаю про заказ №{order.id} на {amount(order.total)} руб. — "
-        "он ждёт оплаты 🙂\n"
+        f"Заказ №{order.id} на {amount(order.total)} ₽ ждёт оплаты 🙂\n"
         f"Оплатить: {link}\n"
-        "Если что-то нужно поменять или передумали — просто напишите."
+        "Если с оплатой что-то не получается или хотите поменять заказ — просто "
+        "напишите."
     )
 
 
@@ -206,14 +245,18 @@ def reminder_2(order, link: str, expires_at) -> str:
 
 
 def handed_over(order, *, carrier: str, number: str = "", tracking_url: str = "") -> str:
-    """Посылку принял перевозчик — не «зарегистрировали», а физически забрал."""
-    lines = [f"📦 Посылка по заказу №{order.id} принята {carrier} и уже в пути."]
-    if number and tracking_url:
-        lines.append(f"Трек-номер: {number}\nОтследить: {tracking_url}")
+    """Посылку принял перевозчик — не «зарегистрировали», а физически забрал.
+
+    `carrier` — «СДЭК» или «Ozon»: «передана в СДЭК». У Ozon публичной
+    страницы отслеживания нет, за отправлением следят в приложении.
+    """
+    lines = [f"Посылка по заказу №{order.id} передана в {carrier} и едет к вам 🚚"]
+    if number:
+        lines.append(f"Трек-номер: {number}")
+    if tracking_url:
+        lines.append(f"Отследить: {tracking_url}")
     elif number:
-        lines.append(
-            f"Отправление: {number} — за ним удобно следить в приложении Ozon."
-        )
+        lines.append("Отследить: в приложении Ozon, в разделе заказов")
     return "\n".join(lines)
 
 
@@ -253,18 +296,20 @@ def escalation_waiting() -> str:
 def manager_unpaid(order, payment_status: str, minutes: int) -> str:
     return (
         f"⚠️ Заказ №{order.id}: оплата так и не пришла\n"
-        f"Прошло больше {minutes} мин — срок ссылки ЮKassa, — платёж в "
-        f"статусе «{payment_status}». Счёт закрыт, черновик возвращён "
-        "клиенту: он может оформить заново одним «да»."
+        f"Прошло больше {minutes} минут — срок ссылки ЮKassa, платёж в статусе "
+        f"«{payment_status}». Клиенту написали, что срок истёк: он может оформить "
+        "заново одним «да». Писать ему самому не нужно."
     )
 
 
-def manager_receipt_stuck(order, receipt_status: str, overdue: bool) -> str:
+def manager_receipt_stuck(order, receipt_status: str) -> str:
+    # Единственное уведомление с прямым риском штрафа: по 54-ФЗ чек нужно
+    # отправить покупателю не позднее следующего рабочего дня после оплаты.
     return (
-        f"⚠️ Заказ №{order.id}: чек не зарегистрирован\n"
-        f"Статус чека «{receipt_status or 'неизвестен'}» "
-        f"{'больше трёх суток' if overdue else 'отклонён'}. "
-        "По документации ЮKassa — обращаться в их поддержку."
+        f"🚨 Заказ №{order.id}: чек не зарегистрирован\n"
+        f"Статус чека — «{receipt_status or 'неизвестен'}». По 54-ФЗ чек нужно "
+        "отправить покупателю не позднее следующего рабочего дня после оплаты — "
+        "срок уже на пределе. Сегодня же напишите в поддержку ЮKassa."
     )
 
 
@@ -274,6 +319,35 @@ def manager_client_unreachable(order, event_type: str, error: str) -> str:
         f"⚠️ Заказ №{order.id}: сообщение клиенту не доставлено\n"
         f"Событие «{event_type}». ВК ответил: {error}\n"
         "Скажите клиенту сами — бот повторять не будет."
+    )
+
+
+def manager_question(question: str, reason: str, link: str) -> str:
+    """Вопрос клиента передан менеджеру. `question` и `reason` уже экранированы."""
+    return (
+        f"❓ <b>Вопрос клиента</b>\n{question}\n\n"
+        f"<b>Почему передано</b>\n{reason}\n\n{link}"
+    )
+
+
+def manager_carrier_failed(order_id, carrier: str, link: str) -> str:
+    """Оплаченный заказ не завёлся у перевозчика."""
+    number = f"№{order_id} " if order_id else ""
+    return (
+        f"⚠️ Заказ {number}оплачен, но в {carrier} не уехал.\n"
+        "Деньги получены, клиенту написали, что менеджер свяжется. Заведите "
+        "отправление руками и пришлите клиенту трек.\n"
+        f"Диалог: {link}"
+    )
+
+
+def manager_not_handed_over(order, paid_at, carrier: str, link: str) -> str:
+    """Оплачен, а перевозчику не сдан дольше обещанного."""
+    return (
+        f"⏰ Заказ №{order.id} оплачен {worktime.to_msk(paid_at):%d.%m в %H:%M}, "
+        f"но ещё не сдан в {carrier}.\n"
+        f"Клиенту обещали сдать {settings.handover_promise}. Проверьте сборку.\n"
+        f"{link}"
     )
 
 
@@ -287,7 +361,7 @@ def manager_escalation_reping(question: str, reason: str, waited_minutes: int, l
 def manager_double_payment(order, payment, refund) -> str:
     return (
         f"↩️ <b>Заказ №{order.id}: повторная оплата возвращена</b>\n"
-        f"Платёж {payment.id} на {amount(payment.amount)} руб — возврат "
+        f"Платёж {payment.id} на {amount(payment.amount)} ₽ — возврат "
         f"{refund.id}, статус «{refund.status}».\n"
         "Заказ оплачен один раз, отправление в работе. Клиенту сказали."
     )
@@ -296,16 +370,17 @@ def manager_double_payment(order, payment, refund) -> str:
 def manager_double_payment_stuck(order, payment, error: str) -> str:
     return (
         f"🚨 <b>Заказ №{order.id}: повторная оплата НЕ возвращена</b>\n"
-        f"Платёж {payment.id} на {amount(payment.amount)} руб.\n"
+        f"Платёж {payment.id} на {amount(payment.amount)} ₽.\n"
         f"ЮKassa отказала: {error}\n"
-        "Вернуть вручную в кабинете ЮKassa — деньги клиента у нас."
+        "Верните вручную в кабинете ЮKassa — деньги клиента у нас, клиенту "
+        "обещали, что менеджер свяжется."
     )
 
 
 def manager_order_canceled(order) -> str:
     return (
         f"❌ <b>Заказ №{order.id} отменён клиентом</b>\n"
-        f"На {amount(order.total)} руб., не оплачен, отправление не заводили. "
+        f"На {amount(order.total)} ₽, не оплачен, отправление не заводили. "
         "Счёт закрыт; если клиент всё же заплатит по старой ссылке, деньги "
         "вернутся автоматически."
     )
@@ -314,7 +389,7 @@ def manager_order_canceled(order) -> str:
 def manager_canceled_paid(order, payment, refund) -> str:
     return (
         f"↩️ <b>Заказ №{order.id}: оплата отменённого заказа возвращена</b>\n"
-        f"Платёж {payment.id} на {amount(payment.amount)} руб — возврат "
+        f"Платёж {payment.id} на {amount(payment.amount)} ₽ — возврат "
         f"{refund.id}, статус «{refund.status}».\n"
         "Клиент отменил заказ до оплаты, отправление не заводили. Клиенту сказали."
     )
@@ -323,7 +398,7 @@ def manager_canceled_paid(order, payment, refund) -> str:
 def manager_canceled_paid_stuck(order, payment, error: str) -> str:
     return (
         f"🚨 <b>Заказ №{order.id}: оплата отменённого заказа НЕ возвращена</b>\n"
-        f"Платёж {payment.id} на {amount(payment.amount)} руб.\n"
+        f"Платёж {payment.id} на {amount(payment.amount)} ₽.\n"
         f"ЮKassa отказала: {error}\n"
         "Вернуть вручную в кабинете ЮKassa — деньги клиента у нас, "
         "отправление не заводили."

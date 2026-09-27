@@ -184,6 +184,7 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         items_total=float(order.items_total or 0),
         delivery_cost=float(order.delivery_cost or 0),
         order_key=(order.details or {}).get("order_key", ""),
+        order_id=order.id,
     )
 
     fields = {}
@@ -376,7 +377,7 @@ async def _on_refund(refund_id: str) -> dict:
         return {"возврат": refund.id, "действий": "нет, уже отмечен"}
 
     await orders_repository.set_state(order.id, status=STATUS_REFUNDED)
-    card = f"↩️ <b>Возврат {refund.amount} руб</b>\n" + order_chat.card(order)
+    card = f"↩️ <b>Возврат {templates.amount(refund.amount)} ₽</b>\n" + order_chat.card(order)
     if order.delivered_at is None:
         # Посылка не вручена — пачки не проданы и вернутся на полку (или не
         # уезжали вовсе). Коды снова в наличии, закрывающий чек не нужен.

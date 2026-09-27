@@ -52,7 +52,13 @@ OZON_POINTS_MAP_URL = "https://www.ozon.ru/geo/"
 # Последнее средство: модель не написала ни слова даже тогда, когда её
 # позвали без инструментов. Лучше нейтральная фраза, чем извинение за
 # несуществующую поломку.
-_NO_TEXT_FALLBACK = "Записала, спасибо! Подскажите, если нужно что-то поправить 🙏"
+# Уходит, когда ход упёрся в лимит, а модель не написала ни слова — то есть
+# действие клиента могло и не выполниться. Прежнее «Записала, спасибо!»
+# выдавало такой сбой за успех.
+_NO_TEXT_FALLBACK = (
+    "Не уверена, что правильно вас поняла. Напишите, пожалуйста, ещё раз, что "
+    "нужно сделать, — проверю 🙏"
+)
 
 # Сколько раз за ход модель может попросить инструменты. Круг был всего
 # один: второе обращение к Claude не помещалось в восемь секунд VK, и после
@@ -74,13 +80,17 @@ _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / 
 # одним текстом нельзя. Пока оплаты не было, инструкция говорила «ссылку
 # пришлёт менеджер»; кассу включили, а инструкция осталась — и модель могла
 # пообещать клиенту менеджера ровно перед тем, как бот сам выдаст ссылку.
-_PAYMENT_STEP_WITH_KASSA = (
-    "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
-    "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
-    "обещай. Чек придёт письмом на почту клиента — без почты счёт не "
-    "выставить. Посылка уезжает к перевозчику только после оплаты, поэтому "
-    "не говори, что заказ уже отправлен или передан в доставку."
-)
+def _payment_step_with_kassa() -> str:
+    # Срок ссылки — из настройки: перейдём на счета ЮKassa с другим сроком —
+    # текст поменяется сам.
+    return (
+        "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
+        "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
+        f"обещай. Ссылка действует {settings.payment_invoice_ttl_minutes} минут. "
+        "Чек об оплате придёт на почту клиента. Посылка уезжает к перевозчику "
+        "только после оплаты, поэтому не говори, что заказ уже отправлен или "
+        "передан в доставку."
+    )
 _PAYMENT_STEP_WITHOUT_KASSA = (
     "Ссылку на оплату бот не выставляет: её пришлёт менеджер, инструмент сам "
     "передаст ему заказ. Не обещай клиенту оплату «сейчас» и не придумывай ссылок."
@@ -106,7 +116,7 @@ def order_flow_prompt() -> str:
         .replace("{map_url}", CDEK_OFFICES_MAP_URL)
         .replace(
             "{payment_step}",
-            _PAYMENT_STEP_WITH_KASSA
+            _payment_step_with_kassa()
             if payment_service.is_enabled()
             else _PAYMENT_STEP_WITHOUT_KASSA,
         )
@@ -134,8 +144,11 @@ _OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russi
 # ключей в ревизии бот спрашивал бы у клиента почту, а оплату всё равно
 # уводил менеджеру. Так ошибка настройки становилась видна клиенту.
 _EMAIL_TOOL_HINT = (
-    "Вместе с ними спроси электронную почту — на неё придёт чек, без неё "
-    "оплату не выставить."
+    "Почта обязательна: без неё платёжная система не выставит счёт, потому что "
+    "чек об оплате отправляется только на почту. Спроси её вместе с ФИО и "
+    "телефоном и объясни, зачем она нужна. Если клиент отказывается — объясни "
+    "один раз; при повторном отказе вызови escalate_to_manager с причиной "
+    "«клиент не хочет давать почту для чека»."
     if payment_service.is_enabled()
     else ""
 )
@@ -219,22 +232,27 @@ TOOLS = [
     {
         "name": "set_recipient",
         "description": (
-            "Записать получателя заказа. Без ФИО и телефона отправление не "
-            "завести ни у СДЭКа, ни у Ozon. Спрашивай их после того, как "
-            "клиент выбрал доставку и пункт выдачи. "
+            "Записать получателя заказа и почту для чека. ФИО и телефон нужны, "
+            "чтобы завести отправление у СДЭКа и Ozon; почта нужна для чека об "
+            "оплате — без неё счёт не выставится. Спрашивай всё одним "
+            "сообщением после того, как клиент выбрал доставку и пункт выдачи. "
+            "Если инструмент вернул, что телефон или почта неверны или похожи на "
+            "опечатку, — передай это клиенту и попроси исправить. "
             + _EMAIL_TOOL_HINT
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "ФИО получателя"},
-                "phone": {"type": "string", "description": "Телефон получателя"},
+                "phone": {
+                    "type": "string",
+                    "description": "Телефон получателя, целиком, 11 цифр",
+                },
                 "email": {
                     "type": "string",
                     "description": (
-                        "Электронная почта клиента — на неё придёт чек. "
-                        "Спрашивай вместе с ФИО и телефоном и объясняй, что "
-                        "она нужна именно для чека."
+                        "Электронная почта клиента для чека — обязательная. "
+                        "Записывай ровно так, как написал клиент, не исправляй сама."
                     ),
                 },
             },
@@ -244,8 +262,9 @@ TOOLS = [
     {
         "name": "confirm_order",
         "description": (
-            "Зафиксировать согласие клиента оформить заказ, когда есть "
-            "черновик, ожидающий подтверждения, и клиент явно согласился."
+            "Зафиксировать согласие клиента оформить заказ: есть черновик, "
+            "ожидающий подтверждения, ты сверила с клиентом состав, доставку, "
+            "итог и данные получателя, и клиент явно согласился."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -358,10 +377,10 @@ def _describe_draft(draft: OrderDraft | None) -> str:
 
     lines = [f"Черновик заказа на этапе «{draft.stage}»:"]
     for item in draft.items:
-        lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} руб.")
-    lines.append(f"Сумма товаров: {draft.items_total} руб.")
+        lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} ₽")
+    lines.append(f"Сумма товаров: {draft.items_total} ₽")
     if draft.delivery_label:
-        lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} руб.")
+        lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} ₽")
 
     # Показываем, что записано на самом деле. Без этого модель судит по
     # собственной прошлой реплике: написала клиенту «получатель записан», а
@@ -426,8 +445,8 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     draft = OrderDraft(items=resolved, items_total=items_total, stage="awaiting_delivery")
     await state.set_draft(peer_id, draft)
 
-    lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} руб." for i in resolved]
-    result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} руб."
+    lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} ₽" for i in resolved]
+    result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} ₽"
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
     # Пункт выдачи называем первым и объясняем почему: клиенту проще
@@ -752,11 +771,11 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     # «каким-то» пунктом и выбранным вышла в рубль — мелочь, но клиент видит
     # два разных числа подряд и справедливо спрашивает, где потерялся рубль.
     fixed = "Предварительная стоимость доставки" if ozon_options else "Способ доставки зафиксирован"
-    head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} руб"
+    head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} ₽"
     head += f", срок {period}\n" if period else ".\n"
     head += f"Состав заказа (перечисли клиенту названия и количество, а не "
-    head += f"только сумму): {items_line} — {draft.items_total} руб.\n"
-    head += f"Итого с доставкой: {total} руб.\n"
+    head += f"только сумму): {items_line} — {draft.items_total} ₽\n"
+    head += f"Итого с доставкой: {total} ₽\n"
 
     # Формулировку отдаём модели: с очередью второй заход к Claude перестал
     # быть роскошью, а живой текст клиенту приятнее нашего шаблона. Пока
@@ -902,9 +921,9 @@ async def _escalate_for_payment(
     )
     total = draft.items_total + (draft.delivery_cost or 0)
     question = (
-        f"Заказ {'№' + str(order_id) if order_id else ''} на {total} руб. подтверждён, "
-        f"нужна ссылка на оплату. Состав: {items}. Доставка: "
-        f"{draft.delivery_label or '—'}."
+        f"Заказ {'№' + str(order_id) + ' ' if order_id else ''}на "
+        f"{templates.amount(total)} ₽ подтверждён клиентом, счёт не выставился. "
+        f"Состав: {items}. Доставка: {draft.delivery_label or '—'}."
     )
     if not reason:
         reason = (
@@ -1095,9 +1114,11 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
             f"ЮKassa не дала точного ответа, счёт мог создаться — проверить в "
             f"кабинете, прежде чем выставлять новый. {str(error)[:300]}",
         )
+        # «Сохранён», а не «подтверждён»: без счёта «подтверждён» звучит
+        # как «всё готово».
         reply = (
-            "Заказ подтверждён. Со ссылкой на оплату вышла заминка — менеджер "
-            "пришлёт её сам, я уже передала ему ваш заказ."
+            "Заказ сохранён, но ссылку на оплату сейчас выставить не получилось. "
+            "Менеджер пришлёт её сюда — я уже передала ему заказ."
         )
         return ToolExecution(reply, client_reply=reply)
     except Exception as error:
@@ -1107,8 +1128,8 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
             f"Счёт выставить не удалось: {type(error).__name__}: {str(error)[:300]}",
         )
         reply = (
-            "Заказ подтверждён, но выставить оплату не получилось — этим "
-            "займётся менеджер, я уже передала ему ваш заказ."
+            "Заказ сохранён, но выставить оплату не получилось. Менеджер пришлёт "
+            "ссылку сюда — я уже передала ему заказ."
         )
         return ToolExecution(reply, client_reply=reply)
 
@@ -1146,11 +1167,13 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
 
     await state.clear_draft(peer_id)
 
-    where = templates.receipt_destination(
-        draft.details.get("recipient_email", ""), draft.details.get("recipient_phone", "")
+    # Не «заказ оформлен»: до оплаты клиент читал это как «всё готово».
+    reply = templates.invoice_ready(
+        total=payment.amount or (draft.items_total + (draft.delivery_cost or 0)),
+        link=payment.confirmation_url,
+        email=draft.details.get("recipient_email", ""),
+        phone=draft.details.get("recipient_phone", ""),
     )
-    reply = f"Заказ оформлен. Оплатить: {payment.confirmation_url}"
-    reply += f"\nПосле оплаты пришлём чек на {where} и передадим заказ в доставку."
     return ToolExecution(reply, client_reply=reply)
 
 
@@ -1180,7 +1203,7 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
                 "клиенту, что менеджер подключится, и не повторяй это в "
                 "следующих ответах, если он сам не спросит."
             ),
-            client_reply="Менеджер уже знает про этот вопрос и подключится, как только освободится 🙏",
+            client_reply="Менеджер уже видит ваш вопрос и ответит здесь же 🙏",
         )
 
     question_raw = tool_input.get("question", "")
@@ -1188,7 +1211,7 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     question = html.escape(question_raw)
     reason = html.escape(reason_raw)
     dialog_link = vk_client.dialog_link(peer_id)
-    message = f"<b>Вопрос клиента</b>\n{question}\n\n<b>Почему эскалировано</b>\n{reason}\n\n{dialog_link}"
+    message = templates.manager_question(question, reason, dialog_link)
 
     # Сначала фиксируем эскалацию у себя — это быстро и надёжно, и именно
     # эта запись, а не уведомление, остаётся следом того, что вопрос передан.
@@ -1217,11 +1240,12 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
 
     return ToolExecution(
         tool_result=(
-            "Вопрос зафиксирован и передан менеджеру. Скажи клиенту, что уточнишь "
-            "и вернёшься с ответом — не упоминай менеджера как адресата для "
-            "обращения самого клиента, только что ты сам уточнишь и вернёшься."
+            "Вопрос зафиксирован и передан менеджеру. Скажи клиенту, что передала "
+            "вопрос и менеджер ответит здесь, в этом диалоге."
         ),
-        client_reply="Уточню это у менеджера и вернусь с ответом 🙏",
+        # «Вернусь с ответом» бот не выполняет — отвечает менеджер. Клиенту
+        # важнее знать, где ждать ответ.
+        client_reply="Передала ваш вопрос менеджеру — он ответит здесь, в этом диалоге 🙏",
     )
 
 

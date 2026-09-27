@@ -47,11 +47,12 @@ CDEK_TRACKING_URL = "https://www.cdek.ru/ru/tracking"
 
 
 def _carrier_name(order: Order) -> str:
+    """Перевозчик для «передана в …»."""
     if order.ozon_posting:
         return "Ozon"
     if order.cdek_uuid:
-        return "СДЭКом"
-    return "службой доставки"
+        return "СДЭК"
+    return "службу доставки"
 
 
 async def record(

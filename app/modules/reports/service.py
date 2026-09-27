@@ -154,7 +154,7 @@ def _build_transcript(conversation, messages, orders, escalations) -> str:
     if orders:
         for order in orders:
             items = ", ".join(f"{i.get('name')} x{i.get('quantity')}" for i in order.items)
-            lines.append(f"Оформлен заказ: {items}. Итого {order.total} руб.")
+            lines.append(f"Оформлен заказ: {items}. Итого {order.total} ₽")
     else:
         lines.append("Заказов не оформлено.")
 

@@ -19,13 +19,14 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, not_, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages import templates
+from app.messages import client as client_messages, templates
 from app.modules.delivery import cdek_client, ozon_client
-from app.modules.orders import cdek_watch, delivery_events, order_chat
+from app.modules.dialog import vk_client
+from app.modules.orders import cdek_watch, delivery_events, order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 from app.modules.payment import service as payment_service
 
@@ -274,4 +275,57 @@ async def check_deliveries(now: datetime | None = None) -> dict:
                 result["not_delivered"] += 1
 
     result["told"] = await delivery_events.tell_pending_clients(now)
+    result["not_handed_over"] = await report_not_handed_over(now)
     return result
+
+
+# Не сданные перевозчику заказы старше этого не ищем: это уже не «задержка
+# сборки», а история, которую менеджер знает и без нас.
+_HANDOVER_LOOK_BACK = timedelta(days=30)
+NOT_HANDED_OVER = "manager_not_handed_over"
+
+
+async def report_not_handed_over(now: datetime | None = None) -> int:
+    """Сказать менеджеру про оплаченный заказ, не сданный перевозчику в срок.
+
+    Клиенту в «Оплата получена» обещан срок сдачи (`handover_promise`), и
+    проверяем мы его же (`handover_days`). Один раз на заказ — журналом
+    «одно событие — одно сообщение».
+    """
+    now = now or datetime.now(timezone.utc)
+    deadline = now - timedelta(days=settings.handover_days)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        orders = (
+            await session.execute(
+                select(Order).where(
+                    Order.payment_status == orders_repository.PAID,
+                    or_(Order.cdek_uuid.is_not(None), Order.ozon_posting.is_not(None)),
+                    Order.handed_over_at.is_(None),
+                    Order.delivered_at.is_(None),
+                    Order.not_delivered_at.is_(None),
+                    Order.status.not_in(("refunded", "canceled")),
+                    or_(Order.carrier_status.is_(None), Order.carrier_status != CDEK_GONE),
+                    or_(Order.carrier_status.is_(None), Order.carrier_status != OZON_CANCELED),
+                    func.coalesce(Order.paid_at, Order.created_at) < deadline,
+                    Order.created_at > now - _HANDOVER_LOOK_BACK,
+                )
+            )
+        ).scalars().all()
+
+    reported = 0
+    for order in orders:
+        if not await client_messages.claim_once(
+            client_messages.order_ref(order.id), NOT_HANDED_OVER, order.peer_id
+        ):
+            continue
+        carrier = "Ozon" if order.ozon_posting else "СДЭК"
+        await order_chat.send(
+            order,
+            templates.manager_not_handed_over(
+                order, order.paid_at or order.created_at, carrier,
+                vk_client.dialog_link(order.peer_id),
+            ),
+        )
+        reported += 1
+    return reported

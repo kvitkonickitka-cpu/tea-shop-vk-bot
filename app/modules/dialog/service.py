@@ -104,7 +104,12 @@ async def handle_message_new(message: dict[str, Any]) -> None:
             reply = await orders_conversation.handle_turn(peer_id, text, attached)
         except Exception:
             logger.exception("Claude generation failed for peer_id=%s", peer_id)
-            reply = "Извините, сейчас не получается ответить. Мы скоро вернёмся с ответом."
+            # Не «скоро вернёмся с ответом»: механизма, который сам вернётся к
+            # клиенту после сбоя, нет — обещание было бы пустым.
+            reply = (
+                "Извините, у меня техническая заминка — ответить сейчас не "
+                "получается. Напишите, пожалуйста, ещё раз через пару минут."
+            )
 
         generated = time.monotonic()
         stage = "отправка в VK"
