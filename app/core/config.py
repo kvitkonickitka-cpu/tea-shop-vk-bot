@@ -178,6 +178,15 @@ class Settings(BaseSettings):
     # запуск на разборе настроек (так уже было с ADMIN_VK_ID).
     free_delivery_threshold: str = ""
 
+    # Продающие сообщения по своей инициативе: окно отправки по Москве.
+    # После 21:00 — только утром, с 10:00.
+    marketing_earliest_hour: int = 10
+    marketing_latest_hour: int = 21
+    # Брошенный черновик: сколько часов тишины после последней реплики бота и
+    # до какого возраста черновика ещё напоминаем.
+    draft_nudge_after_hours: float = 3
+    draft_nudge_max_age_hours: float = 48
+
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.
     catalog_sheet_csv_url: str = ""

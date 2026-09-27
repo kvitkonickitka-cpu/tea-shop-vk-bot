@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from app.core.database import get_session_factory
 from app.modules.orders.models import OrderDraftRow
@@ -49,6 +50,11 @@ async def get_draft(peer_id: int) -> OrderDraft | None:
 
 
 async def set_draft(peer_id: int, draft: OrderDraft) -> None:
+    # Когда клиент начал этот черновик. `updated_at` строки двигается с каждой
+    # правкой и для «черновику не больше 48 часов» не годится; новый
+    # черновик (propose_order) приходит с пустыми details и получает новое
+    # время — а с ним и право на своё напоминание.
+    draft.details.setdefault("started_at", datetime.now(timezone.utc).isoformat())
     try:
         session_factory = get_session_factory()
     except RuntimeError:

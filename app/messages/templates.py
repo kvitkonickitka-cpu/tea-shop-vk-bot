@@ -37,6 +37,7 @@ CANCELED_PAID_STUCK = "canceled_paid_stuck"
 HANDED_OVER = "handed_over"
 DELIVERED = "delivered"
 NOT_DELIVERED = "not_delivered"
+DRAFT_NUDGE = "draft_nudge_sent"
 
 
 def amount(value) -> str:
@@ -45,6 +46,16 @@ def amount(value) -> str:
         return f"{float(value):g}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def composition(items: list[dict]) -> str:
+    """Состав для текста клиенту: «Те Гуань Инь × 2, Да Хун Пао»."""
+    parts = []
+    for item in items or []:
+        quantity = item.get("quantity", 1)
+        name = item.get("name", "товар")
+        parts.append(f"{name} × {quantity}" if quantity and quantity != 1 else name)
+    return ", ".join(parts)
 
 
 def mask_phone(raw: str) -> str:
@@ -283,6 +294,41 @@ def not_delivered(order) -> str:
         "Менеджер свяжется с вами "
         f"{worktime.working_day_phrase()}: вернём деньги или отправим заново — "
         "как вам удобнее."
+    )
+
+
+_NUDGE_CLOSING = "Передумали — просто не отвечайте, больше напоминать не буду 🙂"
+
+
+def draft_nudge_priced(
+    items, *, delivery_label: str, total, threshold_gap=None, approximate: bool = False
+) -> str:
+    """3.20. Клиент замолчал после названной цены.
+
+    Строка про порог — только если до бесплатной доставки не хватает не
+    больше одной пачки: «добавьте ещё 2000 ₽» уже не подсказка, а давление.
+    Это решает вызывающий, передавая `threshold_gap`. `approximate` — цена
+    Ozon до выбора пункта: она предварительная, и точной её не называем.
+    """
+    lines = [
+        f"Заказ ждёт вас: {composition(items)} и доставка {delivery_label} — "
+        f"итого {'около ' if approximate else ''}{amount(total)} ₽."
+    ]
+    if threshold_gap:
+        lines.append(
+            f"До бесплатной доставки не хватает {amount(threshold_gap)} ₽ — "
+            "можно добавить ещё пачку."
+        )
+    lines.append(f"Оформить? Если нужно что-то поменять — напишите, поправлю. {_NUDGE_CLOSING}")
+    return "\n".join(lines)
+
+
+def draft_nudge_unpriced(items, *, items_total) -> str:
+    """3.21. Клиент выбрал чай и замолчал до расчёта доставки."""
+    return (
+        f"Вы выбирали {composition(items)} — {amount(items_total)} ₽. Посчитать "
+        "доставку? Назовите город — скажу цену и ближайшие пункты выдачи.\n"
+        f"{_NUDGE_CLOSING}"
     )
 
 

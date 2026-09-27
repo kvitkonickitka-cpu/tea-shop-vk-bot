@@ -19,6 +19,7 @@ from app.modules.orders import (
     cdek_watch,
     delivery_events,
     delivery_watch,
+    draft_nudge,
     order_chat,
     repository as orders_repository,
 )
@@ -129,6 +130,11 @@ async def _run_scheduled() -> dict:
     # дело может не дойти вовсе.
     result["open_questions"] = await _run_task(
         "Вопросы без ответа", escalation_watch.check_open_questions()
+    )
+
+    # Брошенные черновики: пара запросов к базе, и тоже до каталога Ozon.
+    result["draft_nudges"] = await _run_task(
+        "Брошенные черновики", draft_nudge.check_drafts()
     )
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а

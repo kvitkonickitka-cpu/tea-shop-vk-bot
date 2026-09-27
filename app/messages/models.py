@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -66,3 +66,19 @@ class ManagerNotification(Base):
     fallback_sent_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class ClientPreference(Base):
+    """Что клиент попросил про рассылки.
+
+    Одна строка на клиента. `marketing_opt_out` гасит только то, что бот пишет
+    по своей инициативе ради продажи: «заказ ждёт вас», «повторить заказ?».
+    Сообщения по заказам — оплата, доставка, чеки, возвраты — идут всегда:
+    это не реклама, а исполнение договора.
+    """
+
+    __tablename__ = "client_preferences"
+
+    peer_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    marketing_opt_out: Mapped[bool] = mapped_column(Boolean, default=False)
+    opted_out_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
