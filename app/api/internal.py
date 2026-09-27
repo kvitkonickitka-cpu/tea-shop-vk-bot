@@ -21,6 +21,7 @@ from app.modules.orders import (
     delivery_watch,
     draft_nudge,
     order_chat,
+    repeat_nudge,
     repository as orders_repository,
 )
 from app.modules.payment import service as payment_service, settlement
@@ -136,6 +137,7 @@ async def _run_scheduled() -> dict:
     result["draft_nudges"] = await _run_task(
         "Брошенные черновики", draft_nudge.check_drafts()
     )
+    result["repeat_nudges"] = await _run_task("Повторить заказ", repeat_nudge.check())
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.

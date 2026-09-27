@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.dialects.postgresql import insert
@@ -21,8 +22,36 @@ from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages.models import ClientPreference
 
+# Отписка распознаётся кодом, а не моделью: «стоп» должен работать всегда,
+# одинаково и без обращения к Claude. Поэтому и правило узкое — короткое
+# сообщение без вопроса, где стоп-слово стоит само по себе или в окружении
+# вежливых слов. «Стоп, давайте через Ozon» — это правка заказа, её ведёт
+# модель; «хватит ли 50 грамм?» — вопрос.
+_STOP_START = {"стоп", "хватит"}
+_STOP_PHRASES = ("не пишите", "не пиши ", "отпишите", "отписаться", "отпишись", "отпишитесь")
+_FILLER = {
+    "пожалуйста", "спасибо", "мне", "меня", "уже", "больше", "стоп", "хватит",
+    "не", "пишите", "присылать", "писать", "напоминания", "напоминать",
+    "рассылку", "рассылки", "сообщения", "всё", "все", "нет", "ну",
+}
+_MAX_WORDS = 5
+
 # Без базы отписка держится в памяти процесса — лучше, чем забыть её совсем.
 _fallback_opted_out: set[int] = set()
+
+
+def is_stop_request(text: str) -> bool:
+    """Просит ли клиент больше не присылать напоминаний."""
+    raw = (text or "").strip().lower().replace("ё", "е")
+    if not raw or "?" in raw:
+        return False
+    words = re.findall(r"[а-яa-z]+", raw)
+    if not words or len(words) > _MAX_WORDS:
+        return False
+    phrase = " ".join(words) + " "
+    if any(stop in phrase for stop in _STOP_PHRASES):
+        return True
+    return words[0] in _STOP_START and all(word in _FILLER for word in words[1:])
 
 
 def in_window(now: datetime | None = None) -> bool:

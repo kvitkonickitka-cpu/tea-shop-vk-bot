@@ -141,3 +141,24 @@ class OrderDraftRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class OrderFeedback(Base):
+    """Отзыв клиента о вручённом заказе.
+
+    Один на заказ: клиент уточняет отзыв или меняет решение о публикации —
+    строка обновляется, а не множится. Жалобы сюда не попадают, они идут
+    менеджеру вопросом.
+    """
+
+    __tablename__ = "order_feedback"
+
+    order_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    text: Mapped[str] = mapped_column(String)
+    # yes / no / unknown — можно ли опубликовать в сообществе.
+    publish_consent: Mapped[str] = mapped_column(String, default="unknown")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

@@ -11,7 +11,7 @@ from pathlib import Path
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
-from app.messages import manager as manager_messages, templates
+from app.messages import manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -23,6 +23,7 @@ from app.modules.dialog import (
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import cancellation
 from app.modules.orders import contacts
+from app.modules.orders import feedback
 from app.modules.orders import order_chat
 from app.modules.orders import repeat_delivery
 from app.modules.orders import shipping
@@ -350,7 +351,7 @@ class ToolExecution:
     client_reply: str | None = None
 
 
-def _tools_for_stage(stage: str | None) -> list[dict]:
+def _tools_for_stage(stage: str | None, *, with_feedback: bool = False) -> list[dict]:
     # Даём модели только те инструменты, которые уместны на текущем этапе —
     # так она физически не может вызвать propose_order повторно, пока черновик
     # ждёт выбора доставки или подтверждения. escalate_to_manager доступен
@@ -383,7 +384,12 @@ def _tools_for_stage(stage: str | None) -> list[dict]:
     # cancel_order доступен всегда: неоплаченный заказ живёт и без черновика
     # (счёт выставлен — черновик убран), а отменить его клиент вправе на
     # любом шаге.
-    return stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
+    tools = stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
+    # Отзыв — только когда есть недавно вручённый заказ: иначе модель
+    # записывала бы в отзывы любое «спасибо».
+    if with_feedback:
+        tools.append(feedback.TOOL)
+    return tools
 
 
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
@@ -1487,6 +1493,8 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return await _execute_cancel_order(peer_id)
     if name == "escalate_to_manager":
         return await _execute_escalate_to_manager(peer_id, tool_input)
+    if name == "save_feedback":
+        return ToolExecution(await feedback.save(peer_id, tool_input))
     return ToolExecution(f"Неизвестный инструмент: {name}")
 
 
@@ -1596,6 +1604,16 @@ async def _handle_turn(
     spent: _Spent,
     attached: vk_attachments.Collected | None = None,
 ) -> str:
+    if not (attached and attached.any) and marketing.is_stop_request(user_text):
+        # «Стоп» решает код, без модели: отписка должна срабатывать всегда и
+        # одинаково. Флаг гасит только продающие напоминания — сообщения по
+        # заказам идут, как шли.
+        await marketing.opt_out(peer_id)
+        reply = templates.marketing_stopped()
+        await dialog_history.append_exchange(peer_id, user_text, reply)
+        logger.info("peer_id=%s отписался от напоминаний", peer_id)
+        return reply
+
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
 
@@ -1629,7 +1647,11 @@ async def _handle_turn(
     if escalation_note:
         system_prompt += f"\n\n{_ESCALATION_FLOW_PROMPT}\n\n{escalation_note}"
 
-    tools = _tools_for_stage(draft.stage if draft else None)
+    delivered = await feedback.recent_delivered(peer_id)
+    if delivered is not None:
+        system_prompt += f"\n\n{feedback.prompt_for(delivered)}"
+
+    tools = _tools_for_stage(draft.stage if draft else None, with_feedback=delivered is not None)
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
     # кладём в историю. Иначе следующий ход увидит реплику клиента пустой и
@@ -1702,7 +1724,9 @@ async def _handle_turn(
         # черновик ждёт подтверждения, и confirm_order должен стать доступен
         # в этом же ходу, а не со следующего сообщения клиента.
         fresh_draft = await state.get_draft(peer_id)
-        tools = _tools_for_stage(fresh_draft.stage if fresh_draft else None)
+        tools = _tools_for_stage(
+            fresh_draft.stage if fresh_draft else None, with_feedback=delivered is not None
+        )
 
         # Последний круг зовём без инструментов: модель обязана ответить
         # словами. Раньше здесь просто стояла заглушка «Записала, спасибо»,

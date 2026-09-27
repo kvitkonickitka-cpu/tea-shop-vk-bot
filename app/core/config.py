@@ -186,6 +186,10 @@ class Settings(BaseSettings):
     # до какого возраста черновика ещё напоминаем.
     draft_nudge_after_hours: float = 3
     draft_nudge_max_age_hours: float = 48
+    # «Повторить заказ?» после вручения: столько дней на каждую пачку в
+    # заказе, но не дольше потолка.
+    repeat_nudge_days_per_pack: int = 21
+    repeat_nudge_max_days: int = 60
 
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.

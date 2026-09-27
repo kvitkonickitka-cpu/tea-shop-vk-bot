@@ -40,6 +40,7 @@ NOT_DELIVERED = "not_delivered"
 DRAFT_NUDGE = "draft_nudge_sent"
 AT_PICKUP = "at_pickup_point"
 PICKUP_EXPIRING = "pickup_expiring"
+REPEAT_NUDGE = "repeat_nudge"
 
 
 def amount(value) -> str:
@@ -374,6 +375,25 @@ def draft_nudge_unpriced(items, *, items_total) -> str:
     )
 
 
+def repeat_nudge(items, *, weeks: int) -> str:
+    """3.22. Чай, наверное, подходит к концу."""
+    unit = "недели" if weeks == 1 else "недель"
+    return (
+        f"Здравствуйте! Около {weeks} {unit} назад вы получили {composition(items)} — "
+        "чай, наверное, подходит к концу 🍵\n"
+        "Повторить заказ с доставкой туда же? Или подскажу, что попробовать ещё.\n"
+        "Если не хотите таких напоминаний — напишите «стоп»."
+    )
+
+
+def marketing_stopped() -> str:
+    """3.23. Ответ на «стоп»."""
+    return (
+        "Хорошо, больше не буду присылать напоминания. Сообщения по вашим "
+        "заказам и доставке будут приходить как обычно."
+    )
+
+
 def escalation_waiting() -> str:
     return "Вопрос у менеджера, он ответит здесь же, как только освободится 🙏"
 
@@ -415,6 +435,17 @@ def manager_question(question: str, reason: str, link: str) -> str:
     return (
         f"❓ <b>Вопрос клиента</b>\n{question}\n\n"
         f"<b>Почему передано</b>\n{reason}\n\n{link}"
+    )
+
+
+_CONSENT = {"yes": "можно", "no": "нельзя", "unknown": "не спрашивали"}
+
+
+def manager_feedback(order_id, text: str, consent: str, link: str) -> str:
+    """4.14. Отзыв клиента. `text` уже экранирован."""
+    return (
+        f"⭐ <b>Отзыв по заказу №{order_id}</b>\n{text}\n\n"
+        f"Публикация: {_CONSENT.get(consent, _CONSENT['unknown'])}\n{link}"
     )
 
 
