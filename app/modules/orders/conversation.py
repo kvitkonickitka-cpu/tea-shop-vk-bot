@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -1329,6 +1330,25 @@ _ATTACHMENT_PROMPT = (
 )
 
 
+# ВК не показывает разметку: «**Те Гуань Инь**» клиент видит со
+# звёздочками (27.09.2026). Модель пишет её по привычке, даже когда просят не
+# писать, поэтому снимаем её и в коде. Одиночную звёздочку не трогаем — она
+# бывает и в обычном тексте.
+_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.S)
+_HEADING = re.compile(r"^#{1,6}\s+", re.M)
+_BULLET = re.compile(r"^(\s*)[*-]\s+", re.M)
+
+
+def plain_text(text: str) -> str:
+    """Ответ без markdown: жирный — обычным текстом, пункты — «•»."""
+    if not text:
+        return text
+    text = _BOLD.sub(lambda m: m.group(1) or m.group(2), text)
+    text = text.replace("**", "")
+    text = _HEADING.sub("", text)
+    return _BULLET.sub(r"\1• ", text)
+
+
 def _for_history(spoken: str, images: list) -> str:
     """Реплика клиента в том виде, в каком она останется в истории.
 
@@ -1456,7 +1476,7 @@ async def _handle_turn(
         # важное — клиент читал «Заказ оформлен! ✅» вместо честного «заказ
         # подтверждён, но в СДЭК не уехал».
         if executions and executions[-1][1].client_reply is not None:
-            reply = executions[-1][1].client_reply
+            reply = plain_text(executions[-1][1].client_reply)
             await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
             return reply
 
@@ -1494,6 +1514,6 @@ async def _handle_turn(
         if last_round:
             break
 
-    reply = claude_client.extract_text(response, default=_NO_TEXT_FALLBACK)
+    reply = plain_text(claude_client.extract_text(response, default=_NO_TEXT_FALLBACK))
     await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
     return reply

@@ -137,3 +137,26 @@ async def test_without_url_the_image_catalog_is_used(monkeypatch):
     monkeypatch.setattr(settings, "catalog_sheet_csv_url", "")
     assert "skipped" in await sheet.refresh()
     assert catalog_service.load_items()[0]["name"] == "Те Гуань Инь (тест)"
+
+
+async def test_other_container_sees_the_new_sheet_within_seconds(clean, sheet_url, monkeypatch, manager):
+    """27.09.2026: таблицу дополнили, а бот ещё минуту отвечал по старой."""
+    serve(monkeypatch, GOOD)
+    await sheet.refresh()
+    assert len(catalog_service.load_items()) == 2
+
+    # Другой контейнер (или команда catalog/sheet) положил в базу новую версию.
+    newer = GOOD + "Шу Пуэр 100 г,900,100 г,да,,,\n"
+    async with clean() as session:
+        row = await session.get(CatalogSnapshot, 1)
+        row.items = sheet.parse_csv(newer).items
+        row.source_hash = "другой"
+        await session.commit()
+
+    # В пределах пяти секунд — без похода в базу.
+    await sheet.ensure_fresh()
+    assert len(catalog_service.load_items()) == 2
+
+    sheet._memory_loaded_at -= 10
+    await sheet.ensure_fresh()
+    assert [i["name"] for i in catalog_service.load_items()][-1] == "Шу Пуэр 100 г"

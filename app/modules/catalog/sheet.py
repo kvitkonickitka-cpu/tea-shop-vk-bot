@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_session_factory
@@ -40,10 +41,13 @@ from app.modules.catalog.models import CatalogSnapshot
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 10
-# Как часто контейнер сверяет свою память с базой. Минута — компромисс:
-# новая цена доходит до клиента за пять-шесть минут (тик плюс это), а база
-# не получает лишний запрос на каждое сообщение.
-_MEMORY_TTL_SECONDS = 60
+# Как часто контейнер сверяет свою память с базой. Сверяется только
+# отпечаток таблицы — одна короткая строка по первичному ключу, — а список
+# товаров перечитывается, лишь когда отпечаток сменился. Раньше здесь была
+# минута и полная перечитка: 27.09.2026 таблицу дополнили, прочитали
+# командой, а бот ещё минуту отвечал по старому списку — клиент спросил
+# ассортимент и не услышал про новый чай.
+_MEMORY_TTL_SECONDS = 5
 
 # Заголовки столбцов — как их пишет человек. Регистр и пробелы не важны.
 _COLUMNS = {
@@ -169,6 +173,7 @@ def parse_csv(text: str) -> Parsed:
 # То, что сейчас в памяти контейнера. None — таблица не подключена или ещё
 # не читалась: тогда работает `catalog.json`.
 _memory: list[dict] | None = None
+_memory_hash: str | None = None
 _memory_loaded_at = 0.0
 
 
@@ -177,14 +182,20 @@ def current_items() -> list[dict] | None:
     return [dict(item) for item in _memory] if _memory is not None else None
 
 
-def _remember(items: list[dict] | None) -> None:
-    global _memory, _memory_loaded_at
+def _remember(items: list[dict] | None, source_hash: str | None = None) -> None:
+    global _memory, _memory_hash, _memory_loaded_at
     _memory = list(items) if items else None
+    _memory_hash = source_hash if items else None
     _memory_loaded_at = time.monotonic()
 
 
 async def ensure_fresh() -> None:
-    """Подтянуть из базы версию, которую положил тик. Дёшево и не чаще раза в минуту."""
+    """Подтянуть из базы версию, которую положил тик или команда.
+
+    Каждые несколько секунд сверяем только отпечаток; товары читаем, когда
+    он сменился.
+    """
+    global _memory_loaded_at
     if not settings.catalog_sheet_csv_url:
         return
     if _memory_loaded_at and time.monotonic() - _memory_loaded_at < _MEMORY_TTL_SECONDS:
@@ -192,12 +203,21 @@ async def ensure_fresh() -> None:
     try:
         session_factory = get_session_factory()
         async with session_factory() as session:
+            stored_hash = await session.scalar(
+                select(CatalogSnapshot.source_hash).where(CatalogSnapshot.id == 1)
+            )
+            if stored_hash is not None and stored_hash == _memory_hash:
+                _memory_loaded_at = time.monotonic()
+                return
             row = await session.get(CatalogSnapshot, 1)
     except Exception:
         # Без базы остаётся то, что уже в памяти, или `catalog.json`.
         logger.warning("Каталог из таблицы не подтянули из базы", exc_info=True)
         return
-    _remember(row.items if row is not None and row.items else None)
+    if row is not None and row.items:
+        _remember(row.items, row.source_hash)
+    else:
+        _remember(None)
 
 
 def _hash(text: str) -> str:
@@ -264,7 +284,7 @@ async def refresh(*, force: bool = False) -> dict:
         row.last_error_hash = None
         await session.commit()
 
-    _remember(parsed.items)
+    _remember(parsed.items, source_hash)
     return {
         "applied": True,
         "changed": changed,
