@@ -40,6 +40,7 @@ ORDER_CARD = "order_card"
 CARRIER_FAILED = "carrier_failed"
 STOREFRONT_ORDER = "storefront_order"
 CLIENT_UNREACHABLE = "client_unreachable"
+CATALOG_SHEET = "catalog_sheet"
 
 
 def _backoff(attempts: int) -> timedelta:
