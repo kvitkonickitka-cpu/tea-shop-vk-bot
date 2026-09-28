@@ -247,6 +247,7 @@ async def claim_paid(
                     payment_id=payment_id,
                     payment_status=payment_status,
                     receipt_status=receipt_status,
+                    paid_at=datetime.now(timezone.utc),
                 )
                 .returning(Order)
             )

@@ -8,10 +8,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.config import settings
+from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
-from app.messages import manager as manager_messages, templates
+from app.messages import manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -23,6 +23,7 @@ from app.modules.dialog import (
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import cancellation
 from app.modules.orders import contacts
+from app.modules.orders import feedback
 from app.modules.orders import order_chat
 from app.modules.orders import repeat_delivery
 from app.modules.orders import shipping
@@ -52,7 +53,13 @@ OZON_POINTS_MAP_URL = "https://www.ozon.ru/geo/"
 # Последнее средство: модель не написала ни слова даже тогда, когда её
 # позвали без инструментов. Лучше нейтральная фраза, чем извинение за
 # несуществующую поломку.
-_NO_TEXT_FALLBACK = "Записала, спасибо! Подскажите, если нужно что-то поправить 🙏"
+# Уходит, когда ход упёрся в лимит, а модель не написала ни слова — то есть
+# действие клиента могло и не выполниться. Прежнее «Записала, спасибо!»
+# выдавало такой сбой за успех.
+_NO_TEXT_FALLBACK = (
+    "Не уверена, что правильно вас поняла. Напишите, пожалуйста, ещё раз, что "
+    "нужно сделать, — проверю 🙏"
+)
 
 # Сколько раз за ход модель может попросить инструменты. Круг был всего
 # один: второе обращение к Claude не помещалось в восемь секунд VK, и после
@@ -74,13 +81,17 @@ _ORDER_FLOW_PROMPT_PATH = Path(__file__).parent.parent / "dialog" / "prompts" / 
 # одним текстом нельзя. Пока оплаты не было, инструкция говорила «ссылку
 # пришлёт менеджер»; кассу включили, а инструкция осталась — и модель могла
 # пообещать клиенту менеджера ровно перед тем, как бот сам выдаст ссылку.
-_PAYMENT_STEP_WITH_KASSA = (
-    "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
-    "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
-    "обещай. Чек придёт письмом на почту клиента — без почты счёт не "
-    "выставить. Посылка уезжает к перевозчику только после оплаты, поэтому "
-    "не говори, что заказ уже отправлен или передан в доставку."
-)
+def _payment_step_with_kassa() -> str:
+    # Срок ссылки — из настройки: перейдём на счета ЮKassa с другим сроком —
+    # текст поменяется сам.
+    return (
+        "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
+        "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
+        f"обещай. Ссылка действует {settings.payment_invoice_ttl_minutes} минут. "
+        "Чек об оплате придёт на почту клиента. Посылка уезжает к перевозчику "
+        "только после оплаты, поэтому не говори, что заказ уже отправлен или "
+        "передан в доставку."
+    )
 _PAYMENT_STEP_WITHOUT_KASSA = (
     "Ссылку на оплату бот не выставляет: её пришлёт менеджер, инструмент сам "
     "передаст ему заказ. Не обещай клиенту оплату «сейчас» и не придумывай ссылок."
@@ -106,7 +117,7 @@ def order_flow_prompt() -> str:
         .replace("{map_url}", CDEK_OFFICES_MAP_URL)
         .replace(
             "{payment_step}",
-            _PAYMENT_STEP_WITH_KASSA
+            _payment_step_with_kassa()
             if payment_service.is_enabled()
             else _PAYMENT_STEP_WITHOUT_KASSA,
         )
@@ -134,8 +145,11 @@ _OTHER_METHODS_HINT = "Почта России — тоже. " if settings.russi
 # ключей в ревизии бот спрашивал бы у клиента почту, а оплату всё равно
 # уводил менеджеру. Так ошибка настройки становилась видна клиенту.
 _EMAIL_TOOL_HINT = (
-    "Вместе с ними спроси электронную почту — на неё придёт чек, без неё "
-    "оплату не выставить."
+    "Почта обязательна: без неё платёжная система не выставит счёт, потому что "
+    "чек об оплате отправляется только на почту. Спроси её вместе с ФИО и "
+    "телефоном и объясни, зачем она нужна. Если клиент отказывается — объясни "
+    "один раз; при повторном отказе вызови escalate_to_manager с причиной "
+    "«клиент не хочет давать почту для чека»."
     if payment_service.is_enabled()
     else ""
 )
@@ -219,22 +233,27 @@ TOOLS = [
     {
         "name": "set_recipient",
         "description": (
-            "Записать получателя заказа. Без ФИО и телефона отправление не "
-            "завести ни у СДЭКа, ни у Ozon. Спрашивай их после того, как "
-            "клиент выбрал доставку и пункт выдачи. "
+            "Записать получателя заказа и почту для чека. ФИО и телефон нужны, "
+            "чтобы завести отправление у СДЭКа и Ozon; почта нужна для чека об "
+            "оплате — без неё счёт не выставится. Спрашивай всё одним "
+            "сообщением после того, как клиент выбрал доставку и пункт выдачи. "
+            "Если инструмент вернул, что телефон или почта неверны или похожи на "
+            "опечатку, — передай это клиенту и попроси исправить. "
             + _EMAIL_TOOL_HINT
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "ФИО получателя"},
-                "phone": {"type": "string", "description": "Телефон получателя"},
+                "phone": {
+                    "type": "string",
+                    "description": "Телефон получателя, целиком, 11 цифр",
+                },
                 "email": {
                     "type": "string",
                     "description": (
-                        "Электронная почта клиента — на неё придёт чек. "
-                        "Спрашивай вместе с ФИО и телефоном и объясняй, что "
-                        "она нужна именно для чека."
+                        "Электронная почта клиента для чека — обязательная. "
+                        "Записывай ровно так, как написал клиент, не исправляй сама."
                     ),
                 },
             },
@@ -244,10 +263,37 @@ TOOLS = [
     {
         "name": "confirm_order",
         "description": (
-            "Зафиксировать согласие клиента оформить заказ, когда есть "
-            "черновик, ожидающий подтверждения, и клиент явно согласился."
+            "Зафиксировать согласие клиента оформить заказ: есть черновик, "
+            "ожидающий подтверждения, ты сверила с клиентом состав, доставку, "
+            "итог и данные получателя, и клиент явно согласился."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "add_to_order",
+        "description": (
+            "Добавить товары в уже собранный черновик — когда клиент согласился "
+            "на предложенное дополнение или сам решил докупить. Названия — как в "
+            "ассортименте. Если доставка уже была посчитана, она сбросится: вес "
+            "и цена посылки изменились, инструмент скажет, как пересчитать."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "quantity": {"type": "integer"},
+                        },
+                        "required": ["name", "quantity"],
+                    },
+                }
+            },
+            "required": ["items"],
+        },
     },
     {
         "name": "cancel_order",
@@ -305,7 +351,7 @@ class ToolExecution:
     client_reply: str | None = None
 
 
-def _tools_for_stage(stage: str | None) -> list[dict]:
+def _tools_for_stage(stage: str | None, *, with_feedback: bool = False) -> list[dict]:
     # Даём модели только те инструменты, которые уместны на текущем этапе —
     # так она физически не может вызвать propose_order повторно, пока черновик
     # ждёт выбора доставки или подтверждения. escalate_to_manager доступен
@@ -323,19 +369,27 @@ def _tools_for_stage(stage: str | None) -> list[dict]:
     # «не хватает инструмента для расчёта».
     by_name = {tool["name"]: tool for tool in TOOLS}
     if stage == "awaiting_delivery":
-        stage_tools = [by_name["set_delivery_method"], by_name["set_recipient"]]
+        stage_tools = [
+            by_name["set_delivery_method"], by_name["set_recipient"], by_name["add_to_order"],
+        ]
     elif stage == "awaiting_confirmation":
         stage_tools = [
             by_name["set_delivery_method"],
             by_name["set_recipient"],
             by_name["confirm_order"],
+            by_name["add_to_order"],
         ]
     else:
         stage_tools = [by_name["propose_order"]]
     # cancel_order доступен всегда: неоплаченный заказ живёт и без черновика
     # (счёт выставлен — черновик убран), а отменить его клиент вправе на
     # любом шаге.
-    return stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
+    tools = stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
+    # Отзыв — только когда есть недавно вручённый заказ: иначе модель
+    # записывала бы в отзывы любое «спасибо».
+    if with_feedback:
+        tools.append(feedback.TOOL)
+    return tools
 
 
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
@@ -352,16 +406,92 @@ def _load_tariffs() -> dict:
         return json.load(f)
 
 
+def _apply_free_delivery(draft: OrderDraft) -> str:
+    """Порог бесплатной доставки: доставка клиенту 0, настоящая цена — в деталях.
+
+    Настоящую стоимость у перевозчика храним: платит её магазин, и менеджеру
+    с отчётами она нужна. В чек ЮKassa позиция доставки с нулём не попадает —
+    сумма чека должна сходиться с платежом, а нулевых позиций касса не берёт.
+    Возвращает строку для модели (или пустую).
+    """
+    threshold = free_delivery_threshold()
+    if draft.delivery_cost is None or threshold is None:
+        return ""
+    carrier_cost = draft.details.get("carrier_delivery_cost", draft.delivery_cost)
+    if draft.items_total >= threshold:
+        draft.details["carrier_delivery_cost"] = carrier_cost
+        draft.delivery_cost = 0
+        return (
+            f"Доставка для клиента бесплатная: сумма товаров от "
+            f"{templates.amount(threshold)} ₽. Скажи об этом клиенту.\n"
+        )
+    # Сумма опустилась ниже порога (клиент убрал позицию) — снова платная.
+    if "carrier_delivery_cost" in draft.details:
+        draft.delivery_cost = draft.details.pop("carrier_delivery_cost")
+    return ""
+
+
+def _first_sentence(text: str, limit: int = 160) -> str:
+    text = (text or "").strip()
+    for mark in (". ", "! ", "? "):
+        if mark in text:
+            text = text.split(mark, 1)[0] + mark.strip()
+            break
+    return text[:limit]
+
+
+def _offer_upsell(draft: OrderDraft, catalog: list[dict]) -> str:
+    """Подсказка модели: что предложить дополнительно и сколько до порога.
+
+    Позицию выбирает код, а не модель: только из «С чем советуем» у товаров
+    черновика. Нет подсказки — нет допродажи. Предлагаем один раз на
+    черновик: отметка `upsell_offered` гасит подсказку навсегда.
+    """
+    lines = []
+    if not draft.details.get("upsell_offered"):
+        candidate = catalog_service.upsell_for(draft.items, catalog)
+        if candidate is not None:
+            draft.details["upsell_offered"] = True
+            draft.details["upsell_item"] = candidate["name"]
+            reason = _first_sentence(candidate.get("description", ""))
+            lines.append(
+                f"Предложи дополнить: {candidate['name']} ({candidate['price']} ₽) — "
+                + (f"причина из описания товара: «{reason}»" if reason else "одной фразой, почему")
+                + ". Один раз, в том же сообщении, где спрашиваешь город. Согласится — "
+                "вызови add_to_order."
+            )
+    gap = _threshold_gap(draft.items_total)
+    if gap is not None:
+        lines.append(
+            f"До бесплатной доставки не хватает {templates.amount(gap)} ₽ — скажи "
+            "об этом в том же предложении, где предлагаешь дополнить."
+        )
+    return "".join(f"\n{line}" for line in lines)
+
+
+def _threshold_gap(items_total: float) -> float | None:
+    """Сколько не хватает до бесплатной доставки. None — порога нет или он пройден."""
+    threshold = free_delivery_threshold()
+    if threshold is None or items_total >= threshold:
+        return None
+    return round(threshold - items_total, 2)
+
+
 def _describe_draft(draft: OrderDraft | None) -> str:
     if draft is None:
         return "Активного черновика заказа у клиента нет."
 
     lines = [f"Черновик заказа на этапе «{draft.stage}»:"]
     for item in draft.items:
-        lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} руб.")
-    lines.append(f"Сумма товаров: {draft.items_total} руб.")
+        lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} ₽")
+    lines.append(f"Сумма товаров: {draft.items_total} ₽")
+    gap = _threshold_gap(draft.items_total)
+    if gap is not None:
+        lines.append(f"До бесплатной доставки не хватает {templates.amount(gap)} ₽.")
+    elif draft.details.get("carrier_delivery_cost") is not None:
+        lines.append("Доставка для клиента бесплатная: сумма товаров прошла порог.")
     if draft.delivery_label:
-        lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} руб.")
+        lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} ₽")
 
     # Показываем, что записано на самом деле. Без этого модель судит по
     # собственной прошлой реплике: написала клиенту «получатель записан», а
@@ -424,12 +554,14 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
 
     items_total = sum(i["price"] * i["quantity"] for i in resolved)
     draft = OrderDraft(items=resolved, items_total=items_total, stage="awaiting_delivery")
+    upsell_line = _offer_upsell(draft, catalog)
     await state.set_draft(peer_id, draft)
 
-    lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} руб." for i in resolved]
-    result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} руб."
+    lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} ₽" for i in resolved]
+    result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} ₽"
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
+    result += upsell_line
     # Пункт выдачи называем первым и объясняем почему: клиенту проще
     # согласиться на вариант, который уже предложен, чем выбирать из списка.
     # Первым идёт Ozon: на живом расчёте он вышел 121 руб против 397 у
@@ -737,6 +869,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
+    free_note = _apply_free_delivery(draft)
     await state.set_draft(peer_id, draft)
 
     total = draft.items_total + draft.delivery_cost
@@ -752,11 +885,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     # «каким-то» пунктом и выбранным вышла в рубль — мелочь, но клиент видит
     # два разных числа подряд и справедливо спрашивает, где потерялся рубль.
     fixed = "Предварительная стоимость доставки" if ozon_options else "Способ доставки зафиксирован"
-    head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} руб"
+    head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} ₽"
     head += f", срок {period}\n" if period else ".\n"
     head += f"Состав заказа (перечисли клиенту названия и количество, а не "
-    head += f"только сумму): {items_line} — {draft.items_total} руб.\n"
-    head += f"Итого с доставкой: {total} руб.\n"
+    head += f"только сумму): {items_line} — {draft.items_total} ₽\n"
+    head += f"Итого с доставкой: {total} ₽\n"
+    head += free_note
 
     # Формулировку отдаём модели: с очередью второй заход к Claude перестал
     # быть роскошью, а живой текст клиенту приятнее нашего шаблона. Пока
@@ -902,9 +1036,9 @@ async def _escalate_for_payment(
     )
     total = draft.items_total + (draft.delivery_cost or 0)
     question = (
-        f"Заказ {'№' + str(order_id) if order_id else ''} на {total} руб. подтверждён, "
-        f"нужна ссылка на оплату. Состав: {items}. Доставка: "
-        f"{draft.delivery_label or '—'}."
+        f"Заказ {'№' + str(order_id) + ' ' if order_id else ''}на "
+        f"{templates.amount(total)} ₽ подтверждён клиентом, счёт не выставился. "
+        f"Состав: {items}. Доставка: {draft.delivery_label or '—'}."
     )
     if not reason:
         reason = (
@@ -1095,9 +1229,11 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
             f"ЮKassa не дала точного ответа, счёт мог создаться — проверить в "
             f"кабинете, прежде чем выставлять новый. {str(error)[:300]}",
         )
+        # «Сохранён», а не «подтверждён»: без счёта «подтверждён» звучит
+        # как «всё готово».
         reply = (
-            "Заказ подтверждён. Со ссылкой на оплату вышла заминка — менеджер "
-            "пришлёт её сам, я уже передала ему ваш заказ."
+            "Заказ сохранён, но ссылку на оплату сейчас выставить не получилось. "
+            "Менеджер пришлёт её сюда — я уже передала ему заказ."
         )
         return ToolExecution(reply, client_reply=reply)
     except Exception as error:
@@ -1107,8 +1243,8 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
             f"Счёт выставить не удалось: {type(error).__name__}: {str(error)[:300]}",
         )
         reply = (
-            "Заказ подтверждён, но выставить оплату не получилось — этим "
-            "займётся менеджер, я уже передала ему ваш заказ."
+            "Заказ сохранён, но выставить оплату не получилось. Менеджер пришлёт "
+            "ссылку сюда — я уже передала ему заказ."
         )
         return ToolExecution(reply, client_reply=reply)
 
@@ -1146,11 +1282,13 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
 
     await state.clear_draft(peer_id)
 
-    where = templates.receipt_destination(
-        draft.details.get("recipient_email", ""), draft.details.get("recipient_phone", "")
+    # Не «заказ оформлен»: до оплаты клиент читал это как «всё готово».
+    reply = templates.invoice_ready(
+        total=payment.amount or (draft.items_total + (draft.delivery_cost or 0)),
+        link=payment.confirmation_url,
+        email=draft.details.get("recipient_email", ""),
+        phone=draft.details.get("recipient_phone", ""),
     )
-    reply = f"Заказ оформлен. Оплатить: {payment.confirmation_url}"
-    reply += f"\nПосле оплаты пришлём чек на {where} и передадим заказ в доставку."
     return ToolExecution(reply, client_reply=reply)
 
 
@@ -1180,7 +1318,7 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
                 "клиенту, что менеджер подключится, и не повторяй это в "
                 "следующих ответах, если он сам не спросит."
             ),
-            client_reply="Менеджер уже знает про этот вопрос и подключится, как только освободится 🙏",
+            client_reply="Менеджер уже видит ваш вопрос и ответит здесь же 🙏",
         )
 
     question_raw = tool_input.get("question", "")
@@ -1188,7 +1326,7 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
     question = html.escape(question_raw)
     reason = html.escape(reason_raw)
     dialog_link = vk_client.dialog_link(peer_id)
-    message = f"<b>Вопрос клиента</b>\n{question}\n\n<b>Почему эскалировано</b>\n{reason}\n\n{dialog_link}"
+    message = templates.manager_question(question, reason, dialog_link)
 
     # Сначала фиксируем эскалацию у себя — это быстро и надёжно, и именно
     # эта запись, а не уведомление, остаётся следом того, что вопрос передан.
@@ -1217,12 +1355,88 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
 
     return ToolExecution(
         tool_result=(
-            "Вопрос зафиксирован и передан менеджеру. Скажи клиенту, что уточнишь "
-            "и вернёшься с ответом — не упоминай менеджера как адресата для "
-            "обращения самого клиента, только что ты сам уточнишь и вернёшься."
+            "Вопрос зафиксирован и передан менеджеру. Скажи клиенту, что передала "
+            "вопрос и менеджер ответит здесь, в этом диалоге."
         ),
-        client_reply="Уточню это у менеджера и вернусь с ответом 🙏",
+        # «Вернусь с ответом» бот не выполняет — отвечает менеджер. Клиенту
+        # важнее знать, где ждать ответ.
+        client_reply="Передала ваш вопрос менеджеру — он ответит здесь, в этом диалоге 🙏",
     )
+
+
+async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
+    """Дополнить состав черновика — минимальный путь для допродажи.
+
+    Раньше состав после propose_order поменять было нельзя вовсе: на этапе
+    доставки инструмента для этого не было, а propose_order там недоступен.
+    """
+    draft = await state.get_draft(peer_id)
+    if draft is None or draft.stage not in ("awaiting_delivery", "awaiting_confirmation"):
+        return "Нет черновика заказа. Если клиент хочет купить — вызови propose_order."
+    if draft.details.get("order_id"):
+        return (
+            "По этому заказу уже выставлялся счёт — состав так не меняют. Предложи "
+            "оформить дополнение отдельным заказом или вызови escalate_to_manager."
+        )
+
+    catalog = catalog_service.load_items()
+    added, unresolved = [], []
+    for wanted in tool_input.get("items", []):
+        match = _find_catalog_item(catalog, wanted.get("name", ""))
+        quantity = int(wanted.get("quantity") or 1)
+        if not match or not match.get("in_stock", True) or quantity < 1:
+            unresolved.append(wanted.get("name", ""))
+            continue
+        for row in draft.items:
+            if row["name"] == match["name"]:
+                row["quantity"] += quantity
+                break
+        else:
+            draft.items.append({"name": match["name"], "quantity": quantity, "price": match["price"]})
+        added.append(f"{match['name']} × {quantity}")
+
+    if not added:
+        return (
+            f"Не нашли в наличии: {', '.join(unresolved)}. Уточни у клиента название."
+        )
+
+    draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
+    recalc = ""
+    if draft.delivery_method:
+        # Вес и объявленная ценность выросли — прежняя цена доставки неверна.
+        previous = {
+            "method": draft.delivery_method,
+            "city": draft.details.get("address", ""),
+            "point": draft.details.get("ozon_point_address")
+            or (draft.delivery_label or "").split(": ", 1)[-1],
+        }
+        draft.delivery_method = None
+        draft.delivery_label = None
+        draft.delivery_cost = None
+        for key in ("carrier_delivery_cost", "ozon_point_id", "ozon_point_address", "delivery_point"):
+            draft.details.pop(key, None)
+        draft.stage = "awaiting_delivery"
+        recalc = (
+            "\nДоставку надо посчитать заново: вызови set_delivery_method с "
+            f"method={previous['method']}, address=«{previous['city']}»"
+            + (f", pickup_point=«{previous['point']}»" if previous["point"] else "")
+            + " — клиенту переспрашивать не нужно."
+        )
+    await state.set_draft(peer_id, draft)
+
+    lines = [f"{row['name']} x{row['quantity']} = {row['price'] * row['quantity']} ₽" for row in draft.items]
+    result = (
+        f"Добавлено: {', '.join(added)}. Состав теперь:\n" + "\n".join(lines)
+        + f"\nСумма товаров: {draft.items_total} ₽"
+    )
+    if unresolved:
+        result += f"\nНе нашли в наличии: {', '.join(unresolved)}."
+    gap = _threshold_gap(draft.items_total)
+    if gap is not None:
+        result += f"\nДо бесплатной доставки не хватает {templates.amount(gap)} ₽."
+    elif free_delivery_threshold() is not None:
+        result += "\nСумма товаров прошла порог — доставка будет бесплатной."
+    return result + recalc
 
 
 async def _execute_cancel_order(peer_id: int) -> ToolExecution:
@@ -1273,10 +1487,14 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return await _execute_confirm_order(peer_id)
     if name == "set_recipient":
         return ToolExecution(await _execute_set_recipient(peer_id, tool_input))
+    if name == "add_to_order":
+        return ToolExecution(await _execute_add_to_order(peer_id, tool_input))
     if name == "cancel_order":
         return await _execute_cancel_order(peer_id)
     if name == "escalate_to_manager":
         return await _execute_escalate_to_manager(peer_id, tool_input)
+    if name == "save_feedback":
+        return ToolExecution(await feedback.save(peer_id, tool_input))
     return ToolExecution(f"Неизвестный инструмент: {name}")
 
 
@@ -1386,6 +1604,16 @@ async def _handle_turn(
     spent: _Spent,
     attached: vk_attachments.Collected | None = None,
 ) -> str:
+    if not (attached and attached.any) and marketing.is_stop_request(user_text):
+        # «Стоп» решает код, без модели: отписка должна срабатывать всегда и
+        # одинаково. Флаг гасит только продающие напоминания — сообщения по
+        # заказам идут, как шли.
+        await marketing.opt_out(peer_id)
+        reply = templates.marketing_stopped()
+        await dialog_history.append_exchange(peer_id, user_text, reply)
+        logger.info("peer_id=%s отписался от напоминаний", peer_id)
+        return reply
+
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
 
@@ -1419,7 +1647,11 @@ async def _handle_turn(
     if escalation_note:
         system_prompt += f"\n\n{_ESCALATION_FLOW_PROMPT}\n\n{escalation_note}"
 
-    tools = _tools_for_stage(draft.stage if draft else None)
+    delivered = await feedback.recent_delivered(peer_id)
+    if delivered is not None:
+        system_prompt += f"\n\n{feedback.prompt_for(delivered)}"
+
+    tools = _tools_for_stage(draft.stage if draft else None, with_feedback=delivered is not None)
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
     # кладём в историю. Иначе следующий ход увидит реплику клиента пустой и
@@ -1492,7 +1724,9 @@ async def _handle_turn(
         # черновик ждёт подтверждения, и confirm_order должен стать доступен
         # в этом же ходу, а не со следующего сообщения клиента.
         fresh_draft = await state.get_draft(peer_id)
-        tools = _tools_for_stage(fresh_draft.stage if fresh_draft else None)
+        tools = _tools_for_stage(
+            fresh_draft.stage if fresh_draft else None, with_feedback=delivered is not None
+        )
 
         # Последний круг зовём без инструментов: модель обязана ответить
         # словами. Раньше здесь просто стояла заглушка «Записала, спасибо»,

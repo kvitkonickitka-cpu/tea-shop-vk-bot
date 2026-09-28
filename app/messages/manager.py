@@ -41,6 +41,7 @@ CARRIER_FAILED = "carrier_failed"
 STOREFRONT_ORDER = "storefront_order"
 CLIENT_UNREACHABLE = "client_unreachable"
 CATALOG_SHEET = "catalog_sheet"
+FEEDBACK = "feedback"
 
 
 def _backoff(attempts: int) -> timedelta:

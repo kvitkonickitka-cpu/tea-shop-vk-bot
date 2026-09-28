@@ -9,9 +9,10 @@
 страховка на случай, когда вебхук подвёл.
 
 **Чек регистрирует не ЮKassa.** Она лишь передаёт данные, а создают чек
-касса с ОФД — позже и асинхронно. Документация прямо говорит: если чек
-висит в `pending` трое суток, идти в поддержку. Значит за этим надо
-следить, иначе узнаем от налоговой.
+касса с ОФД — позже и асинхронно. Документация ЮKassa говорит идти в
+поддержку, если чек висит в `pending` трое суток, но 54-ФЗ строже: чек
+отправляют покупателю не позднее следующего рабочего дня после оплаты.
+Поэтому менеджер узнаёт о зависшем чеке утром следующего рабочего дня.
 
 Здесь же живут напоминания о неоплаченном счёте. **Срок жизни ссылки — час,
 и он не наш, а ЮKassa:** `confirmation_url` у платежа, созданного через
@@ -45,8 +46,12 @@ from app.modules.payment import service as payment_service, webhook, yookassa_cl
 
 logger = logging.getLogger(__name__)
 
-# Срок из документации ЮKassa: дольше — в поддержку.
-_RECEIPT_STUCK_AFTER = timedelta(days=3)
+# Раньше ждали трое суток — срок из документации ЮKassa. Но по 54-ФЗ чек
+# нужно отправить покупателю не позднее следующего рабочего дня после оплаты,
+# поэтому менеджер узнаёт утром следующего рабочего дня: «сегодня же — в
+# поддержку». Минимум пара часов — чтобы не будить по чеку, оплаченному
+# в 23:50 и зарегистрированному к утру.
+_RECEIPT_MIN_WAIT = timedelta(hours=2)
 # Совсем старые не трогаем: опрашивать их по кругу незачем.
 _GIVE_UP_AFTER = timedelta(days=7)
 _BATCH = 20
@@ -317,15 +322,15 @@ async def check_pending() -> dict:
         if payment.receipt_registration == "succeeded":
             continue
 
-        if payment.receipt_registration == "canceled" or age > _RECEIPT_STUCK_AFTER:
+        overdue = (
+            age > _RECEIPT_MIN_WAIT
+            and now >= worktime.next_business_morning(order.created_at)
+        )
+        if payment.receipt_registration == "canceled" or overdue:
             await orders_repository.set_state(order.id, receipt_status=RECEIPT_STUCK)
             await order_chat.send(
                 order,
-                templates.manager_receipt_stuck(
-                    order,
-                    payment.receipt_registration,
-                    overdue=payment.receipt_registration != "canceled",
-                ),
+                templates.manager_receipt_stuck(order, payment.receipt_registration),
             )
             # Клиент ждёт чек и не знает, что тот застрял на стороне кассы.
             # Ждать от него вопроса «а где чек» — значит отвечать на него

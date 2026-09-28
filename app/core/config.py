@@ -164,6 +164,36 @@ class Settings(BaseSettings):
     # заказ уходит телефон получателя, этот участвует только в оценке.
     ozon_quote_phone: str = "+79000000000"
 
+    # Постоянная ссылка на условия покупки, доставки и возврата в группе ВК.
+    # Показывается клиенту рядом со ссылкой на оплату; пусто — строки нет.
+    # Ссылка постоянная, поэтому живёт здесь, а не в workflow деплоя.
+    conditions_url: str = "https://vk.ru/@teapotwice-usloviya-dostavki-oplaty-i-vozvrata"
+    # Что обещаем клиенту про сдачу посылки перевозчику после оплаты — текст
+    # и число дней, после которого менеджеру уходит «ещё не сдан». Ставить
+    # срок, который реально держите.
+    handover_promise: str = "в течение 1–2 дней"
+    handover_days: int = 2
+
+    # Порог бесплатной доставки по сумме товаров, в рублях. Пусто — порога
+    # нет. Строкой, а не числом: пустая переменная окружения иначе роняла бы
+    # запуск на разборе настроек (так уже было с ADMIN_VK_ID). Значение
+    # магазина — здесь; переменная окружения нужна, только чтобы его
+    # временно переопределить.
+    free_delivery_threshold: str = "3000"
+
+    # Продающие сообщения по своей инициативе: окно отправки по Москве.
+    # После 21:00 — только утром, с 10:00.
+    marketing_earliest_hour: int = 10
+    marketing_latest_hour: int = 21
+    # Брошенный черновик: сколько часов тишины после последней реплики бота и
+    # до какого возраста черновика ещё напоминаем.
+    draft_nudge_after_hours: float = 3
+    draft_nudge_max_age_hours: float = 48
+    # «Повторить заказ?» после вручения: столько дней на каждую пачку в
+    # заказе, но не дольше потолка.
+    repeat_nudge_days_per_pack: int = 21
+    repeat_nudge_max_days: int = 60
+
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.
     catalog_sheet_csv_url: str = ""
@@ -217,3 +247,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def free_delivery_threshold() -> float | None:
+    """Порог бесплатной доставки или None, если его нет или он записан криво."""
+    raw = (settings.free_delivery_threshold or "").strip().replace(" ", "").replace(",", ".")
+    try:
+        value = float(raw) if raw else 0.0
+    except ValueError:
+        return None
+    return value if value > 0 else None

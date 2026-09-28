@@ -19,7 +19,9 @@ from app.modules.orders import (
     cdek_watch,
     delivery_events,
     delivery_watch,
+    draft_nudge,
     order_chat,
+    repeat_nudge,
     repository as orders_repository,
 )
 from app.modules.payment import service as payment_service, settlement
@@ -130,6 +132,12 @@ async def _run_scheduled() -> dict:
     result["open_questions"] = await _run_task(
         "Вопросы без ответа", escalation_watch.check_open_questions()
     )
+
+    # Брошенные черновики: пара запросов к базе, и тоже до каталога Ozon.
+    result["draft_nudges"] = await _run_task(
+        "Брошенные черновики", draft_nudge.check_drafts()
+    )
+    result["repeat_nudges"] = await _run_task("Повторить заказ", repeat_nudge.check())
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.
@@ -242,6 +250,7 @@ async def issue_invoice(order_id: int, request: Request):
 
 _MANUAL_EVENTS = {
     "handed-over": delivery_events.HANDED_OVER,
+    "at-pickup": delivery_events.AT_PICKUP,
     "delivered": delivery_events.DELIVERED,
     "not-delivered": delivery_events.NOT_DELIVERED,
 }
@@ -250,12 +259,14 @@ _MANUAL_EVENTS = {
 # Пути перечислены явно, а не шаблоном `{event}`: шаблон перехватывал бы и
 # остальные команды заказа, объявленные после него.
 @router.post("/internal/orders/{order_id}/handed-over")
+@router.post("/internal/orders/{order_id}/at-pickup")
 @router.post("/internal/orders/{order_id}/delivered")
 @router.post("/internal/orders/{order_id}/not-delivered")
 async def mark_delivery_event(order_id: int, request: Request):
     """Отметить событие доставки руками, когда перевозчик его не отдаёт.
 
         scripts/api.sh orders/12/handed-over     посылку сдали перевозчику
+        scripts/api.sh orders/12/at-pickup       посылка ждёт в пункте выдачи
         scripts/api.sh orders/12/delivered       посылку вручили
         scripts/api.sh orders/12/not-delivered   не вручили, едет обратно
 

@@ -141,6 +141,15 @@ async def send(
     return True
 
 
+async def claim_once(ref: str, event_type: str, peer_id: int) -> bool:
+    """Занять событие без отправки клиенту. True — это первый раз.
+
+    Тот же журнал «одно событие — одно сообщение» для уведомлений, которые
+    идут не клиенту, а менеджеру: «заказ не сдан перевозчику» и подобные.
+    """
+    return await _claim(ref, event_type, peer_id)
+
+
 async def already_sent(ref: str, event_type: str) -> bool:
     """Писали ли уже про это событие — без попытки занять его."""
     try:

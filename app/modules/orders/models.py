@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +42,9 @@ class Order(Base):
     # нет, и без этой копии заводить его было бы нечем.
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Когда пришли деньги. Ставится вместе с `payment_status = succeeded`, один
+    # раз. От него считаются обещанный срок сдачи перевозчику и чек по 54-ФЗ.
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Судьба посылки у перевозчика. Отметки ставятся один раз, первым, кто
     # узнал: опросом перевозчика или ручной командой. По ним же идёт
@@ -60,6 +63,13 @@ class Order(Base):
     not_delivered_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Посылка ждёт в пункте выдачи или постамате — тоже событие, один раз.
+    # И до какого дня её там держат: только если перевозчик дату отдал, свою
+    # не придумываем — напоминание с неверной датой хуже никакого.
+    at_pickup_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    storage_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     # Сборка со сканированием кодов маркировки: когда и кто нажал «Собрано».
     # После отметки коды закреплены за заказом и уходят в закрывающий чек.
     packed_at: Mapped[Optional[datetime]] = mapped_column(
@@ -128,6 +138,27 @@ class OrderDraftRow(Base):
     # в остальных колонках. Одним полем, чтобы не заводить их по одной.
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     stage: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OrderFeedback(Base):
+    """Отзыв клиента о вручённом заказе.
+
+    Один на заказ: клиент уточняет отзыв или меняет решение о публикации —
+    строка обновляется, а не множится. Жалобы сюда не попадают, они идут
+    менеджеру вопросом.
+    """
+
+    __tablename__ = "order_feedback"
+
+    order_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    text: Mapped[str] = mapped_column(String)
+    # yes / no / unknown — можно ли опубликовать в сообществе.
+    publish_consent: Mapped[str] = mapped_column(String, default="unknown")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

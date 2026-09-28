@@ -120,7 +120,7 @@ async def test_vk_refusal_is_reported_and_not_retried(clean, monkeypatch):
 
 def test_templates_read_well():
     order = fake_order(128)
-    assert "917 руб" in templates.paid(order, email="a@b.ru")
+    assert "917 ₽" in templates.paid(order, email="a@b.ru")
     assert "917.0" not in templates.paid(order, email="a@b.ru")
     assert "a@b.ru" in templates.paid(order, email="a@b.ru")
     # Без почты чек уходит на телефон, и номер показан маской.

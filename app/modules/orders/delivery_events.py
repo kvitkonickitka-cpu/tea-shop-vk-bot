@@ -31,8 +31,11 @@ logger = logging.getLogger(__name__)
 HANDED_OVER = "order.handed_over"
 DELIVERED = "order.delivered"
 NOT_DELIVERED = "order.not_delivered"
+# Посылка ждёт в пункте выдачи или постамате. Не конечное: после него
+# бывает и «вручено», и «не вручено» (не забрали за срок хранения).
+AT_PICKUP = "order.at_pickup_point"
 
-EVENTS = (HANDED_OVER, DELIVERED, NOT_DELIVERED)
+EVENTS = (HANDED_OVER, AT_PICKUP, DELIVERED, NOT_DELIVERED)
 
 # Откуда узнали. Пишется в лог и в ответ ручной команды.
 SOURCE_CARRIER = "перевозчик"
@@ -47,11 +50,21 @@ CDEK_TRACKING_URL = "https://www.cdek.ru/ru/tracking"
 
 
 def _carrier_name(order: Order) -> str:
+    """Перевозчик для «передана в …»."""
     if order.ozon_posting:
         return "Ozon"
     if order.cdek_uuid:
-        return "СДЭКом"
-    return "службой доставки"
+        return "СДЭК"
+    return "службу доставки"
+
+
+def _point_address(order: Order) -> str:
+    """Адрес пункта выдачи, куда ехала посылка, — из того, что выбрал клиент."""
+    details = order.details or {}
+    if order.ozon_posting:
+        return (details.get("ozon_point_address") or "").strip()
+    label = details.get("delivery_label") or ""
+    return label.split(": ", 1)[1].strip() if ": " in label else ""
 
 
 async def record(
@@ -76,6 +89,13 @@ async def record(
     statement = update(Order).where(Order.id == order_id)
     if event == HANDED_OVER:
         statement = statement.where(Order.handed_over_at.is_(None)).values(handed_over_at=now)
+    elif event == AT_PICKUP:
+        # После вручения или возврата «ждёт в пункте» уже неправда.
+        statement = statement.where(
+            Order.at_pickup_at.is_(None),
+            Order.delivered_at.is_(None),
+            Order.not_delivered_at.is_(None),
+        ).values(at_pickup_at=now)
     else:
         # Конечные события взаимоисключающие: не вручённую посылку нельзя
         # потом «вручить» опросом, и наоборот. Ошибку ручной отметки
@@ -95,7 +115,9 @@ async def record(
         ).scalar_one_or_none()
         if order is not None and event != HANDED_OVER and order.handed_over_at is None:
             # Вручить, не передав, нельзя: опрос мог проспать промежуточный
-            # статус. Отметку ставим, отдельной новости о ней не будет.
+            # статус. Отметку ставим, отдельной новости о ней не будет. То же
+            # с «ждёт в пункте выдачи»: клиент получит одно сообщение, о
+            # пункте, а не «передана» и «ждёт» подряд.
             order.handed_over_at = now
         await session.commit()
 
@@ -133,6 +155,8 @@ def _latest_event(order: Order) -> str | None:
         return NOT_DELIVERED
     if order.delivered_at is not None:
         return DELIVERED
+    if order.at_pickup_at is not None:
+        return AT_PICKUP
     if order.handed_over_at is not None:
         return HANDED_OVER
     return None
@@ -158,6 +182,7 @@ async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
     # сбивает с толку. Так бывает при первом опросе старых заказов.
     happened = {
         HANDED_OVER: order.handed_over_at,
+        AT_PICKUP: order.at_pickup_at,
         DELIVERED: order.delivered_at,
         NOT_DELIVERED: order.not_delivered_at,
     }[event]
@@ -178,6 +203,15 @@ async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
                 tracking_url=CDEK_TRACKING_URL if details.get("cdek_number") else "",
             )
         event_type = templates.HANDED_OVER
+    elif event == AT_PICKUP:
+        text = templates.at_pickup_point(
+            order,
+            carrier=_carrier_name(order),
+            address=_point_address(order),
+            storage_until=order.storage_until,
+            postamat=bool(details.get("postamat")),
+        )
+        event_type = templates.AT_PICKUP
     elif event == DELIVERED:
         from app.modules.payment import settlement
 
@@ -219,6 +253,7 @@ async def tell_pending_clients(now: datetime | None = None) -> int:
                     Order.payment_status == orders_repository.PAID,
                     or_(
                         Order.handed_over_at > since,
+                        Order.at_pickup_at > since,
                         Order.delivered_at > since,
                         Order.not_delivered_at > since,
                     ),
@@ -230,6 +265,7 @@ async def tell_pending_clients(now: datetime | None = None) -> int:
     for order in orders:
         event_type = {
             HANDED_OVER: templates.HANDED_OVER,
+            AT_PICKUP: templates.AT_PICKUP,
             DELIVERED: templates.DELIVERED,
             NOT_DELIVERED: templates.NOT_DELIVERED,
         }.get(_latest_event(order))
@@ -238,5 +274,49 @@ async def tell_pending_clients(now: datetime | None = None) -> int:
         if await client_messages.already_sent(client_messages.order_ref(order.id), event_type):
             continue
         if await tell_client(order, now=now):
+            told += 1
+    return told
+
+
+async def remind_storage_ending(now: datetime | None = None) -> int:
+    """3.18: за день до конца хранения, если посылку ещё не забрали.
+
+    Только когда перевозчик отдал дату (`storage_until`): без неё
+    напоминать не о чем. Один раз на заказ — журналом отправок; ночью
+    молчим, утренний тик того же дня ещё успеет.
+    """
+    now = now or datetime.now(timezone.utc)
+    if worktime.is_quiet(now):
+        return 0
+    today = worktime.to_msk(now).date()
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        orders = (
+            await session.execute(
+                select(Order).where(
+                    Order.payment_status == orders_repository.PAID,
+                    Order.at_pickup_at.is_not(None),
+                    Order.storage_until.is_not(None),
+                    Order.delivered_at.is_(None),
+                    Order.not_delivered_at.is_(None),
+                    # Накануне последнего дня — или в сам день, если накануне
+                    # тик не успел (тихие часы, сбой).
+                    Order.storage_until >= today,
+                    Order.storage_until <= today + timedelta(days=1),
+                    # Посылка приехала только что — дата уже была в сообщении
+                    # о прибытии, второе подряд было бы лишним.
+                    Order.at_pickup_at < now - timedelta(hours=12),
+                )
+            )
+        ).scalars().all()
+
+    told = 0
+    for order in orders:
+        if await client_messages.send(
+            peer_id=order.peer_id,
+            ref=client_messages.order_ref(order.id),
+            event_type=templates.PICKUP_EXPIRING,
+            text=templates.pickup_expiring(order, order.storage_until),
+        ):
             told += 1
     return told

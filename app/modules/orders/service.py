@@ -102,8 +102,8 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
         )
         await vk_client.send_message(
             user_id,
-            f"Заказ №{order_id} принят! Сейчас уточним доставку и вернёмся с "
-            "расчётом 🙏",
+            f"Заказ №{order_id} принят! Проверим состав и напишем здесь расчёт "
+            "доставки 🙏",
         )
         return
 
@@ -141,5 +141,5 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
     await _tell_manager(
         order_id,
         user_id,
-        f"{listed} — {items_total:g} руб. Клиенту предложено выбрать доставку в диалоге.",
+        f"{listed} — {items_total:g} ₽. Клиенту предложено выбрать доставку в диалоге.",
     )

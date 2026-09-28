@@ -102,7 +102,7 @@ async def test_confirm_order_with_email_issues_invoice(clean, monkeypatch):
 
     result = await conversation._execute_confirm_order(PEER)
 
-    assert "Оплатить: https://yoomoney.ru" in result.client_reply
+    assert "Счёт на 917 ₽ готов: https://yoomoney.ru" in result.client_reply
     assert "чек на a@b.ru" in result.client_reply
     assert created["email"] == "a@b.ru"
 

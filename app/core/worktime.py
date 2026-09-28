@@ -92,6 +92,19 @@ def working_minutes_between(start: datetime, end: datetime) -> int:
     return minutes
 
 
+def next_business_morning(moment: datetime) -> datetime:
+    """Начало следующего рабочего дня (будни) после `moment`, по часам менеджера.
+
+    Нужно для чека: по 54-ФЗ его отправляют покупателю не позднее следующего
+    рабочего дня после оплаты. Праздники не учитываем — календаря в проекте
+    нет, и в праздник предупреждение просто придёт на день раньше.
+    """
+    day = to_msk(moment).date() + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return datetime.combine(day, time(settings.manager_work_hours_start), MSK)
+
+
 def working_day_phrase(moment: datetime | None = None) -> str:
     """«сегодня» или «в ближайший рабочий день» — по времени суток."""
     return "сегодня" if is_working(moment) else "в ближайший рабочий день"
@@ -106,6 +119,7 @@ __all__ = [
     "hhmm",
     "is_quiet",
     "is_working",
+    "next_business_morning",
     "now_msk",
     "quiet_until",
     "to_msk",
