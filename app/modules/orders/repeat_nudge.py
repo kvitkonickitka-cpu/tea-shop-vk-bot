@@ -31,7 +31,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages import client as client_messages, marketing, templates
+from app.messages import client as client_messages, keyboard as keyboards, marketing, templates
 from app.modules.dialog import escalation_state
 from app.modules.orders import repository as orders_repository, state
 from app.modules.orders.models import Order
@@ -65,6 +65,16 @@ async def _bought_since(session, order: Order) -> bool:
         )
     ).first()
     return newer is not None
+
+
+def _keyboard(order_id: int) -> dict | None:
+    """«Повторить» — сразу счёт; «Выбрать другое» — разговор с моделью."""
+    if not settings.repeat_one_tap_enabled:
+        return None
+    return keyboards.inline([[
+        keyboards.text_button("Повторить", {"a": "repeat", "o": order_id}, "positive"),
+        keyboards.text_button("Выбрать другое", {"a": "other", "o": order_id}),
+    ]])
 
 
 async def check(now: datetime | None = None) -> dict:
@@ -115,6 +125,7 @@ async def check(now: datetime | None = None) -> dict:
             ref=ref,
             event_type=templates.REPEAT_NUDGE,
             text=templates.repeat_nudge(order.items or [], weeks=weeks),
+            keyboard=_keyboard(order.id),
         ):
             sent += 1
             logger.info("Заказ %s: предложили повторить", order.id)

@@ -28,6 +28,7 @@ from app.modules.orders import feedback
 from app.modules.orders import order_chat
 from app.modules.orders import points
 from app.modules.orders import repeat_delivery
+from app.modules.orders import repeat_order as repeat_one_tap
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -359,6 +360,9 @@ TOOLS = [
 ]
 
 
+TOOLS.append(repeat_one_tap.TOOL)
+
+
 @dataclass
 class ToolExecution:
     # tool_result идёт обратно в Claude, чтобы модель сформулировала ответ.
@@ -520,6 +524,8 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         return "Активного черновика заказа у клиента нет."
 
     lines = [f"Черновик заказа на этапе «{draft.stage}»:"]
+    if draft.details.get("repeat_note"):
+        lines.append(draft.details["repeat_note"])
     for item in draft.items:
         lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} ₽")
     lines.append(f"Сумма товаров: {draft.items_total} ₽")
@@ -1341,7 +1347,7 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
     return None
 
 
-async def _auto_invoice(peer_id: int) -> ToolExecution | None:
+async def _auto_invoice(peer_id: int, source: str = "invoice_auto") -> ToolExecution | None:
     """Выставить счёт сам, если заказ стал полным. None — ещё не полный."""
     if not (settings.auto_invoice_enabled and payment_service.is_enabled()):
         return None
@@ -1352,7 +1358,7 @@ async def _auto_invoice(peer_id: int) -> ToolExecution | None:
     if note is not None:
         return ToolExecution(note)
     draft.stage = "confirmed"
-    return await _confirm_with_payment(peer_id, draft, source="invoice_auto")
+    return await _confirm_with_payment(peer_id, draft, source=source)
 
 
 def _offer_message(draft: OrderDraft, offer) -> str:
@@ -1897,6 +1903,8 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return result if isinstance(result, ToolExecution) else ToolExecution(result)
     if name == "accept_offer":
         return await _execute_accept_offer(peer_id)
+    if name == "repeat_order":
+        return await repeat_one_tap.repeat_order(peer_id, int(tool_input.get("order_id") or 0))
     if name == "set_delivery_method":
         return await _execute_set_delivery_method(peer_id, tool_input)
     if name == "confirm_order":
@@ -2063,6 +2071,24 @@ async def _handle_turn(
             logger.exception("Не проверили выставленный счёт для peer_id=%s", peer_id)
     if live is not None:
         system_prompt += "\n" + _describe_live_invoice(live)
+    repeatable = None
+    if draft is None and live is None and repeat_one_tap.is_enabled():
+        try:
+            repeatable = await repeat_one_tap.repeatable_order(peer_id)
+        except Exception:
+            logger.exception("Не нашли заказ для повтора у peer_id=%s", peer_id)
+    if repeatable is not None:
+        system_prompt += (
+            f"\nПоследний удачный заказ клиента — №{repeatable.id}: "
+            f"{templates.composition(repeatable.items or [])}. Если клиент хочет повторить "
+            f"его («да, давайте так же» на «повторить заказ?») — вызови repeat_order с "
+            f"order_id={repeatable.id}: инструмент сам проверит цены, пункт и получателя и "
+            "пришлёт счёт."
+        )
+    if draft is not None and draft.details.get("repeat_note"):
+        # Пояснение, почему повтор не выставил счёт, — один раз, этому ходу.
+        draft.details.pop("repeat_note")
+        await state.set_draft(peer_id, draft)
     if draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
         # То же предложение, что в ответе propose_order, — и для черновика
         # из витрины ВК, который собирается без propose_order.
@@ -2100,6 +2126,7 @@ async def _handle_turn(
         with_feedback=delivered is not None,
         live_invoice=live is not None,
         with_offer=bool(draft and draft.details.get("offer")),
+        repeatable=repeatable is not None,
     )
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом

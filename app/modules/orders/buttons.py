@@ -343,6 +343,29 @@ async def _on_offer_ok(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
 
+async def _on_repeat(peer_id: int, payload: dict) -> Press:
+    from app.modules.orders import repeat_order
+
+    order_id = payload.get("o")
+    if not isinstance(order_id, int):
+        return STALE
+    order = await orders_repository.by_id(order_id)
+    if (
+        order is None or order.peer_id != peer_id
+        or order.payment_status != orders_repository.PAID
+        or order.status in ("refunded", orders_repository.CANCELED)
+        # Клиент уже собирает другой заказ или ждёт оплаты — повтор не к месту.
+        or await state.get_draft(peer_id) is not None
+        or await orders_repository.live_invoice_order(peer_id) is not None
+    ):
+        return STALE
+    result = await repeat_order.repeat_order(peer_id, order_id)
+    if result.client_reply is not None:
+        return Press(reply=result.client_reply, keyboard=_stashed.pop(peer_id, None))
+    # Не сошлось — черновик с пояснением уже лежит, дальше ведёт модель.
+    return TO_MODEL
+
+
 async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
@@ -355,6 +378,7 @@ _HANDLERS = {
     "new_link": _on_new_link,
     "checkout": _on_checkout,
     "offer_ok": _on_offer_ok,
+    "repeat": _on_repeat,
     "edit": _to_model,
     "other": _to_model,
 }
