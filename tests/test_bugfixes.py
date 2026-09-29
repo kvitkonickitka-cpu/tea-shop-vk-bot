@@ -42,7 +42,7 @@ SAMPLES = {
     "urgent": True, "url": "https://example.org/pack/1", "value": NS(value="917.00"),
     "waited_minutes": 120, "weeks": 3, "delivery_method": "ozon_pvz", "delivery_cost": 117,
     "gap": 200, "free": False, "next_step": "Куда везти — город и улица, где удобно забрать?",
-    "ask_recipient": True,
+    "ask_recipient": True, "upsell": "Да Хун Пао", "upsell_price": 1500,
     "name": "Иванов Иван", "method": "ozon_pvz", "label": "Ozon, пункт выдачи: Краснодар, Красная, 1",
 }
 

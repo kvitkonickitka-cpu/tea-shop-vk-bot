@@ -506,6 +506,46 @@ def item_added(*, name: str, items_total, gap=None, free: bool = False, next_ste
 ASK_WHERE = "Куда везти — город и улица, где удобно забрать?"
 
 
+def returning_offer(
+    *,
+    items: list[dict],
+    delivery_method: str,
+    delivery_label: str,
+    delivery_cost,
+    name: str,
+    phone: str,
+    email: str,
+    total,
+    upsell: str = "",
+    upsell_price=None,
+    gap=None,
+) -> str:
+    """Постоянному клиенту — весь заказ одним сообщением вместо трёх вопросов.
+
+    Пункт и цена уже проверены, почта — тоже. Ничего не записано: ждём
+    «Оформить» или «да».
+    """
+    lines = ["Оформить как в прошлый раз?"]
+    for item in items:
+        quantity = int(item.get("quantity") or 1)
+        lines.append(
+            f"• {item.get('name', 'товар')} × {quantity} — "
+            f"{amount(float(item.get('price') or 0) * quantity)} ₽"
+        )
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    lines.append(f"Получатель: {name}, {phone}, {email}")
+    lines.append(f"Итого: {amount(total)} ₽")
+    if upsell:
+        extra = f"К нему можно добавить {upsell}"
+        extra += f" — {amount(upsell_price)} ₽" if upsell_price is not None else ""
+        if gap:
+            extra += f", до бесплатной доставки как раз не хватает {amount(gap)} ₽"
+        lines.append(extra + ".")
+    lines.append("Ответьте «да» — пришлю ссылку на оплату. Если что-то поменять — напишите.")
+    return "\n".join(lines)
+
+
 def escalation_waiting() -> str:
     return "Вопрос у менеджера, он ответит здесь же, как только освободится 🙏"
 

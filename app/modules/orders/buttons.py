@@ -55,6 +55,9 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
     shown = details.get("shown_points") or []
     version = details.get("version")
 
+    if details.get("offer"):
+        return None, ""
+
     if shown and not fixed and draft.delivery_method:
         rows = [
             [keyboards.text_button(
@@ -207,6 +210,8 @@ async def _on_add(peer_id: int, payload: dict) -> Press:
     item = draft.details.get("upsell_item") if draft else None
     if draft is None or not item:
         return STALE
+    if draft.details.get("offer"):
+        return await _add_to_offer(peer_id, item)
     had_delivery = draft.delivery_method
     city = draft.details.get("address", "")
     await conversation._execute_add_to_order(peer_id, {"items": [{"name": item, "quantity": 1}]})
@@ -295,6 +300,49 @@ async def _on_checkout(peer_id: int, payload: dict) -> Press:
     return await _invoice_or(peer_id, ask)
 
 
+async def _add_to_offer(peer_id: int, item: str) -> Press:
+    """«Добавить» под предложением «как в прошлый раз»: то же сообщение заново.
+
+    Вес вырос, поэтому пункт и цену проверяем снова — тем же путём, что и
+    при первом предложении.
+    """
+    from app.modules.orders import conversation, offers
+    from app.modules.orders.repeat_delivery import LastDelivery, LastRecipient
+
+    await conversation._execute_add_to_order(peer_id, {"items": [{"name": item, "quantity": 1}]})
+    draft = await state.get_draft(peer_id)
+    old = offers.Offer.from_details(draft.details.get("offer")) if draft else None
+    if old is None or item not in {row["name"] for row in draft.items}:
+        return TO_MODEL
+    offer = await offers.prepare(
+        draft,
+        LastDelivery(0, old.method, old.city, old.point_address, old.point_id),
+        LastRecipient(0, old.name, old.phone, old.email),
+    )
+    if not offer.ready:
+        return TO_MODEL
+    draft.details["offer"] = offer.to_details()
+    draft.details.pop("upsell_item", None)
+    await state.set_draft(peer_id, draft)
+    draft = await state.get_draft(peer_id)
+    return Press(
+        reply=conversation._offer_message(draft, offer),
+        keyboard=conversation._offer_keyboard(draft),
+    )
+
+
+async def _on_offer_ok(peer_id: int, payload: dict) -> Press:
+    from app.modules.orders import conversation
+
+    draft = await _draft_at(peer_id, payload)
+    if draft is None or not draft.details.get("offer"):
+        return STALE
+    result = await conversation.accept_offer(peer_id)
+    if result.client_reply is not None:
+        return Press(reply=result.client_reply, keyboard=_stashed.pop(peer_id, None))
+    return TO_MODEL
+
+
 async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
@@ -306,6 +354,7 @@ _HANDLERS = {
     "email_no": _on_email_no,
     "new_link": _on_new_link,
     "checkout": _on_checkout,
+    "offer_ok": _on_offer_ok,
     "edit": _to_model,
     "other": _to_model,
 }

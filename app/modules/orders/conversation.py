@@ -303,6 +303,17 @@ TOOLS = [
         },
     },
     {
+        "name": "accept_offer",
+        "description": (
+            "Клиент согласился на заказ «как в прошлый раз», который бот показал "
+            "одним сообщением (состав, пункт, получатель, итог), — ответил «да», "
+            "«оформляйте» и т. п. Инструмент запишет доставку и получателя и "
+            "пришлёт счёт. Если клиент хочет что-то поменять — не вызывай, "
+            "используй обычные инструменты."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "cancel_order",
         "description": (
             "Отменить заказ целиком, когда клиент явно просит отменить его или "
@@ -359,7 +370,12 @@ class ToolExecution:
 
 
 def _tools_for_stage(
-    stage: str | None, *, with_feedback: bool = False, live_invoice: bool = False
+    stage: str | None,
+    *,
+    with_feedback: bool = False,
+    live_invoice: bool = False,
+    with_offer: bool = False,
+    repeatable: bool = False,
 ) -> list[dict]:
     # Даём модели только те инструменты, которые уместны на текущем этапе —
     # так она физически не может вызвать propose_order повторно, пока черновик
@@ -402,6 +418,10 @@ def _tools_for_stage(
     # cancel_order доступен всегда: неоплаченный заказ живёт и без черновика
     # (счёт выставлен — черновик убран), а отменить его клиент вправе на
     # любом шаге.
+    if with_offer:
+        stage_tools.append(by_name["accept_offer"])
+    if repeatable and stage is None and not live_invoice and "repeat_order" in by_name:
+        stage_tools.append(by_name["repeat_order"])
     tools = stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
     # Отзыв — только когда есть недавно вручённый заказ: иначе модель
     # записывала бы в отзывы любое «спасибо».
@@ -536,8 +556,19 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     if draft.delivery_method == "ozon_pvz" and not draft.details.get("ozon_point_id"):
         lines.append("Пункт выдачи Ozon ещё НЕ выбран.")
 
+    offer = draft.details.get("offer")
+    if offer:
+        lines.append(
+            "Клиенту показано одним сообщением предложение «как в прошлый раз»: "
+            f"{offer.get('method')}, пункт «{offer.get('point_address')}» (город {offer.get('city')}), "
+            f"получатель {offer.get('name')}, {offer.get('phone')}, {offer.get('email')}. "
+            "Согласие («да», «оформляйте») — вызови accept_offer, счёт придёт сам. Хочет "
+            "поменять пункт — set_delivery_method (прошлый пункт в списке под номером 1), "
+            "получателя — set_recipient; остальное из предложения предлагай как есть."
+        )
+
     shown = draft.details.get("shown_points") or []
-    if shown and not (draft.details.get("ozon_point_id") or draft.details.get("delivery_point")):
+    if shown and not offer and not (draft.details.get("ozon_point_id") or draft.details.get("delivery_point")):
         lines.append(
             f"Клиенту показаны пункты: {points.listing(shown)}. Выбор номером или адресом "
             "передай в pickup_point set_delivery_method."
@@ -577,7 +608,7 @@ async def _describe_escalation(peer_id: int) -> str:
     )
 
 
-async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
+async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolExecution:
     catalog = catalog_service.load_items()
     resolved, unresolved = [], []
 
@@ -640,6 +671,9 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     # «да» вместо города, пункта и карты.
     last = await repeat_delivery.last_for(peer_id)
     if last is not None:
+        offered = await _offer_as_last_time(peer_id, draft, last)
+        if offered is not None:
+            return offered
         last.remember(draft.details)
         await state.set_draft(peer_id, draft)
         return result + "\n" + repeat_delivery.suggestion(last)
@@ -1321,6 +1355,101 @@ async def _auto_invoice(peer_id: int) -> ToolExecution | None:
     return await _confirm_with_payment(peer_id, draft, source="invoice_auto")
 
 
+def _offer_message(draft: OrderDraft, offer) -> str:
+    from app.modules.orders import offers
+
+    cost = offers.client_delivery_cost(draft, offer)
+    item = draft.details.get("upsell_item")
+    match = catalog_service.find_item(item) if item else None
+    return templates.returning_offer(
+        items=draft.items,
+        delivery_method=offer.method,
+        delivery_label=offer.label,
+        delivery_cost=cost,
+        name=offer.name,
+        phone=offer.phone,
+        email=offer.email,
+        total=draft.items_total + cost,
+        upsell=item or "",
+        upsell_price=match["price"] if match else None,
+        gap=_threshold_gap(draft.items_total) if item else None,
+    )
+
+
+def _offer_keyboard(draft: OrderDraft) -> dict | None:
+    from app.messages import keyboard as keyboards
+
+    version = draft.details.get("version")
+    rows = [[
+        keyboards.text_button("Оформить", {"a": "offer_ok", "v": version}, "positive"),
+        keyboards.text_button("Изменить", {"a": "edit", "v": version}),
+    ]]
+    item = draft.details.get("upsell_item")
+    if item:
+        rows.append([keyboards.text_button(f"Добавить {item}", {"a": "add", "v": version})])
+    return keyboards.inline(rows)
+
+
+async def _offer_as_last_time(peer_id: int, draft: OrderDraft, last) -> ToolExecution | None:
+    """Постоянному клиенту — весь заказ одним сообщением.
+
+    None — предложение не собралось (флаг выключен, оплата не подключена,
+    получателя нет): тогда прежний путь с вопросами через модель. Пункт
+    недоступен — модель скажет об этом, предложит получателя и спросит пункт.
+    """
+    from app.modules.orders import buttons, offers
+
+    if not (settings.returning_one_question_enabled and payment_service.is_enabled()):
+        return None
+    recipient = await repeat_delivery.last_recipient_for(peer_id)
+    offer = await offers.prepare(draft, last, recipient)
+    if not offer.point_ok and offer.recipient_ok:
+        await state.set_draft(peer_id, draft)
+        return ToolExecution(
+            f"Черновик создан. Постоянный клиент, но {', '.join(offer.problems)}. Скажи "
+            "об этом клиенту одной фразой. Получателя предложи прошлого: "
+            + repeat_delivery.recipient_suggestion(recipient)
+            + f" Пункт спроси заново: «{templates.ASK_WHERE}»"
+        )
+    if not offer.ready:
+        return None
+    draft.details["offer"] = offer.to_details()
+    # «Изменить» — прошлый пункт остаётся под номером 1: модель выберет его
+    # без нового поиска, если клиент меняет только получателя.
+    last.remember(draft.details)
+    # Допродажа — в том же сообщении, кнопкой; отдельная кнопка не нужна.
+    draft.details["upsell_button_sent"] = True
+    await state.set_draft(peer_id, draft)
+    text = _offer_message(draft, offer)
+    buttons.stash(peer_id, _offer_keyboard(await state.get_draft(peer_id)))
+    return ToolExecution(text, client_reply=text)
+
+
+async def accept_offer(peer_id: int) -> ToolExecution:
+    """«Оформить» или «да» на предложение «как в прошлый раз»: сразу счёт."""
+    from app.modules.orders import offers
+
+    draft = await state.get_draft(peer_id)
+    offer = offers.Offer.from_details(draft.details.get("offer")) if draft else None
+    if offer is None:
+        return ToolExecution(
+            "Предложения «как в прошлый раз» нет — продолжай оформление обычными инструментами."
+        )
+    offers.apply(draft, offer)
+    await state.set_draft(peer_id, draft)
+    invoiced = await _auto_invoice(peer_id) if payment_service.is_enabled() else None
+    if invoiced is None:
+        return ToolExecution(
+            "Доставка и получатель записаны, но счёт сам не выставился. Сверь с клиентом "
+            "заказ, спроси «Оформляем?» и после «да» вызови confirm_order."
+        )
+    return invoiced
+
+
+async def _execute_accept_offer(peer_id: int) -> ToolExecution:
+    return await accept_offer(peer_id)
+
+
 async def _execute_confirm_order(peer_id: int) -> ToolExecution:
     draft = await state.get_draft(peer_id)
     if draft is None or draft.stage != "awaiting_confirmation":
@@ -1672,6 +1801,10 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
         )
 
     draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
+    if draft.details.get("offer"):
+        # Вес вырос — цена доставки в предложении устарела: пересчитаем
+        # перед счётом.
+        draft.details["offer"]["quoted_at"] = 0
     recalc = ""
     if draft.delivery_method:
         # Вес и объявленная ценность выросли — прежняя цена доставки неверна.
@@ -1760,7 +1893,10 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
 
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
     if name == "propose_order":
-        return ToolExecution(await _execute_propose_order(peer_id, tool_input))
+        result = await _execute_propose_order(peer_id, tool_input)
+        return result if isinstance(result, ToolExecution) else ToolExecution(result)
+    if name == "accept_offer":
+        return await _execute_accept_offer(peer_id)
     if name == "set_delivery_method":
         return await _execute_set_delivery_method(peer_id, tool_input)
     if name == "confirm_order":
@@ -1963,6 +2099,7 @@ async def _handle_turn(
         draft.stage if draft else None,
         with_feedback=delivered is not None,
         live_invoice=live is not None,
+        with_offer=bool(draft and draft.details.get("offer")),
     )
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
@@ -2059,6 +2196,7 @@ async def _handle_turn(
             fresh_draft.stage if fresh_draft else None,
             with_feedback=delivered is not None,
             live_invoice=fresh_draft is None and live is not None,
+            with_offer=bool(fresh_draft and fresh_draft.details.get("offer")),
         )
 
         # Последний круг зовём без инструментов: модель обязана ответить
