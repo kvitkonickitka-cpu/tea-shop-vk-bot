@@ -14,7 +14,7 @@
 import logging
 from typing import Any
 
-from app.messages import manager as manager_messages
+from app.messages import manager as manager_messages, templates
 from app.modules.dialog import vk_client
 from app.modules.orders import order_chat, state, vk_orders_client
 from app.modules.orders.state import OrderDraft
@@ -126,7 +126,7 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
 
     listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
     lines = [
-        f"Заказ №{order_id} принят: {listed} — {items_total:g} ₽.",
+        f"Заказ №{order_id} принят: {listed} — {templates.amount(items_total)} ₽.",
         "Осталось выбрать доставку. Дешевле всего пункт выдачи Ozon — "
         "заберёте сами. Быстрее, но дороже — пункт выдачи СДЭК, ещё есть "
         "курьер СДЭК до двери.",
@@ -141,5 +141,5 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
     await _tell_manager(
         order_id,
         user_id,
-        f"{listed} — {items_total:g} ₽. Клиенту предложено выбрать доставку в диалоге.",
+        f"{listed} — {templates.amount(items_total)} ₽. Клиенту предложено выбрать доставку в диалоге.",
     )

@@ -1604,10 +1604,15 @@ async def _handle_turn(
     spent: _Spent,
     attached: vk_attachments.Collected | None = None,
 ) -> str:
-    if not (attached and attached.any) and marketing.is_stop_request(user_text):
-        # «Стоп» решает код, без модели: отписка должна срабатывать всегда и
-        # одинаково. Флаг гасит только продающие напоминания — сообщения по
-        # заказам идут, как шли.
+    if (
+        not (attached and attached.any)
+        and marketing.is_stop_request(user_text)
+        and await marketing.answers_sales_reminder(peer_id)
+    ):
+        # «Стоп» в ответ на напоминание решает код, без модели: отписка
+        # должна срабатывать всегда и одинаково. Флаг гасит только продающие
+        # напоминания — сообщения по заказам идут, как шли. Во всех прочих
+        # случаях «стоп» — обычная реплика: посреди оформления это пауза.
         await marketing.opt_out(peer_id)
         reply = templates.marketing_stopped()
         await dialog_history.append_exchange(peer_id, user_text, reply)

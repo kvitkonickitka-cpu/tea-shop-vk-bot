@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
 from app.core import worktime
 from app.core.config import settings
 
@@ -43,12 +45,32 @@ PICKUP_EXPIRING = "pickup_expiring"
 REPEAT_NUDGE = "repeat_nudge"
 
 
+def _amount_value(value):
+    """Число из того, что пришло: число, строка, словарь или объект суммы.
+
+    ЮKassa отдаёт сумму как {"value": "917.00", "currency": "RUB"}, а её
+    SDK — объектом с полем value. Раньше такой объект, попав в шаблон,
+    печатался целиком: «namespace(value='917.00') ₽».
+    """
+    if isinstance(value, dict):
+        value = value.get("value")
+    elif not isinstance(value, (int, float, str, Decimal)) and hasattr(value, "value"):
+        value = value.value
+    return Decimal(str(value).strip().replace(" ", "").replace(",", "."))
+
+
 def amount(value) -> str:
-    """Сумма без лишнего нуля после точки."""
+    """Сумма для текста: «917», с копейками — «917,50».
+
+    Без экспоненты: `f"{x:g}"` превращал 1 500 000 в «1.5e+06».
+    """
     try:
-        return f"{float(value):g}"
-    except (TypeError, ValueError):
-        return str(value)
+        number = _amount_value(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return "—"
+    if number == number.to_integral_value():
+        return f"{number:.0f}"
+    return f"{number:.2f}".replace(".", ",")
 
 
 _MONTHS = (
