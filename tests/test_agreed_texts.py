@@ -51,12 +51,21 @@ def test_payment_step_names_the_link_lifetime(monkeypatch):
 
 
 @pytest.mark.parametrize("url", ["", "https://vk.com/@dva_chainika-usloviya"])
-def test_invoice_ready_shows_conditions_only_when_set(monkeypatch, url):
+def test_invoice_summary_shows_conditions_only_when_set(monkeypatch, url):
     monkeypatch.setattr(settings, "conditions_url", url)
-    text = templates.invoice_ready(total=917, link="https://pay/x", email="a@b.ru")
-    assert text.startswith("Счёт на 917 ₽ готов: https://pay/x")
+    text = templates.invoice_summary(
+        order_id=128, items=[{"name": "Те Гуань Инь", "quantity": 2, "price": 400}],
+        delivery_method="ozon_pvz", delivery_label="Ozon, пункт выдачи: Краснодар, Красная, 1",
+        delivery_cost=117, name="Иванов Иван", phone="+79001234567", email="a@b.ru",
+        total=917, link="https://pay/x",
+    )
+    assert text.startswith("Заказ №128 — проверьте, всё ли верно:\n• Те Гуань Инь × 2 — 800 ₽")
+    assert "Доставка: пункт выдачи Ozon, Краснодар, Красная, 1 — 117 ₽" in text
+    assert "Получатель: Иванов Иван, +79001234567, a@b.ru" in text
+    assert "Итого: 917 ₽\n\nОплатить: https://pay/x" in text
     assert "Ссылка действует 60 минут" in text and "чек на a@b.ru" in text
     assert ("Условия покупки" in text) == bool(url)
+    assert text.endswith("Если что-то не так — напишите, поправлю и пришлю новую ссылку.")
 
 
 def test_paid_promises_the_handover_period(monkeypatch):

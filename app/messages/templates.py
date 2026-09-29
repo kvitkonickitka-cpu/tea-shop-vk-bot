@@ -148,22 +148,76 @@ def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bo
     return "\n".join(lines)
 
 
-def invoice_ready(*, total, link: str, email: str = "", phone: str = "") -> str:
-    """Счёт выставлен — ответ на «да» в диалоге.
+def delivery_place(method: str | None, label: str | None) -> str:
+    """Куда везём — для текста клиенту: «пункт выдачи Ozon, <адрес>».
 
-    Не «заказ оформлен»: до оплаты клиент читал это как «всё готово». Сумма
-    рядом со ссылкой снимает вопрос «а сколько там», срок ссылки задаёт
-    ожидание, ссылка на условия — то, что покупатель принимает, когда платит.
+    Метка черновика («Ozon, пункт выдачи: …») внутренняя и читается плохо.
     """
-    lines = [
-        f"Счёт на {amount(total)} ₽ готов: {link}",
+    label = label or ""
+    address = label.split(": ", 1)[1] if ": " in label else ""
+    place = {
+        "ozon_pvz": "пункт выдачи Ozon",
+        "cdek_pvz": "пункт выдачи СДЭК",
+        "cdek_courier": "курьер СДЭК",
+    }.get(method or "")
+    if place is None:
+        return label or "—"
+    return f"{place}, {address}" if address else place
+
+
+def invoice_summary(
+    *,
+    order_id,
+    items: list[dict],
+    delivery_method: str | None,
+    delivery_label: str | None,
+    delivery_cost,
+    name: str,
+    phone: str,
+    email: str,
+    total,
+    link: str,
+) -> str:
+    """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
+
+    Подтверждением стала сама оплата, поэтому всё, что клиент мог бы
+    проверить на «Оформляем?», стоит здесь: состав, пункт, получатель и
+    почта полностью — опечатку в ней надо увидеть до оплаты, чек уйдёт туда.
+    """
+    head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
+    lines = [head]
+    for item in items:
+        quantity = int(item.get("quantity") or 1)
+        lines.append(
+            f"• {item.get('name', 'товар')} × {quantity} — "
+            f"{amount(float(item.get('price') or 0) * quantity)} ₽"
+        )
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    lines.append(f"Получатель: {name}, {phone}, {email}")
+    lines.append(f"Итого: {amount(total)} ₽")
+    lines.append("")
+    lines.append(f"Оплатить: {link}")
+    lines.append(
         f"Ссылка действует {settings.payment_invoice_ttl_minutes} минут. После "
-        f"оплаты пришлём чек на {receipt_destination(email, phone)} и сразу "
-        "передадим заказ в доставку.",
-    ]
+        f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
+    )
     if settings.conditions_url:
         lines.append(f"Условия покупки, доставки и возврата: {settings.conditions_url}")
+    lines.append("Если что-то не так — напишите, поправлю и пришлю новую ссылку.")
     return "\n".join(lines)
+
+
+def manager_paid_old_variant(order, link: str) -> str:
+    """Клиент поправил заказ после ссылки, а заплатил по старой."""
+    return (
+        f"⚠️ <b>Заказ №{order.id}: оплачен прошлый вариант заказа</b>\n"
+        "Клиент поправил заказ после ссылки, но заплатил по старой. Отправляем "
+        f"то, что оплачено: {composition(order.items or [])}, "
+        f"{delivery_place(order.delivery_method, (order.details or {}).get('delivery_label'))}, "
+        f"итого {amount(order.total)} ₽. Уточните у клиента, нужен ли ему новый вариант.\n"
+        f"{link}"
+    )
 
 
 def cdek_track(order, number: str, tracking_url: str) -> str:

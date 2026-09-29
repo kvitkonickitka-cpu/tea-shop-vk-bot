@@ -94,8 +94,72 @@ async def by_id(order_id: int) -> Order | None:
         return await session.get(Order, order_id)
 
 
+# Что из деталей заказа входит в снимок счёта: то, от чего зависит, что и
+# куда поедет, и на кого чек. Служебные отметки (напоминания, показанные
+# пункты) в снимок не идут — иначе любой ход модели делал бы его «другим».
+_SNAPSHOT_DETAILS = (
+    "recipient_name", "recipient_phone", "recipient_email", "address",
+    "ozon_point_id", "ozon_point_address", "delivery_point", "tariff_code",
+    "delivery_label", "carrier_delivery_cost",
+)
+
+
+def snapshot_of(draft: OrderDraft) -> dict:
+    """Снимок того, за что выставляется счёт."""
+    details = _details_of(draft)
+    return {
+        "items": [dict(item) for item in draft.items],
+        "items_total": float(draft.items_total),
+        "delivery_method": draft.delivery_method,
+        "delivery_cost": float(draft.delivery_cost or 0),
+        "total": float(draft.items_total + (draft.delivery_cost or 0)),
+        "details": {key: details[key] for key in _SNAPSHOT_DETAILS if key in details},
+    }
+
+
+def snapshot_of_order(order: Order) -> dict:
+    details = order.details or {}
+    return {
+        "items": [dict(item) for item in order.items or []],
+        "items_total": float(order.items_total or 0),
+        "delivery_method": order.delivery_method,
+        "delivery_cost": float(order.delivery_cost or 0),
+        "total": float(order.total or 0),
+        "details": {key: details[key] for key in _SNAPSHOT_DETAILS if key in details},
+    }
+
+
+async def apply_snapshot(order_id: int, snapshot: dict) -> Order | None:
+    """Вернуть заказу оплаченный вариант: состав, доставку, получателя."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return None
+        order.items = snapshot["items"]
+        order.items_total = snapshot["items_total"]
+        order.delivery_method = snapshot["delivery_method"]
+        order.delivery_cost = snapshot["delivery_cost"]
+        order.total = snapshot["total"]
+        details = {
+            key: value for key, value in (order.details or {}).items()
+            if key not in _SNAPSHOT_DETAILS
+        }
+        details.update(snapshot.get("details") or {})
+        order.details = details
+        await session.commit()
+        await session.refresh(order)
+        return order
+
+
 async def register_payment(
-    order_id: int, payment_id: str, *, attempt: int, status: str, amount: float
+    order_id: int,
+    payment_id: str,
+    *,
+    attempt: int,
+    status: str,
+    amount: float,
+    snapshot: dict | None = None,
 ) -> None:
     """Записать попытку оплаты заказа.
 
@@ -109,7 +173,7 @@ async def register_payment(
         insert(OrderPayment)
         .values(
             payment_id=payment_id, order_id=order_id, attempt=attempt,
-            status=status, amount=amount,
+            status=status, amount=amount, snapshot=snapshot,
         )
         .on_conflict_do_update(
             index_elements=[OrderPayment.payment_id],
@@ -264,3 +328,30 @@ async def set_state(order_id: int, **fields) -> None:
     async with session_factory() as session:
         await session.execute(update(Order).where(Order.id == order_id).values(**fields))
         await session.commit()
+
+
+async def open_payments(order_id: int) -> list[OrderPayment]:
+    """Попытки заказа, которые мы ещё не закрыли."""
+    return [row for row in await payments_of(order_id) if row.closed_at is None]
+
+
+async def live_invoice_order(peer_id: int) -> Order | None:
+    """Заказ клиента, по которому ссылка на оплату выставлена и ещё живёт.
+
+    Истёкший счёт догляд переводит в `payment_expired` и сам возвращает
+    черновик, так что «ждёт оплаты» здесь и значит «ссылка действует».
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        return (
+            await session.execute(
+                select(Order)
+                .where(
+                    Order.peer_id == peer_id,
+                    Order.status == "awaiting_payment",
+                    Order.payment_status.in_(("pending", "waiting_for_capture")),
+                )
+                .order_by(Order.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()

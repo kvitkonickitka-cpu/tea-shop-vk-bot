@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from app.messages import client as client_messages, templates
+from app.modules.dialog import vk_client
 from app.modules.marking import packing
 from app.modules.orders import (
     cdek_watch,
@@ -167,6 +168,18 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         logger.info("Платёж %s: заказ уже обработан", payment.id)
         return {"платёж": payment.id, "действий": "нет, уже обработан"}
 
+    # Клиент мог поправить заказ после ссылки и получить новую, а заплатить
+    # по старой. Поедет то, за что заплачено: возвращаем заказу снимок этой
+    # попытки и говорим менеджеру — клиент, возможно, ждёт другой вариант.
+    paid_old_variant = False
+    snapshot = attempt_row.snapshot if attempt_row is not None else None
+    if snapshot and snapshot != orders_repository.snapshot_of_order(order):
+        restored = await orders_repository.apply_snapshot(order.id, snapshot)
+        if restored is not None:
+            order = restored
+            paid_old_variant = True
+            logger.info("Заказ %s: оплачен прошлый вариант, возвращаем его состав", order.id)
+
     # Остальные счёта по этому заказу больше не наши: пометим закрытыми,
     # чтобы оплата по ним попала в ветку возврата, а не завела вторую
     # посылку. Попытку отмены ЮKassa для pending обычно отклоняет.
@@ -209,6 +222,10 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         order.ozon_posting = registered.ozon_posting or order.ozon_posting
 
     await order_chat.send(order, _paid_card(order, payment, was_closed=was_closed))
+    if paid_old_variant:
+        await order_chat.send(
+            order, templates.manager_paid_old_variant(order, vk_client.dialog_link(order.peer_id))
+        )
     await _tell_client(order, registered)
     return {
         "платёж": payment.id,
