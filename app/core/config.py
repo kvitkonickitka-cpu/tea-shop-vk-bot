@@ -194,6 +194,13 @@ class Settings(BaseSettings):
     repeat_nudge_days_per_pack: int = 21
     repeat_nudge_max_days: int = 60
 
+    # Склейка сообщений, написанных подряд: ждём столько секунд после
+    # последнего, но не дольше потолка от первого. 0 — выключено. Работает
+    # только с очередью: без неё сообщение разбирается прямо в вебхуке, и
+    # ожидание съело бы восемь секунд, что VK даёт на ответ.
+    message_debounce_seconds: float = 4
+    message_debounce_max_seconds: float = 12
+
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.
     catalog_sheet_csv_url: str = ""

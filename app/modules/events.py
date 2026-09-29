@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from app.modules.dialog import service
+from app.modules.dialog import inbound, service
 from app.modules.orders import service as orders_service
 
 logger = logging.getLogger(__name__)
@@ -20,13 +20,22 @@ async def process_event(body: dict) -> None:
     event_type = body.get("type")
     event_id = body.get("event_id", "")
 
+    if event_type == inbound.FLUSH_EVENT:
+        # Наше собственное событие: сообщения пришли, пока шёл прошлый ход.
+        # Отметки «обработано» ставит сам ход — по событиям клиента.
+        await inbound.process_pending(int(body["peer_id"]))
+        return
+
     if event_id and await service.already_processed(event_id):
         logger.info("Событие %s уже обработано, пропускаем", event_id)
         return
 
     if event_type == "message_new":
         message = body.get("object", {}).get("message", {})
-        await service.handle_message_new(message)
+        # Отметку «обработано» ставит тот ход, что ответил: сообщение может
+        # уйти в один ход с соседними, и отвечать на него будет другой вызов.
+        await inbound.accept(event_id, message)
+        return
     elif event_type == "message_reply":
         # У message_new object вложен под ключом "message", у message_reply
         # по документации VK — это сам объект сообщения; на случай если VK

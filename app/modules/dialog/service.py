@@ -84,7 +84,21 @@ async def handle_message_new(message: dict[str, Any]) -> None:
     attached = await attachments.collect(message)
     if not text and not attached.any:
         return
+    await respond(peer_id, text, attached)
 
+
+async def respond(
+    peer_id: int,
+    text: str,
+    attached: attachments.Collected,
+    *,
+    budget_seconds: float | None = None,
+) -> None:
+    """Один ход модели и ответ клиенту — для одного сообщения или пачки.
+
+    `budget_seconds` — сколько времени ходу осталось: склейка уже потратила
+    часть из 60 секунд, что Yandex Cloud даёт вызову контейнера.
+    """
     started = time.monotonic()
     # Докуда дошли к моменту, когда запись попадёт в лог. VK обрывает
     # соединение молча, и без этого из логов видна только общая длительность,
@@ -101,7 +115,9 @@ async def handle_message_new(message: dict[str, Any]) -> None:
         fire_and_forget(_set_typing_quietly(peer_id))
 
         try:
-            reply = await orders_conversation.handle_turn(peer_id, text, attached)
+            reply = await orders_conversation.handle_turn(
+                peer_id, text, attached, budget_seconds=budget_seconds
+            )
         except Exception:
             logger.exception("Claude generation failed for peer_id=%s", peer_id)
             # Не «скоро вернёмся с ответом»: механизма, который сам вернётся к

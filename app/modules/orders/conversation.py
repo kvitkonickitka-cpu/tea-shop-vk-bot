@@ -1580,7 +1580,11 @@ def _for_history(spoken: str, images: list) -> str:
 
 
 async def handle_turn(
-    peer_id: int, user_text: str, attached: vk_attachments.Collected | None = None
+    peer_id: int,
+    user_text: str,
+    attached: vk_attachments.Collected | None = None,
+    *,
+    budget_seconds: float | None = None,
 ) -> str:
     global _cold_start
     started = time.monotonic()
@@ -1588,7 +1592,7 @@ async def handle_turn(
     cold = _cold_start
     _cold_start = False
     try:
-        return await _handle_turn(peer_id, user_text, spent, attached)
+        return await _handle_turn(peer_id, user_text, spent, attached, budget_seconds)
     finally:
         logger.info(
             "ход peer_id=%s %s%s",
@@ -1603,6 +1607,7 @@ async def _handle_turn(
     user_text: str,
     spent: _Spent,
     attached: vk_attachments.Collected | None = None,
+    budget_seconds: float | None = None,
 ) -> str:
     if (
         not (attached and attached.any)
@@ -1738,7 +1743,9 @@ async def _handle_turn(
         # и клиент, спросивший цену, получал её вместо цены.
         last_round = (
             round_number == _MAX_TOOL_ROUNDS
-            or time.monotonic() - turn_started > _TURN_BUDGET_SECONDS
+            or time.monotonic() - turn_started > min(
+                _TURN_BUDGET_SECONDS, budget_seconds or _TURN_BUDGET_SECONDS
+            )
         )
         if last_round:
             logger.warning(
