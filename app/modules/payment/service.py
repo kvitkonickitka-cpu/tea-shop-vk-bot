@@ -135,11 +135,18 @@ async def tell_about_closed_invoice(order, notice: str) -> bool:
         if notice == templates.PAYMENT_DECLINED
         else templates.payment_expired(order)
     )
+    from app.messages import keyboard as keyboards
+
     return await client_messages.send(
         peer_id=order.peer_id,
         ref=client_messages.order_ref(order.id),
         event_type=notice,
         text=text,
+        # Новая ссылка одним нажатием: черновик уже возвращён со всем
+        # составом, и счёт выставляется тем же путём, что и в диалоге.
+        keyboard=keyboards.inline([[keyboards.text_button(
+            "Прислать новую ссылку", {"a": "new_link", "o": order.id}, "positive"
+        )]]),
     )
 
 

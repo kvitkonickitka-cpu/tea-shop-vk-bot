@@ -470,6 +470,42 @@ def marketing_stopped() -> str:
     )
 
 
+# Подсказки рядом с кнопками: не у всех приложений кнопки есть, и ответить
+# словами должно быть так же просто.
+POINTS_HINT = "Можно нажать кнопку или написать номер пункта."
+EMAIL_HINT = "Или напишите почту заново."
+ASK_RECIPIENT = "Пришлите одним сообщением ФИО, телефон и почту — сразу пришлю счёт."
+
+
+def button_stale() -> str:
+    """Нажата старая кнопка: заказ с тех пор изменился."""
+    return "Эта кнопка уже неактуальна."
+
+
+def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool) -> str:
+    """Пункт выбран кнопкой, а данных получателя ещё нет."""
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines = [f"Записала пункт: {address}. Доставка — {cost}, итого {amount(total)} ₽."]
+    if ask_recipient:
+        lines.append(ASK_RECIPIENT)
+    return "\n".join(lines)
+
+
+def item_added(*, name: str, items_total, gap=None, free: bool = False, next_step: str = "") -> str:
+    """Допродажа кнопкой «Добавить»."""
+    lines = [f"Добавила {name}. Товаров на {amount(items_total)} ₽."]
+    if free:
+        lines.append("Доставка для вас будет бесплатной 🙂")
+    elif gap:
+        lines.append(f"До бесплатной доставки не хватает {amount(gap)} ₽.")
+    if next_step:
+        lines.append(next_step)
+    return "\n".join(lines)
+
+
+ASK_WHERE = "Куда везти — город и улица, где удобно забрать?"
+
+
 def escalation_waiting() -> str:
     return "Вопрос у менеджера, он ответит здесь же, как только освободится 🙏"
 

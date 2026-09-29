@@ -108,6 +108,7 @@ async def send(
     event_type: str,
     text: str,
     on_failure=None,
+    keyboard: dict | None = None,
 ) -> bool:
     """Сказать клиенту один раз. True — сообщение ушло.
 
@@ -119,7 +120,11 @@ async def send(
         return False
 
     try:
-        await vk_client.send_message(peer_id, text, random_id=random_id(ref, event_type))
+        from app.messages import keyboard as keyboards
+
+        markup = await keyboards.for_peer(peer_id, keyboard)
+        extra = {"keyboard": markup} if markup else {}
+        await vk_client.send_message(peer_id, text, random_id=random_id(ref, event_type), **extra)
     except Exception as error:
         logger.exception("Не отправили клиенту «%s» по %s", event_type, ref)
         await _mark(ref, event_type, sent=False, error=f"{type(error).__name__}: {error}")

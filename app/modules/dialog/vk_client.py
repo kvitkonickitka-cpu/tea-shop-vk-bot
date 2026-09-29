@@ -83,7 +83,9 @@ async def set_typing(peer_id: int) -> None:
             raise RuntimeError(f"VK API error: {data['error']}")
 
 
-async def send_message(peer_id: int, text: str, random_id: int | None = None) -> None:
+async def send_message(
+    peer_id: int, text: str, random_id: int | None = None, keyboard: str | None = None
+) -> None:
     """Отправить сообщение клиенту.
 
     `random_id` — защита от дубликата на стороне ВК: с тем же значением он
@@ -99,6 +101,9 @@ async def send_message(peer_id: int, text: str, random_id: int | None = None) ->
         "message": text,
         "random_id": random.getrandbits(31) if random_id is None else random_id,
     }
+    if keyboard:
+        # Inline-клавиатура JSON-строкой; её собирает app/messages/keyboard.py.
+        params["keyboard"] = keyboard
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(f"{VK_API_URL}/messages.send", data=params)
         response.raise_for_status()

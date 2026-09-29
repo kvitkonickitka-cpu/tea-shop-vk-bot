@@ -1074,6 +1074,9 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
             # выставляется: ссылка ушла бы раньше, чем он проверил почту.
             if checked.suggestion:
                 draft.details["email_suggestion"] = checked.suggestion
+                # ФИО и телефон с этой попытки — для кнопки «Да, …»: нажатие
+                # записывает получателя кодом, не переспрашивая.
+                draft.details["pending_recipient"] = {"name": name, "phone": phone}
                 await state.set_draft(peer_id, draft)
             hint = (
                 f" Возможно, клиент имел в виду {checked.suggestion} — спроси, "
@@ -1088,6 +1091,7 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
         email = checked.email
 
     draft.details.pop("email_suggestion", None)
+    draft.details.pop("pending_recipient", None)
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone
     if email:
@@ -1542,6 +1546,9 @@ async def _confirm_with_payment(
 
     await state.clear_draft(peer_id)
 
+    from app.modules.orders import buttons
+
+    buttons.stash(peer_id, buttons.pay_keyboard(payment.amount, payment.confirmation_url))
     # Не «заказ оформлен»: до оплаты клиент читал это как «всё готово».
     # Сводка целиком — подтверждением теперь служит сама оплата.
     reply = templates.invoice_summary(
@@ -1830,6 +1837,13 @@ _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 _BULLET = re.compile(r"^(\s*)[*-]\s+", re.M)
 
 
+async def _with_buttons(peer_id: int, reply: str) -> str:
+    """Кнопки под ответом хода — по тому, чем ход закончился."""
+    from app.modules.orders import buttons
+
+    return await buttons.prepare(peer_id, reply)
+
+
 def plain_text(text: str) -> str:
     """Ответ без markdown: жирный — обычным текстом, пункты — «•»."""
     if not text:
@@ -2025,7 +2039,7 @@ async def _handle_turn(
                     )
 
         if executions and executions[-1][1].client_reply is not None:
-            reply = plain_text(executions[-1][1].client_reply)
+            reply = await _with_buttons(peer_id, plain_text(executions[-1][1].client_reply))
             await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
             return reply
 
@@ -2069,6 +2083,8 @@ async def _handle_turn(
         if last_round:
             break
 
-    reply = plain_text(claude_client.extract_text(response, default=_NO_TEXT_FALLBACK))
+    reply = await _with_buttons(
+        peer_id, plain_text(claude_client.extract_text(response, default=_NO_TEXT_FALLBACK))
+    )
     await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
     return reply

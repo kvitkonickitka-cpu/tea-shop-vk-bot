@@ -34,7 +34,8 @@ async def process_event(body: dict) -> None:
         message = body.get("object", {}).get("message", {})
         # Отметку «обработано» ставит тот ход, что ответил: сообщение может
         # уйти в один ход с соседними, и отвечать на него будет другой вызов.
-        await inbound.accept(event_id, message)
+        # client_info — что умеет приложение клиента: от него зависят кнопки.
+        await inbound.accept(event_id, message, body.get("object", {}).get("client_info"))
         return
     elif event_type == "message_reply":
         # У message_new object вложен под ключом "message", у message_reply

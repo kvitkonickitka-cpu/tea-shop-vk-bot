@@ -55,6 +55,10 @@ async def set_draft(peer_id: int, draft: OrderDraft) -> None:
     # черновик (propose_order) приходит с пустыми details и получает новое
     # время — а с ним и право на своё напоминание.
     draft.details.setdefault("started_at", datetime.now(timezone.utc).isoformat())
+    # Версия черновика: кнопка помнит, при какой версии её отправили, и после
+    # любой правки становится неактуальной — нажатие не сделает то, чего
+    # клиент уже не видит.
+    draft.details["version"] = int(draft.details.get("version") or 0) + 1
     try:
         session_factory = get_session_factory()
     except RuntimeError:

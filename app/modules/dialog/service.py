@@ -129,7 +129,10 @@ async def respond(
 
         generated = time.monotonic()
         stage = "отправка в VK"
-        await vk_client.send_message(peer_id, reply)
+        from app.modules.orders import buttons
+
+        markup = buttons.take_ready(peer_id)
+        await vk_client.send_message(peer_id, reply, **({"keyboard": markup} if markup else {}))
         stage = "готово"
     finally:
         # finally вокруг всего обработчика, а не только отправки: когда VK
@@ -175,3 +178,20 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
 
     await escalation_state.mark_resolved(peer_id)
     await escalation_log.resolve_latest(peer_id, admin_author_id)
+
+
+async def send_press_reply(peer_id: int, label: str, reply: str, keyboard: dict | None, *, to_model: bool) -> None:
+    """Ответ на нажатие кнопки — шаблоном, мимо модели.
+
+    В историю — как обычный обмен: нажатие видно подписью кнопки, ответ —
+    как реплика бота. Если нажатие дальше уходит модели (старая кнопка), в
+    историю пишем только ответ: подпись модель получит своим ходом.
+    """
+    from app.messages import keyboard as keyboards
+
+    markup = await keyboards.for_peer(peer_id, keyboard)
+    await vk_client.send_message(peer_id, reply, **({"keyboard": markup} if markup else {}))
+    if to_model:
+        await dialog_history.append_message(peer_id, "assistant", reply, author=dialog_history.AUTHOR_BOT)
+    else:
+        await dialog_history.append_exchange(peer_id, label, reply)

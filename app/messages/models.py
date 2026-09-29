@@ -83,6 +83,10 @@ class ClientPreference(Base):
     peer_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     marketing_opt_out: Mapped[bool] = mapped_column(Boolean, default=False)
     opted_out_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Что умеет приложение клиента — `client_info` из последнего message_new.
+    # Нужно и сообщениям, которые бот пишет сам по таймеру: у них своего
+    # message_new нет.
+    client_info: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
 
 class FunnelEvent(Base):

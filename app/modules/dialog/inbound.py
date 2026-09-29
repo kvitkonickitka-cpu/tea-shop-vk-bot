@@ -170,6 +170,26 @@ async def _finish(rows: list[InboundMessage]) -> None:
 
 async def _respond(batch: Batch, budget_seconds: float) -> None:
     from app.modules.dialog import service
+    from app.modules.orders import buttons
+
+    # Нажатия кнопок — кодом, по порядку, до хода модели. Что код решить не
+    # может («Нет», «Изменить», старая кнопка), уходит модели текстом.
+    texts: list[InboundMessage] = []
+    for row in batch.rows:
+        if not is_button(row.message):
+            texts.append(row)
+            continue
+        press = await buttons.handle(batch.peer_id, row.message)
+        if press.reply:
+            await service.send_press_reply(
+                batch.peer_id, row.message.get("text") or "", press.reply, press.keyboard,
+                to_model=press.to_model,
+            )
+        if press.to_model:
+            texts.append(row)
+    if not texts:
+        return
+    batch = Batch(batch.peer_id, texts)
 
     attached = await attachments.collect(batch.merged_message)
     words = batch.text
@@ -242,7 +262,7 @@ async def process_pending(peer_id: int) -> bool:
     return await _run_turn(peer_id, time.monotonic())
 
 
-async def accept(event_id: str, message: dict) -> None:
+async def accept(event_id: str, message: dict, client_info: dict | None = None) -> None:
     """Принять сообщение клиента: склеить с соседними и ответить одним ходом.
 
     Отметку «обработано» ставит тот ход, который ответил. Если этот вызов
@@ -252,6 +272,10 @@ async def accept(event_id: str, message: dict) -> None:
 
     started = time.monotonic()
     peer_id = message["peer_id"]
+
+    from app.messages import keyboard as keyboards
+
+    await keyboards.remember_client(peer_id, client_info)
 
     try:
         get_session_factory()
