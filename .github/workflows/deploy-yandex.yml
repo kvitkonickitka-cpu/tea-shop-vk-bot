@@ -39,6 +39,10 @@ jobs:
           echo '${{ secrets.YC_SA_KEY }}' > sa-key.json
           yc config set service-account-key sa-key.json
           yc config set folder-id ${{ secrets.YC_FOLDER_ID }}
+          # Свежий yc (ставится заново на каждый запуск) без явного адреса API
+          # падает на `serverless container` с «endpoint should be set»
+          # (01.10.2026). Адрес публичного API Yandex Cloud — постоянный.
+          yc config set endpoint api.cloud.yandex.net:443
 
       - name: Configure Docker for Yandex Container Registry
         run: yc container registry configure-docker
