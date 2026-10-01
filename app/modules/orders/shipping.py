@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.modules.delivery import cdek_client, ozon_client
 from app.messages import manager as manager_messages, templates
 from app.modules.dialog import vk_client
+from app.modules.orders import contacts
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,9 @@ async def _in_ozon(
             shipment_method_id=settings.ozon_shipment_method_id,
             delivery_point_id=int(details["ozon_point_id"]),
             recipient_name=details["recipient_name"],
-            phone_number=details["recipient_phone"],
+            # Номер из старого заказа мог сохраниться как написали — Ozon
+            # ждёт +7XXXXXXXXXX.
+            phone_number=contacts.normalize_phone(details["recipient_phone"]) or details["recipient_phone"],
             items=items,
             weight_grams=weight_grams(items),
             length_mm=settings.ozon_default_length_mm,
