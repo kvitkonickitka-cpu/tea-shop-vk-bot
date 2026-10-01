@@ -504,6 +504,22 @@ def item_added(*, name: str, items_total, gap=None, free: bool = False, next_ste
 
 
 ASK_WHERE = "Куда везти — город и улица, где удобно забрать?"
+ASK_POINT_AND_RECIPIENT = (
+    "Выберите пункт выдачи и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
+)
+ASK_POINT = "Выберите пункт выдачи — сразу пришлю счёт."
+
+
+def recipient_written(*, name: str, phone: str, email: str, next_step: str = "") -> str:
+    """Прошлый получатель записан кнопкой «Да, на эти данные»."""
+    text = f"Записала получателя: {name}, {phone}, {email}."
+    return f"{text}\n{next_step}" if next_step else text
+
+
+def email_written(email: str, next_step: str = "") -> str:
+    """Почта с исправленной опечаткой записана кнопкой «Да, …»."""
+    text = f"Записала почту {email}."
+    return f"{text}\n{next_step}" if next_step else text
 
 
 def returning_offer(

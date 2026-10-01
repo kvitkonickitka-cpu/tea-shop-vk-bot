@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from app.core.database import get_session_factory
-from app.modules.orders import repository as orders_repository
+from app.modules.orders import contacts, repository as orders_repository
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -170,7 +170,10 @@ async def last_recipient_for(peer_id: int) -> LastRecipient | None:
     for order in await _successful_orders(peer_id):
         details = order.details or {}
         name = (details.get("recipient_name") or "").strip()
-        phone = (details.get("recipient_phone") or "").strip()
+        raw_phone = (details.get("recipient_phone") or "").strip()
+        # Клиент видит номер так, как мы его запишем, — +7XXXXXXXXXX. В
+        # старых заказах он лежит как его когда-то написали («8921…»).
+        phone = contacts.normalize_phone(raw_phone) or raw_phone
         if name and phone:
             return LastRecipient(
                 order.id, name, phone, (details.get("recipient_email") or "").strip()
