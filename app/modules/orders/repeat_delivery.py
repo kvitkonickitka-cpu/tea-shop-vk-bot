@@ -38,6 +38,8 @@ class LastDelivery:
     city: str
     # Адрес пункта (Ozon, СДЭК) или адрес доставки курьером.
     place: str
+    # Код пункта у перевозчика: id пункта Ozon или код пункта СДЭК.
+    point_id: str | int | None = None
 
     def spoken(self) -> str:
         """Как назвать клиенту."""
@@ -51,27 +53,41 @@ class LastDelivery:
         """Каким вызовом повторить — дословно, чтобы модель не додумывала."""
         if self.method == "cdek_courier":
             return f'set_delivery_method(method="cdek_courier", address="{self.place}")'
+        # С кодом пункта прошлый адрес лежит в черновике списком из одного
+        # пункта (`remember`) — выбор «1» код сведёт к нему без нового поиска,
+        # но цену и доступность пункта всё равно проверит заново.
+        pickup = "1" if self.point_id else self.place
         return (
             f'set_delivery_method(method="{self.method}", address="{self.city}", '
-            f'pickup_point="{self.place}")'
+            f'pickup_point="{pickup}")'
         )
+
+    def remember(self, details: dict) -> None:
+        """Положить прошлый пункт в черновик как показанный — под номером 1."""
+        from app.modules.orders import points
+
+        if self.point_id and self.method in ("ozon_pvz", "cdek_pvz"):
+            points.remember(details, self.method, self.city, [{"id": self.point_id, "address": self.place}])
 
 
 def _from_order(order: Order) -> LastDelivery | None:
     details = order.details or {}
     city = (details.get("address") or "").strip()
+    point_id = None
     if order.delivery_method == "ozon_pvz":
         place = (details.get("ozon_point_address") or "").strip()
+        point_id = details.get("ozon_point_id")
     elif order.delivery_method == "cdek_pvz":
         label = details.get("delivery_label") or ""
         place = label[len(_CDEK_PVZ_PREFIX):].strip() if label.startswith(_CDEK_PVZ_PREFIX) else ""
+        point_id = details.get("delivery_point")
     elif order.delivery_method == "cdek_courier":
         place = city
     else:
         return None
     if not city or not place:
         return None
-    return LastDelivery(order.id, order.delivery_method, city, place)
+    return LastDelivery(order.id, order.delivery_method, city, place, point_id)
 
 
 async def _successful_orders(peer_id: int) -> list[Order]:

@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -82,3 +83,25 @@ class ClientPreference(Base):
     peer_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     marketing_opt_out: Mapped[bool] = mapped_column(Boolean, default=False)
     opted_out_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Что умеет приложение клиента — `client_info` из последнего message_new.
+    # Нужно и сообщениям, которые бот пишет сам по таймеру: у них своего
+    # message_new нет.
+    client_info: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
+class FunnelEvent(Base):
+    """Журнал шагов воронки: нажатия кнопок, счета, выставленные кодом.
+
+    Отдельно от `client_notices`: тот — про «одно событие — одно сообщение»
+    и уникален по событию, а нажать одну кнопку клиент может и дважды, и
+    каждое нажатие нужно посчитать. Здесь только дописываем строки.
+    """
+
+    __tablename__ = "funnel_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    event: Mapped[str] = mapped_column(String, index=True)
+    order_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

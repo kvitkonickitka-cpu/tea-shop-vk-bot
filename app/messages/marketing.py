@@ -15,12 +15,13 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core import worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages.models import ClientPreference
+from app.messages.models import ClientNotice, ClientPreference
 
 # Отписка распознаётся кодом, а не моделью: «стоп» должен работать всегда,
 # одинаково и без обращения к Claude. Поэтому и правило узкое — короткое
@@ -36,8 +37,27 @@ _FILLER = {
 }
 _MAX_WORDS = 5
 
+# Продающие напоминания: только на них «стоп» означает отписку.
+SALES_REMINDERS = ("draft_nudge_sent", "repeat_nudge")
+
 # Без базы отписка держится в памяти процесса — лучше, чем забыть её совсем.
 _fallback_opted_out: set[int] = set()
+
+
+def asks_not_to_write(text: str) -> bool:
+    """Прямая просьба не писать: «не пишите», «отпишите меня», «отписаться».
+
+    В отличие от «стоп», это не спутать с «подождите»: даже посреди заказа
+    такой клиент не хочет, чтобы бот писал ему сам.
+    """
+    raw = (text or "").strip().lower().replace("ё", "е")
+    if not raw or "?" in raw:
+        return False
+    words = re.findall(r"[а-яa-z]+", raw)
+    if not words or len(words) > _MAX_WORDS:
+        return False
+    phrase = " ".join(words) + " "
+    return any(stop in phrase for stop in _STOP_PHRASES)
 
 
 def is_stop_request(text: str) -> bool:
@@ -52,6 +72,47 @@ def is_stop_request(text: str) -> bool:
     if any(stop in phrase for stop in _STOP_PHRASES):
         return True
     return words[0] in _STOP_START and all(word in _FILLER for word in words[1:])
+
+
+async def answers_sales_reminder(peer_id: int) -> bool:
+    """Отвечает ли клиент на продающее напоминание.
+
+    «Стоп» посреди оформления — это «подождите», а не отписка: раньше код
+    глушил такое сообщение, модель его не видела, и клиент вместо «хорошо,
+    заказ сохранён» получал ответ про рассылки. Отпиской считаем «стоп»,
+    только когда последнее, что бот написал сам, — напоминание «заказ ждёт
+    вас» или «повторить заказ?», и клиент после него ещё ничего не писал.
+    Напоминания об оплате сюда не входят: это про заказ, а не реклама.
+    """
+    from app.modules.dialog.models import ConversationMessage
+
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return False
+    async with session_factory() as session:
+        last = (
+            await session.execute(
+                select(ClientNotice.event_type, ClientNotice.sent_at)
+                .where(ClientNotice.peer_id == peer_id, ClientNotice.sent_at.is_not(None))
+                .order_by(ClientNotice.sent_at.desc())
+                .limit(1)
+            )
+        ).first()
+        if last is None or last.event_type not in SALES_REMINDERS:
+            return False
+        wrote_since = (
+            await session.execute(
+                select(ConversationMessage.id)
+                .where(
+                    ConversationMessage.peer_id == peer_id,
+                    ConversationMessage.role == "user",
+                    ConversationMessage.created_at > last.sent_at,
+                )
+                .limit(1)
+            )
+        ).first()
+    return wrote_since is None
 
 
 def in_window(now: datetime | None = None) -> bool:

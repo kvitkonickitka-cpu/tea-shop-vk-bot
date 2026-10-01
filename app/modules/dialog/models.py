@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -92,3 +93,27 @@ class DialogReport(Base):
 
     peer_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InboundMessage(Base):
+    """Входящее сообщение клиента, которое ждёт своего хода.
+
+    Клиент пишет данные несколькими сообщениями подряд, и каждое раньше
+    получало свой ответ. Теперь сообщения копятся здесь, а один ход модели
+    отвечает на всю пачку. Строка живёт в базе, а не в памяти: сообщения
+    одного клиента разбирают разные вызовы контейнера, и договориться они
+    могут только через базу.
+
+    `done_at` ставит тот, кто ответил клиенту, — вместе с отметкой
+    «обработано» для события ВК. Пока её нет, сообщение ещё ничьё: упавший
+    ход его не съедает, следующий подберёт.
+    """
+
+    __tablename__ = "inbound_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True)
+    message: Mapped[dict] = mapped_column(JSONB)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    done_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -122,6 +122,11 @@ class OrderPayment(Base):
     )
     # Возврат, если этот платёж пришёл вторым и его пришлось вернуть.
     refund_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # За что выставлен именно этот счёт: состав, суммы, доставка, получатель.
+    # Клиент может поправить заказ после ссылки — тогда выставляется новая
+    # попытка, а старая ссылка у ЮKassa ещё какое-то время принимает оплату.
+    # Если заплатят по ней, поедет то, что оплачено, а не последняя правка.
+    snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -34,7 +34,7 @@ from sqlalchemy import func, select
 from app.core import worktime
 from app.core.config import free_delivery_threshold, settings
 from app.core.database import get_session_factory
-from app.messages import client as client_messages, marketing, templates
+from app.messages import client as client_messages, keyboard as keyboards, marketing, templates
 from app.modules.catalog import service as catalog_service
 from app.modules.dialog import escalation_state, history as dialog_history
 from app.modules.dialog.models import ConversationMessage
@@ -103,6 +103,15 @@ def nudge_text(row: OrderDraftRow) -> str:
             approximate=approximate,
         )
     return templates.draft_nudge_unpriced(items, items_total=items_total)
+
+
+def nudge_keyboard(row: OrderDraftRow) -> dict | None:
+    """«Оформить» — только когда доставка посчитана: иначе оформлять нечего."""
+    if not (row.delivery_method and row.delivery_cost is not None):
+        return None
+    return keyboards.inline([[keyboards.text_button(
+        "Оформить", {"a": "checkout", "v": (row.details or {}).get("version")}, "positive"
+    )]])
 
 
 async def _conversation_state(session, peer_id: int, started: datetime):
@@ -184,6 +193,7 @@ async def check_drafts(now: datetime | None = None) -> dict:
             ref=ref,
             event_type=templates.DRAFT_NUDGE,
             text=nudge_text(row),
+            keyboard=nudge_keyboard(row),
         ):
             sent += 1
             logger.info(

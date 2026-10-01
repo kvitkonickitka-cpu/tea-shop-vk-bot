@@ -135,11 +135,18 @@ async def tell_about_closed_invoice(order, notice: str) -> bool:
         if notice == templates.PAYMENT_DECLINED
         else templates.payment_expired(order)
     )
+    from app.messages import keyboard as keyboards
+
     return await client_messages.send(
         peer_id=order.peer_id,
         ref=client_messages.order_ref(order.id),
         event_type=notice,
         text=text,
+        # Новая ссылка одним нажатием: черновик уже возвращён со всем
+        # составом, и счёт выставляется тем же путём, что и в диалоге.
+        keyboard=keyboards.inline([[keyboards.text_button(
+            "Прислать новую ссылку", {"a": "new_link", "o": order.id}, "positive"
+        )]]),
     )
 
 
@@ -260,8 +267,13 @@ async def issue_for_order(order) -> tuple[yookassa_client.Payment | None, str]:
 
     await orders_repository.reopen_for_payment(order.id, draft, payment.id, payment.status)
     await orders_repository.register_payment(
-        order.id, payment.id, attempt=attempt, status=payment.status, amount=payment.amount
+        order.id, payment.id, attempt=attempt, status=payment.status, amount=payment.amount,
+        snapshot=orders_repository.snapshot_of(draft),
     )
+    # Новая ссылка отменяет прежние — так же, как при правке в диалоге.
+    for row in await orders_repository.open_payments(order.id):
+        if row.payment_id != payment.id:
+            await orders_repository.close_payment(row.payment_id)
     return payment, f"счёт выставлен, попытка {attempt}"
 
 

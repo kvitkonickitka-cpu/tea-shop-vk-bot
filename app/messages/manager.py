@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import html
 import logging
+import re
 import zlib
 from datetime import datetime, timedelta, timezone
 
@@ -167,10 +169,15 @@ async def _mark_failed(notification_id: int, attempts: int, error: str) -> None:
 
 
 def _plain(text: str) -> str:
-    """Текст без телеграмной разметки: в ВК теги показываются как есть."""
-    for tag in ("<b>", "</b>", "<i>", "</i>", "<code>", "</code>"):
-        text = text.replace(tag, "")
-    return text
+    """Карточка для ВК: без тегов телеграма и с раскодированными сущностями.
+
+    Карточки размечены HTML под телеграм. В ВК теги видны как есть, а
+    `&lt;` — буквально «&lt;». Ссылку из `<a href>` не теряем: в ВК она
+    нужна текстом.
+    """
+    text = re.sub(r'<a\s+href="([^"]*)"[^>]*>(.*?)</a>', r"\2: \1", text, flags=re.S)
+    text = re.sub(r"</?[a-zA-Z][^<>]*>", "", text)
+    return html.unescape(text)
 
 
 async def _fallback_to_admin(

@@ -105,6 +105,10 @@ _MISSING_COLUMNS = (
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS at_pickup_at TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS storage_until DATE",
+    # Короткий путь до оплаты: снимок того, за что выставлен каждый счёт.
+    "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS snapshot JSONB",
+    # Кнопки ВК: что умеет приложение клиента.
+    "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS client_info JSONB",
 )
 
 

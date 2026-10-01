@@ -84,7 +84,9 @@ async def test_add_to_order_resets_counted_delivery(clean, catalog):
     draft = await state.get_draft(PEER)
     assert draft.stage == "awaiting_delivery" and draft.delivery_cost is None
     assert "ozon_point_id" not in draft.details
-    assert "method=ozon_pvz" in result and "Ставропольская, 230" in result
+    assert "method=ozon_pvz" in result and "pickup_point=«1»" in result
+    # Выбранный пункт остался в черновике под номером 1 — без нового поиска.
+    assert draft.details["shown_points"][0]["address"] == "Краснодар, Ставропольская, 230"
     await state.clear_draft(PEER)
 
 

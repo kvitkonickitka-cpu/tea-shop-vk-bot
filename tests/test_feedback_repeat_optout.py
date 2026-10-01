@@ -191,6 +191,10 @@ async def test_stop_sets_flag_without_model(clean, outbox, monkeypatch):
         raise AssertionError("модель не должна обрабатывать «стоп»")
 
     monkeypatch.setattr(conversation.claude_client, "converse", converse)
+    # «Стоп» — отписка только в ответ на продающее напоминание.
+    await client_messages.send(
+        peer_id=PEER, ref="order:1", event_type=templates.REPEAT_NUDGE, text="Повторить заказ?"
+    )
     reply = await conversation.handle_turn(PEER, "Стоп")
     assert reply == (
         "Хорошо, больше не буду присылать напоминания. Сообщения по вашим заказам и "

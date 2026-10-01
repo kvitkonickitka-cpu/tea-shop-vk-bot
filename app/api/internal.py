@@ -12,7 +12,7 @@ from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
-from app.modules.dialog import escalation_watch, telegram_client
+from app.modules.dialog import escalation_watch, inbound, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import (
     cancellation,
@@ -132,6 +132,10 @@ async def _run_scheduled() -> dict:
     result["open_questions"] = await _run_task(
         "Вопросы без ответа", escalation_watch.check_open_questions()
     )
+
+    # Сообщения клиентов, которые никто не взял: хозяин хода умер между
+    # ответом и передачей остатка. Дёшево и важнее всего остального.
+    result["inbound"] = await _run_task("Сообщения без ответа", inbound.rescue_stale())
 
     # Брошенные черновики: пара запросов к базе, и тоже до каталога Ozon.
     result["draft_nudges"] = await _run_task(

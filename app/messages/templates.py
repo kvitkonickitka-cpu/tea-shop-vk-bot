@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
 from app.core import worktime
 from app.core.config import settings
 
@@ -43,12 +45,32 @@ PICKUP_EXPIRING = "pickup_expiring"
 REPEAT_NUDGE = "repeat_nudge"
 
 
+def _amount_value(value):
+    """Число из того, что пришло: число, строка, словарь или объект суммы.
+
+    ЮKassa отдаёт сумму как {"value": "917.00", "currency": "RUB"}, а её
+    SDK — объектом с полем value. Раньше такой объект, попав в шаблон,
+    печатался целиком: «namespace(value='917.00') ₽».
+    """
+    if isinstance(value, dict):
+        value = value.get("value")
+    elif not isinstance(value, (int, float, str, Decimal)) and hasattr(value, "value"):
+        value = value.value
+    return Decimal(str(value).strip().replace(" ", "").replace(",", "."))
+
+
 def amount(value) -> str:
-    """Сумма без лишнего нуля после точки."""
+    """Сумма для текста: «917», с копейками — «917,50».
+
+    Без экспоненты: `f"{x:g}"` превращал 1 500 000 в «1.5e+06».
+    """
     try:
-        return f"{float(value):g}"
-    except (TypeError, ValueError):
-        return str(value)
+        number = _amount_value(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return "—"
+    if number == number.to_integral_value():
+        return f"{number:.0f}"
+    return f"{number:.2f}".replace(".", ",")
 
 
 _MONTHS = (
@@ -126,22 +148,76 @@ def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bo
     return "\n".join(lines)
 
 
-def invoice_ready(*, total, link: str, email: str = "", phone: str = "") -> str:
-    """Счёт выставлен — ответ на «да» в диалоге.
+def delivery_place(method: str | None, label: str | None) -> str:
+    """Куда везём — для текста клиенту: «пункт выдачи Ozon, <адрес>».
 
-    Не «заказ оформлен»: до оплаты клиент читал это как «всё готово». Сумма
-    рядом со ссылкой снимает вопрос «а сколько там», срок ссылки задаёт
-    ожидание, ссылка на условия — то, что покупатель принимает, когда платит.
+    Метка черновика («Ozon, пункт выдачи: …») внутренняя и читается плохо.
     """
-    lines = [
-        f"Счёт на {amount(total)} ₽ готов: {link}",
+    label = label or ""
+    address = label.split(": ", 1)[1] if ": " in label else ""
+    place = {
+        "ozon_pvz": "пункт выдачи Ozon",
+        "cdek_pvz": "пункт выдачи СДЭК",
+        "cdek_courier": "курьер СДЭК",
+    }.get(method or "")
+    if place is None:
+        return label or "—"
+    return f"{place}, {address}" if address else place
+
+
+def invoice_summary(
+    *,
+    order_id,
+    items: list[dict],
+    delivery_method: str | None,
+    delivery_label: str | None,
+    delivery_cost,
+    name: str,
+    phone: str,
+    email: str,
+    total,
+    link: str,
+) -> str:
+    """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
+
+    Подтверждением стала сама оплата, поэтому всё, что клиент мог бы
+    проверить на «Оформляем?», стоит здесь: состав, пункт, получатель и
+    почта полностью — опечатку в ней надо увидеть до оплаты, чек уйдёт туда.
+    """
+    head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
+    lines = [head]
+    for item in items:
+        quantity = int(item.get("quantity") or 1)
+        lines.append(
+            f"• {item.get('name', 'товар')} × {quantity} — "
+            f"{amount(float(item.get('price') or 0) * quantity)} ₽"
+        )
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    lines.append(f"Получатель: {name}, {phone}, {email}")
+    lines.append(f"Итого: {amount(total)} ₽")
+    lines.append("")
+    lines.append(f"Оплатить: {link}")
+    lines.append(
         f"Ссылка действует {settings.payment_invoice_ttl_minutes} минут. После "
-        f"оплаты пришлём чек на {receipt_destination(email, phone)} и сразу "
-        "передадим заказ в доставку.",
-    ]
+        f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
+    )
     if settings.conditions_url:
         lines.append(f"Условия покупки, доставки и возврата: {settings.conditions_url}")
+    lines.append("Если что-то не так — напишите, поправлю и пришлю новую ссылку.")
     return "\n".join(lines)
+
+
+def manager_paid_old_variant(order, link: str) -> str:
+    """Клиент поправил заказ после ссылки, а заплатил по старой."""
+    return (
+        f"⚠️ <b>Заказ №{order.id}: оплачен прошлый вариант заказа</b>\n"
+        "Клиент поправил заказ после ссылки, но заплатил по старой. Отправляем "
+        f"то, что оплачено: {composition(order.items or [])}, "
+        f"{delivery_place(order.delivery_method, (order.details or {}).get('delivery_label'))}, "
+        f"итого {amount(order.total)} ₽. Уточните у клиента, нужен ли ему новый вариант.\n"
+        f"{link}"
+    )
 
 
 def cdek_track(order, number: str, tracking_url: str) -> str:
@@ -392,6 +468,82 @@ def marketing_stopped() -> str:
         "Хорошо, больше не буду присылать напоминания. Сообщения по вашим "
         "заказам и доставке будут приходить как обычно."
     )
+
+
+# Подсказки рядом с кнопками: не у всех приложений кнопки есть, и ответить
+# словами должно быть так же просто.
+POINTS_HINT = "Можно нажать кнопку или написать номер пункта."
+EMAIL_HINT = "Или напишите почту заново."
+ASK_RECIPIENT = "Пришлите одним сообщением ФИО, телефон и почту — сразу пришлю счёт."
+
+
+def button_stale() -> str:
+    """Нажата старая кнопка: заказ с тех пор изменился."""
+    return "Эта кнопка уже неактуальна."
+
+
+def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool) -> str:
+    """Пункт выбран кнопкой, а данных получателя ещё нет."""
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines = [f"Записала пункт: {address}. Доставка — {cost}, итого {amount(total)} ₽."]
+    if ask_recipient:
+        lines.append(ASK_RECIPIENT)
+    return "\n".join(lines)
+
+
+def item_added(*, name: str, items_total, gap=None, free: bool = False, next_step: str = "") -> str:
+    """Допродажа кнопкой «Добавить»."""
+    lines = [f"Добавила {name}. Товаров на {amount(items_total)} ₽."]
+    if free:
+        lines.append("Доставка для вас будет бесплатной 🙂")
+    elif gap:
+        lines.append(f"До бесплатной доставки не хватает {amount(gap)} ₽.")
+    if next_step:
+        lines.append(next_step)
+    return "\n".join(lines)
+
+
+ASK_WHERE = "Куда везти — город и улица, где удобно забрать?"
+
+
+def returning_offer(
+    *,
+    items: list[dict],
+    delivery_method: str,
+    delivery_label: str,
+    delivery_cost,
+    name: str,
+    phone: str,
+    email: str,
+    total,
+    upsell: str = "",
+    upsell_price=None,
+    gap=None,
+) -> str:
+    """Постоянному клиенту — весь заказ одним сообщением вместо трёх вопросов.
+
+    Пункт и цена уже проверены, почта — тоже. Ничего не записано: ждём
+    «Оформить» или «да».
+    """
+    lines = ["Оформить как в прошлый раз?"]
+    for item in items:
+        quantity = int(item.get("quantity") or 1)
+        lines.append(
+            f"• {item.get('name', 'товар')} × {quantity} — "
+            f"{amount(float(item.get('price') or 0) * quantity)} ₽"
+        )
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    lines.append(f"Получатель: {name}, {phone}, {email}")
+    lines.append(f"Итого: {amount(total)} ₽")
+    if upsell:
+        extra = f"К нему можно добавить {upsell}"
+        extra += f" — {amount(upsell_price)} ₽" if upsell_price is not None else ""
+        if gap:
+            extra += f", до бесплатной доставки как раз не хватает {amount(gap)} ₽"
+        lines.append(extra + ".")
+    lines.append("Ответьте «да» — пришлю ссылку на оплату. Если что-то поменять — напишите.")
+    return "\n".join(lines)
 
 
 def escalation_waiting() -> str:

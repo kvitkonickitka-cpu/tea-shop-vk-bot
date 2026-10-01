@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -11,7 +12,7 @@ from pathlib import Path
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
-from app.messages import manager as manager_messages, marketing, templates
+from app.messages import funnel, manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -25,7 +26,9 @@ from app.modules.orders import cancellation
 from app.modules.orders import contacts
 from app.modules.orders import feedback
 from app.modules.orders import order_chat
+from app.modules.orders import points
 from app.modules.orders import repeat_delivery
+from app.modules.orders import repeat_order as repeat_one_tap
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -70,6 +73,9 @@ _MAX_TOOL_ROUNDS = 4
 # Запас до потолка контейнера. Упереться в него значит не ответить вовсе,
 # поэтому лучше ответить словами, не доделав последнее действие.
 _TURN_BUDGET_SECONDS = 35
+# Сколько ждём цены по всем показанным пунктам Ozon разом. Дольше — цена
+# «около» по первому, как было: ход не должен вставать из-за перевозчика.
+_PRICE_ALL_SECONDS = 4
 
 # Первый ход после старта контейнера идёт дольше: прогреваются соединения,
 # пусты все кэши. Отмечаем его в логе, чтобы не искать причину там, где её нет.
@@ -85,9 +91,9 @@ def _payment_step_with_kassa() -> str:
     # Срок ссылки — из настройки: перейдём на счета ЮKassa с другим сроком —
     # текст поменяется сам.
     return (
-        "Инструмент сам выставит счёт и вернёт ссылку на оплату — передай её "
-        "клиенту как есть, своей не придумывай и до вызова инструмента оплату не "
-        f"обещай. Ссылка действует {settings.payment_invoice_ttl_minutes} минут. "
+        "Счёт со сводкой заказа и ссылкой на оплату присылает клиенту код — "
+        "свою ссылку не придумывай и оплату до этого не обещай. Ссылка "
+        f"действует {settings.payment_invoice_ttl_minutes} минут. "
         "Чек об оплате придёт на почту клиента. Посылка уезжает к перевозчику "
         "только после оплаты, поэтому не говори, что заказ уже отправлен или "
         "передан в доставку."
@@ -217,13 +223,13 @@ TOOLS = [
                 "pickup_point": {
                     "type": "string",
                     "description": (
-                        "Адрес пункта выдачи, который назвал клиент — для "
-                        "cdek_pvz и ozon_pvz. Ровно то, что клиент сказал про "
-                        "этот заказ: номер дома из прошлых заказов не "
-                        "подставляй, даже если улица та же. Поле необязательное: без него "
-                        "цена всё равно посчитается, а адрес спросишь "
-                        "следующим сообщением. Для Ozon инструмент заодно "
-                        "вернёт список пунктов города, чтобы клиент выбрал."
+                        "Для cdek_pvz и ozon_pvz: номер пункта из показанного "
+                        "списка («1», «второй»), или улица, район, адрес пункта — "
+                        "ровно то, что клиент сказал про этот заказ: номер дома "
+                        "из прошлых заказов не подставляй. Поле необязательное: "
+                        "без него инструмент вернёт пункты города с номерами. "
+                        "Номер сводится к пункту из показанного списка, адрес — "
+                        "к пункту из списка или из нового поиска."
                     ),
                 },
             },
@@ -263,9 +269,11 @@ TOOLS = [
     {
         "name": "confirm_order",
         "description": (
-            "Зафиксировать согласие клиента оформить заказ: есть черновик, "
-            "ожидающий подтверждения, ты сверила с клиентом состав, доставку, "
-            "итог и данные получателя, и клиент явно согласился."
+            "Выставить счёт по черновику. Обычно счёт выставляет сам код, как "
+            "только выбран пункт и записан получатель, — тогда этот инструмент "
+            "не нужен. Вызывай его, только когда инструмент попросил спросить "
+            "клиента «Оформляем?» (например, изменился итог), и клиент ответил "
+            "согласием."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -294,6 +302,17 @@ TOOLS = [
             },
             "required": ["items"],
         },
+    },
+    {
+        "name": "accept_offer",
+        "description": (
+            "Клиент согласился на заказ «как в прошлый раз», который бот показал "
+            "одним сообщением (состав, пункт, получатель, итог), — ответил «да», "
+            "«оформляйте» и т. п. Инструмент запишет доставку и получателя и "
+            "пришлёт счёт. Если клиент хочет что-то поменять — не вызывай, "
+            "используй обычные инструменты."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "cancel_order",
@@ -341,6 +360,9 @@ TOOLS = [
 ]
 
 
+TOOLS.append(repeat_one_tap.TOOL)
+
+
 @dataclass
 class ToolExecution:
     # tool_result идёт обратно в Claude, чтобы модель сформулировала ответ.
@@ -351,7 +373,14 @@ class ToolExecution:
     client_reply: str | None = None
 
 
-def _tools_for_stage(stage: str | None, *, with_feedback: bool = False) -> list[dict]:
+def _tools_for_stage(
+    stage: str | None,
+    *,
+    with_feedback: bool = False,
+    live_invoice: bool = False,
+    with_offer: bool = False,
+    repeatable: bool = False,
+) -> list[dict]:
     # Даём модели только те инструменты, которые уместны на текущем этапе —
     # так она физически не может вызвать propose_order повторно, пока черновик
     # ждёт выбора доставки или подтверждения. escalate_to_manager доступен
@@ -379,11 +408,24 @@ def _tools_for_stage(stage: str | None, *, with_feedback: bool = False) -> list[
             by_name["confirm_order"],
             by_name["add_to_order"],
         ]
+    elif live_invoice:
+        # Ссылка выставлена, черновика нет — но клиент вправе поправить
+        # заказ: инструменты сами вернут черновик из заказа.
+        stage_tools = [
+            by_name["propose_order"],
+            by_name["set_delivery_method"],
+            by_name["set_recipient"],
+            by_name["add_to_order"],
+        ]
     else:
         stage_tools = [by_name["propose_order"]]
     # cancel_order доступен всегда: неоплаченный заказ живёт и без черновика
     # (счёт выставлен — черновик убран), а отменить его клиент вправе на
     # любом шаге.
+    if with_offer:
+        stage_tools.append(by_name["accept_offer"])
+    if repeatable and stage is None and not live_invoice and "repeat_order" in by_name:
+        stage_tools.append(by_name["repeat_order"])
     tools = stage_tools + [by_name["cancel_order"], by_name["escalate_to_manager"]]
     # Отзыв — только когда есть недавно вручённый заказ: иначе модель
     # записывала бы в отзывы любое «спасибо».
@@ -482,6 +524,8 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         return "Активного черновика заказа у клиента нет."
 
     lines = [f"Черновик заказа на этапе «{draft.stage}»:"]
+    if draft.details.get("repeat_note"):
+        lines.append(draft.details["repeat_note"])
     for item in draft.items:
         lines.append(f"- {item['name']} x{item['quantity']} = {item['price'] * item['quantity']} ₽")
     lines.append(f"Сумма товаров: {draft.items_total} ₽")
@@ -518,7 +562,39 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     if draft.delivery_method == "ozon_pvz" and not draft.details.get("ozon_point_id"):
         lines.append("Пункт выдачи Ozon ещё НЕ выбран.")
 
+    offer = draft.details.get("offer")
+    if offer:
+        lines.append(
+            "Клиенту показано одним сообщением предложение «как в прошлый раз»: "
+            f"{offer.get('method')}, пункт «{offer.get('point_address')}» (город {offer.get('city')}), "
+            f"получатель {offer.get('name')}, {offer.get('phone')}, {offer.get('email')}. "
+            "Согласие («да», «оформляйте») — вызови accept_offer, счёт придёт сам. Хочет "
+            "поменять пункт — set_delivery_method (прошлый пункт в списке под номером 1), "
+            "получателя — set_recipient; остальное из предложения предлагай как есть."
+        )
+
+    shown = draft.details.get("shown_points") or []
+    if shown and not offer and not (draft.details.get("ozon_point_id") or draft.details.get("delivery_point")):
+        lines.append(
+            f"Клиенту показаны пункты: {points.listing(shown)}. Выбор номером или адресом "
+            "передай в pickup_point set_delivery_method."
+        )
+
     return "\n".join(lines)
+
+
+def _describe_live_invoice(order) -> str:
+    details = order.details or {}
+    return (
+        f"По заказу №{order.id} ссылка на оплату уже выставлена и ждёт оплаты: "
+        f"{templates.composition(order.items or [])}, доставка — "
+        f"{templates.delivery_place(order.delivery_method, details.get('delivery_label'))}, "
+        f"получатель {details.get('recipient_name', '—')}, итого {templates.amount(order.total)} ₽. "
+        "Если клиент хочет поменять состав, пункт выдачи или получателя — вызывай "
+        "обычные инструменты (add_to_order, propose_order с новым составом, "
+        "set_delivery_method, set_recipient): код закроет старую ссылку и пришлёт "
+        "новую, номер заказа останется тем же. Если клиент просто спрашивает — ответь."
+    )
 
 
 async def _describe_escalation(peer_id: int) -> str:
@@ -538,7 +614,7 @@ async def _describe_escalation(peer_id: int) -> str:
     )
 
 
-async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
+async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolExecution:
     catalog = catalog_service.load_items()
     resolved, unresolved = [], []
 
@@ -554,6 +630,34 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
 
     items_total = sum(i["price"] * i["quantity"] for i in resolved)
     draft = OrderDraft(items=resolved, items_total=items_total, stage="awaiting_delivery")
+    recalc = ""
+    live = None
+    if await state.get_draft(peer_id) is None:
+        live = await orders_repository.live_invoice_order(peer_id)
+    if live is not None:
+        # Новый состав к заказу, по которому уже выставлена ссылка: номер тот
+        # же, получатель тот же, а доставку надо пересчитать — вес другой.
+        keep = ("order_id", "order_key", "recipient_name", "recipient_phone", "recipient_email", "address")
+        previous = dict(live.details or {})
+        previous["order_id"] = live.id
+        draft.details.update({key: previous[key] for key in keep if previous.get(key)})
+        point = previous.get("ozon_point_address") or (
+            (previous.get("delivery_label") or "").split(": ", 1)[1]
+            if ": " in (previous.get("delivery_label") or "") else ""
+        )
+        point_id = previous.get("ozon_point_id") or previous.get("delivery_point")
+        if point and point_id:
+            points.remember(draft.details, live.delivery_method, previous.get("address", ""),
+                            [{"id": point_id, "address": point}])
+            point = "1"
+        recalc = (
+            f"\nЭто новый состав заказа №{live.id}: ссылка по нему уже выставлена, "
+            "код закроет её и пришлёт новую. Посчитай доставку заново: вызови "
+            f"set_delivery_method с method={live.delivery_method}, "
+            f"address=«{previous.get('address', '')}»"
+            + (f", pickup_point=«{point}»" if point else "")
+            + " — клиенту переспрашивать не нужно."
+        )
     upsell_line = _offer_upsell(draft, catalog)
     await state.set_draft(peer_id, draft)
 
@@ -562,6 +666,8 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
     result += upsell_line
+    if recalc:
+        return result + recalc
     # Пункт выдачи называем первым и объясняем почему: клиенту проще
     # согласиться на вариант, который уже предложен, чем выбирать из списка.
     # Первым идёт Ozon: на живом расчёте он вышел 121 руб против 397 у
@@ -571,6 +677,11 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
     # «да» вместо города, пункта и карты.
     last = await repeat_delivery.last_for(peer_id)
     if last is not None:
+        offered = await _offer_as_last_time(peer_id, draft, last)
+        if offered is not None:
+            return offered
+        last.remember(draft.details)
+        await state.set_draft(peer_id, draft)
         return result + "\n" + repeat_delivery.suggestion(last)
     result += (
         "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
@@ -578,10 +689,10 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str:
         "быстрее, предложи пункт выдачи СДЭК: дороже, но идёт в полтора-два "
         "раза меньше. Курьер СДЭК до двери — тоже можно. "
         f"{_OTHER_METHODS_HINT}"
-        "Для любого расчёта спроси город клиента: без него стоимость не "
-        "посчитать. Дальше нужен адрес пункта выдачи — если клиент не знает "
-        f"ближайший, предложи карту: у Ozon {OZON_POINTS_MAP_URL}, у СДЭКа "
-        f"{CDEK_OFFICES_MAP_URL}"
+        "Спроси сразу город и улицу — «Куда везти — город и улица, где удобно "
+        "забрать?» — в том же сообщении, что и предложение дополнить заказ: по "
+        "улице первыми покажутся ближайшие пункты. Назвал только город — "
+        "работай с ним, улицу не переспрашивай."
     )
     return result
 
@@ -649,7 +760,7 @@ async def _ozon_price(draft: OrderDraft, point_id: int) -> ozon_client.Quote:
 
 
 async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolExecution:
-    draft = await state.get_draft(peer_id)
+    draft = await _draft_for_edit(peer_id)
     # Способ доставки можно уточнять и после того, как цена названа: клиент
     # передумывает, а адрес пункта выдачи приходит отдельным сообщением.
     if draft is None or draft.stage not in ("awaiting_delivery", "awaiting_confirmation"):
@@ -668,8 +779,11 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         )
 
     period = ""
-    ask_for_point = False
-    ozon_options = ""
+    # Список пунктов, который увидит клиент, — пока пункт не выбран.
+    shown: list[dict] = []
+    per_point_prices = False
+    not_found_note = ""
+    city = ""
 
     if method in ("cdek_pvz", "cdek_courier"):
         address = (tool_input.get("address") or "").strip()
@@ -678,8 +792,15 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 "Чтобы посчитать доставку СДЭКом, нужен город клиента "
                 "(для курьера — полный адрес). Спроси и вызови инструмент ещё раз."
             )
+        city = address
+        hint = (tool_input.get("pickup_point") or "").strip() if method == "cdek_pvz" else ""
+        # Выбор из показанного списка — номером, кнопкой или адресом — кодом,
+        # а не по памяти модели.
+        chosen = points.choose(hint, points.shown_for(draft.details, method, address)) if hint else None
         try:
-            tariff, total = await _cdek_delivery(draft, method, address)
+            tariff, total = await _cdek_delivery(
+                draft, method, address, delivery_point=chosen["id"] if chosen else None
+            )
         except Exception:
             logger.exception("Не посчитали доставку СДЭК для peer_id=%s по адресу «%s»", peer_id, address)
             return ToolExecution(
@@ -692,49 +813,31 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.details["tariff_code"] = tariff.code
         draft.details["address"] = address
 
-        if method == "cdek_pvz":
-            hint = (tool_input.get("pickup_point") or "").strip()
-            if not hint:
-                ask_for_point = True
-                draft.details.pop("delivery_point", None)
-            else:
-                # СДЭКу нужен код пункта, а клиент называет адрес словами,
-                # поэтому ищем совпадение по списку пунктов города.
-                try:
-                    found = await cdek_client.find_delivery_point(address, hint)
-                except Exception:
-                    logger.exception("Не нашли пункты выдачи в «%s» для peer_id=%s", address, peer_id)
-                    found = []
-
-                if len(found) == 1:
-                    draft.details["delivery_point"] = found[0].code
-                    label = f"{label}: {found[0].address}"
-                    # С известным пунктом цена может отличаться, поэтому
-                    # пересчитываем: платит клиент ровно то, что выставят нам.
-                    try:
-                        tariff, total = await _cdek_delivery(
-                            draft, method, address, delivery_point=found[0].code
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Не пересчитали доставку с пунктом %s для peer_id=%s",
-                            found[0].code, peer_id,
-                        )
-                elif found:
-                    options = "; ".join(f"{i}) {p.describe()}" for i, p in enumerate(found, start=1))
-                    await state.set_draft(peer_id, draft)
-                    return ToolExecution(
-                        f"По запросу «{hint}» в городе {address} нашлось несколько пунктов: "
-                        f"{options}. Перечисли их клиенту и спроси, какой из них, а потом "
-                        "вызови set_delivery_method ещё раз с точным адресом в pickup_point."
-                    )
-                else:
-                    await state.set_draft(peer_id, draft)
-                    return ToolExecution(
-                        f"Пункт выдачи «{hint}» в городе {address} не нашёлся. Попроси "
-                        "клиента уточнить адрес и предложи карту пунктов: "
-                        f"{CDEK_OFFICES_MAP_URL}"
-                    )
+        if method == "cdek_pvz" and chosen:
+            draft.details["delivery_point"] = chosen["id"]
+            label = f"{label}: {chosen['address']}"
+            points.forget(draft.details)
+        elif method == "cdek_pvz":
+            draft.details.pop("delivery_point", None)
+            try:
+                city_list = await cdek_client.city_points(address)
+            except Exception:
+                logger.exception("Не нашли пункты выдачи СДЭК в «%s» для peer_id=%s", address, peer_id)
+                city_list = []
+            found = cdek_client.match_points(city_list, hint, limit=points.MAX_SHOWN) if hint else []
+            if hint and not found:
+                not_found_note = f"Пункт «{hint}» в городе {address} не нашёлся — скажи об этом клиенту. "
+            if not found:
+                found = city_list[: points.MAX_SHOWN]
+            if not found:
+                return ToolExecution(
+                    f"Пунктов выдачи СДЭК в городе {address} не нашлось. Предложи "
+                    f"курьера СДЭК или пункт выдачи Ozon, карта пунктов СДЭК: {CDEK_OFFICES_MAP_URL}"
+                )
+            shown = points.remember(
+                draft.details, method, address,
+                [{"id": point.code, "address": point.describe()} for point in found],
+            )
 
         draft.delivery_label = label
         # Именно total: в нём НДС и сбор за объявленную стоимость.
@@ -753,110 +856,73 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             )
 
         hint = (tool_input.get("pickup_point") or "").strip()
-        not_found_note = ""
-        try:
-            picked = await _ozon_points(draft, city, hint)
-        except Exception:
-            logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
-            picked = ozon_quote.Picked([], 0, 0, False)
-
-        points, found, total_points = list(picked.points), picked.found, picked.total
-
-        if hint and not picked.hint_matched:
-            # Адрес с карты Ozon может не найтись у нас: копия каталога
-            # неполная. Возвращаться к клиенту с «не нашёлся» и тупиком нельзя
-            # — каталог в таком случае отдаёт пункты города, а мы говорим,
-            # что нужного среди них нет.
-            logger.info(
-                "Пункт Ozon «%s» в городе %s не нашёлся, показываем что есть", hint, city
-            )
-            if points:
-                not_found_note = (
-                    f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом "
-                    "клиенту и предложи выбрать из тех, что есть, или назвать "
-                    "адрес иначе. "
-                )
-            hint = ""
-
-        if not points:
-            if found:
-                return ToolExecution(
-                    f"Пункты Ozon в городе {city} есть, но доставку нашим методом "
-                    "они не принимают. Предложи клиенту пункт выдачи СДЭК."
-                )
-            asked = f"«{hint}» " if hint else ""
-            return ToolExecution(
-                f"Пункт выдачи Ozon {asked}в городе {city} не нашёлся. Уточни у "
-                "клиента адрес пункта или предложи доставку СДЭКом."
-            )
-
-        # Цену считаем по первому подходящему пункту и называем сразу, даже
-        # когда клиент ещё не выбрал. На живой проверке она от пункта не
-        # зависела: Владивосток, два пункта на разных концах города — 176 руб
-        # оба. Ждать выбора значит растягивать разговор на лишний круг ради
-        # цифры, которая, скорее всего, не изменится. А если где-то всё-таки
-        # изменится — второй вызов с выбранным пунктом пересчитает, и до
-        # подтверждения клиент услышит верную сумму.
-        #
-        # Пункт, на котором расчёт упал, не повод отправлять клиента в СДЭК:
-        # проверка доступности его пропустила, а checkout отказал (26.09.2026,
-        # Краснодар, Ставропольская 159). Пробуем следующий, а отказавший
-        # убираем из списка — выбрать его клиент всё равно не сможет.
-        quote = None
-        for candidate in list(points):
+        chosen = points.choose(hint, points.shown_for(draft.details, method, city)) if hint else None
+        if chosen:
             try:
-                quote = await _ozon_price(draft, candidate.id)
+                quote = await _ozon_price(draft, int(chosen["id"]))
             except Exception as error:
                 logger.warning(
-                    "Не посчитали доставку Ozon в пункт %s для peer_id=%s — %s: %s",
-                    candidate.id, peer_id, type(error).__name__, error,
+                    "Не посчитали доставку Ozon в пункт %s для peer_id=%s — %s",
+                    chosen["id"], peer_id, error,
                 )
-                points.remove(candidate)
-                continue
-            break
-        if quote is None:
-            return ToolExecution(
-                "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
-                "а если он хочет именно Ozon — вызови escalate_to_manager."
-            )
-        point = points[0]
+                return ToolExecution(
+                    f"В пункт «{chosen['address']}» Ozon сейчас не считает доставку. "
+                    "Предложи клиенту другой пункт из списка."
+                )
+            draft.details["ozon_point_id"] = int(chosen["id"])
+            draft.details["ozon_point_address"] = chosen["address"]
+            draft.delivery_label = f"Ozon, пункт выдачи: {chosen['address']}"
+            points.forget(draft.details)
+        else:
+            try:
+                picked = await _ozon_points(draft, city, hint)
+            except Exception:
+                logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
+                picked = ozon_quote.Picked([], 0, 0, False)
+
+            candidates = list(picked.points)[: points.MAX_SHOWN]
+            if hint and not picked.hint_matched:
+                # Адрес с карты Ozon может не найтись у нас: копия каталога
+                # неполная. Тупик «не нашёлся» хуже, чем пункты города.
+                logger.info("Пункт Ozon «%s» в городе %s не нашёлся, показываем что есть", hint, city)
+                if candidates:
+                    not_found_note = (
+                        f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом "
+                        "клиенту и предложи выбрать из тех, что есть, или назвать адрес иначе. "
+                    )
+                hint = ""
+
+            if not candidates:
+                if picked.found:
+                    return ToolExecution(
+                        f"Пункты Ozon в городе {city} есть, но доставку нашим методом "
+                        "они не принимают. Предложи клиенту пункт выдачи СДЭК."
+                    )
+                asked = f"«{hint}» " if hint else ""
+                return ToolExecution(
+                    f"Пункт выдачи Ozon {asked}в городе {city} не нашёлся. Уточни у "
+                    "клиента адрес пункта или предложи доставку СДЭКом."
+                )
+
+            priced, quote = await _price_ozon_points(draft, candidates, peer_id)
+            if quote is None:
+                return ToolExecution(
+                    "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
+                    "а если он хочет именно Ozon — вызови escalate_to_manager."
+                )
+            per_point_prices = all(row.get("price") is not None for row in priced)
+            shown = points.remember(draft.details, method, city, priced)
+            # Пункт не фиксируем, даже если он один: выбирает клиент.
+            draft.details.pop("ozon_point_id", None)
+            draft.details.pop("ozon_point_address", None)
+            draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
 
         draft.details["address"] = city
         # Тот же урок, что и с СДЭКом: страховку Ozon выставляет отдельной
         # строкой, и «забыть» её значит доплачивать за клиента.
+        draft.details.pop("carrier_delivery_cost", None)
         draft.delivery_cost = quote.total
         period = f"{quote.days} дн." if quote.days else ""
-
-        if len(points) > 1:
-            # Пункт не фиксируем: показанная цена относится к первому из
-            # списка, а поедет посылка туда, что выберет клиент.
-            draft.details.pop("ozon_point_id", None)
-            draft.details.pop("ozon_point_address", None)
-            draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
-            listed = "; ".join(f"{i}) {p.address}" for i, p in enumerate(points, start=1))
-            # Карту даём всегда, а не только когда в нашей копии каталога
-            # нашлось больше, чем показали. Копия неполная — выгрузка идёт по
-            # кругу и на любой момент отстаёт, — так что «в Уфе пять пунктов»
-            # означает лишь «пять доехало до нашей базы». Выдавать это за весь
-            # город нечестно, а клиент на карте Ozon видит настоящий список.
-            ozon_options = (
-                not_found_note
-                + f"Пункты выдачи Ozon в городе {city} (нашлось в нашей копии "
-                f"каталога: {total_points}): {listed}. "
-                "Перечисли их клиенту и обязательно скажи, что это не весь "
-                f"список: все пункты города видно на карте {OZON_POINTS_MAP_URL} "
-                "— пусть выберет удобный и назовёт адрес, ты его найдёшь. "
-                "ВАЖНО: пункт выдачи ещё НЕ выбран, не говори клиенту, что он "
-                "уже выбран. И цену называй как предварительную («около», "
-                "«примерно»): она посчитана по одному из пунктов города, а "
-                "после выбора пересчитается по нужному и может отличаться на "
-                "рубль-другой. Получив адрес, вызови set_delivery_method ещё "
-                "раз с тем же городом и этим адресом в pickup_point."
-            )
-        else:
-            draft.details["ozon_point_id"] = point.id
-            draft.details["ozon_point_address"] = point.address
-            draft.delivery_label = f"Ozon, пункт выдачи: {point.address}"
     else:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)
@@ -870,9 +936,14 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
     free_note = _apply_free_delivery(draft)
+    total = draft.items_total + draft.delivery_cost
+    # Когда посчитана цена и какой итог клиент от нас услышал: перед счётом
+    # старая цена пересчитывается, а изменившийся итог без вопроса не
+    # выставляется.
+    draft.details["quoted_at"] = time.time()
+    draft.details["seen_total"] = total
     await state.set_draft(peer_id, draft)
 
-    total = draft.items_total + draft.delivery_cost
     # Срок у СДЭКа уже заканчивается точкой («3–4 раб. дн.»), своей не добавляем.
     # Состав заказа перечисляем прямо здесь. Без него модель писала клиенту
     # «Товары: 800 руб.» — сумму, по которой не проверить, то ли он заказывает.
@@ -881,10 +952,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     ) or "—"
 
     # Пока пункт не выбран, сумма предварительная: считали её по одному из
-    # пунктов города, а цена у Ozon от пункта зависит. В Уфе разница между
-    # «каким-то» пунктом и выбранным вышла в рубль — мелочь, но клиент видит
-    # два разных числа подряд и справедливо спрашивает, где потерялся рубль.
-    fixed = "Предварительная стоимость доставки" if ozon_options else "Способ доставки зафиксирован"
+    # пунктов города, а цена у Ozon от пункта зависит.
+    fixed = "Предварительная стоимость доставки" if shown else "Способ доставки зафиксирован"
     head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} ₽"
     head += f", срок {period}\n" if period else ".\n"
     head += f"Состав заказа (перечисли клиенту названия и количество, а не "
@@ -892,38 +961,126 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     head += f"Итого с доставкой: {total} ₽\n"
     head += free_note
 
-    # Формулировку отдаём модели: с очередью второй заход к Claude перестал
-    # быть роскошью, а живой текст клиенту приятнее нашего шаблона. Пока
-    # висел восьмисекундный потолок VK, этот заход приходилось вырезать.
-    if ask_for_point:
+    recipient_ask = await _recipient_ask(peer_id, draft, method)
+    if shown:
         return ToolExecution(
-            head
-            + "Назови клиенту состав заказа и эти суммы и спроси, в какой пункт выдачи СДЭК ему "
-            "удобно забрать заказ — нужен адрес пункта, а не просто город. "
-            f"Предложи прислать карту пунктов, чтобы свериться: {CDEK_OFFICES_MAP_URL}. "
-            "Когда клиент назовёт адрес, вызови set_delivery_method ещё раз с тем "
-            "же городом и адресом пункта в pickup_point."
+            head + "Назови клиенту состав заказа и эти суммы. " + not_found_note
+            + _points_instruction(method, city, shown, per_point_prices, recipient_ask)
         )
 
-    if ozon_options:
-        return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + ozon_options)
+    return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + recipient_ask)
 
-    next_step = (
-        "Потом спроси ФИО получателя и телефон — без них отправление не завести."
-        if method in ("cdek_pvz", "cdek_courier", "ozon_pvz")
-        else "Спроси, готов ли он оформить заказ."
+
+async def _recipient_ask(peer_id: int, draft: OrderDraft, method: str) -> str:
+    """Что сказать про получателя в том же сообщении, что и доставку."""
+    if method not in ("cdek_pvz", "cdek_courier", "ozon_pvz"):
+        return "Спроси, готов ли он оформить заказ."
+    if draft.details.get("recipient_name") and draft.details.get("recipient_email"):
+        return "Получатель уже записан — как только пункт выбран, счёт код пришлёт сам."
+    # Постоянному клиенту — прошлый получатель одним «да», а не три вопроса.
+    last = await repeat_delivery.last_recipient_for(peer_id)
+    if last is not None:
+        return "Потом: " + repeat_delivery.recipient_suggestion(last)
+    return _ASK_RECIPIENT
+
+
+_ASK_RECIPIENT = (
+    "Попроси одним сообщением ФИО получателя, телефон и почту — как только "
+    "запишешь их через set_recipient, счёт со ссылкой код пришлёт сам."
+)
+
+
+def _points_instruction(
+    method: str, city: str, shown: list[dict], per_point_prices: bool, recipient_ask: str
+) -> str:
+    carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
+    lines = [f"Пункты выдачи {carrier} в городе {city}: {points.listing(shown)}."]
+    if len(shown) == 1:
+        lines.append(
+            "Нашёлся один пункт — не считай его выбранным: покажи его и спроси, подходит ли."
+        )
+    else:
+        lines.append(f"Перечисли их клиенту с номерами 1–{len(shown)}.")
+    if per_point_prices:
+        lines.append("Цена у каждого пункта своя — называй её рядом с адресом.")
+    else:
+        lines.append(
+            "Цена посчитана по одному из пунктов — называй её предварительной («около»): "
+            "после выбора пункта она пересчитается."
+        )
+    if method == "ozon_pvz":
+        lines.append(
+            "Скажи, что это не весь список: все пункты города — на карте "
+            f"{OZON_POINTS_MAP_URL}."
+        )
+    else:
+        lines.append(f"Все пункты — на карте {CDEK_OFFICES_MAP_URL}.")
+    lines.append("ВАЖНО: пункт ещё НЕ выбран, не говори клиенту, что он выбран.")
+    if recipient_ask == _ASK_RECIPIENT:
+        lines.append(
+            "В том же сообщении попроси: «Выберите пункт и одним сообщением пришлите "
+            "ФИО, телефон и почту — сразу пришлю счёт»."
+        )
+    else:
+        lines.append(recipient_ask)
+    lines.append(
+        "Когда клиент выберет, вызови set_delivery_method с тем же городом и номером "
+        "пункта из списка в pickup_point (например «2»); если он в том же сообщении "
+        "прислал ФИО, телефон и почту — в том же ходе вызови и set_recipient. Если "
+        "клиент назвал другой адрес — передай его в pickup_point, инструмент поищет заново."
     )
-    if method in ("cdek_pvz", "cdek_courier", "ozon_pvz") and not draft.details.get("recipient_name"):
-        # Постоянному клиенту — прошлый получатель одним «да», а не три
-        # вопроса заново.
-        last = await repeat_delivery.last_recipient_for(peer_id)
-        if last is not None:
-            next_step = "Потом: " + repeat_delivery.recipient_suggestion(last)
-    return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + next_step)
+    return " ".join(lines)
+
+
+async def _price_ozon_points(
+    draft: OrderDraft, candidates: list, peer_id: int
+) -> tuple[list[dict], ozon_client.Quote | None]:
+    """Цена доставки в каждый пункт — если Ozon ответит быстро.
+
+    Считаем параллельно: четыре расчёта стоят как один. Не уложились в
+    `_PRICE_ALL_SECONDS` — считаем по первому подходящему и называем цену
+    «около», как раньше. Пункт, на котором расчёт упал, из списка убираем:
+    выбрать его клиент всё равно не сможет (26.09.2026, Краснодар,
+    Ставропольская 159 — проверка доступности пропустила, checkout отказал).
+    """
+    async def price(point):
+        return await _ozon_price(draft, point.id)
+
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(price(point) for point in candidates), return_exceptions=True),
+            timeout=_PRICE_ALL_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        results = None
+
+    if results is not None:
+        rows, first = [], None
+        for point, result in zip(candidates, results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Не посчитали доставку Ozon в пункт %s для peer_id=%s — %s",
+                    point.id, peer_id, result,
+                )
+                continue
+            first = first or result
+            rows.append({"id": point.id, "address": point.address, "price": result.total})
+        return rows, first
+
+    rows, first = [], None
+    for point in candidates:
+        if first is None:
+            try:
+                first = await _ozon_price(draft, point.id)
+            except Exception as error:
+                logger.warning("Не посчитали доставку Ozon в пункт %s — %s", point.id, error)
+                continue
+        rows.append({"id": point.id, "address": point.address, "price": None})
+    return rows, first
 
 
 async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
-    draft = await state.get_draft(peer_id)
+    draft = await _draft_for_edit(peer_id)
     if draft is None:
         return "Нет черновика заказа. Уточни у клиента, что он хочет заказать."
 
@@ -953,6 +1110,14 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
     if email:
         checked = await contacts.check_email(email)
         if not checked.ok:
+            # Пока клиент не ответил на «может, k@yandex.ru?», счёт сам не
+            # выставляется: ссылка ушла бы раньше, чем он проверил почту.
+            if checked.suggestion:
+                draft.details["email_suggestion"] = checked.suggestion
+                # ФИО и телефон с этой попытки — для кнопки «Да, …»: нажатие
+                # записывает получателя кодом, не переспрашивая.
+                draft.details["pending_recipient"] = {"name": name, "phone": phone}
+                await state.set_draft(peer_id, draft)
             hint = (
                 f" Возможно, клиент имел в виду {checked.suggestion} — спроси, "
                 "так ли это, а не записывай сам."
@@ -965,6 +1130,8 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
             )
         email = checked.email
 
+    draft.details.pop("email_suggestion", None)
+    draft.details.pop("pending_recipient", None)
     draft.details["recipient_name"] = name
     draft.details["recipient_phone"] = phone
     if email:
@@ -982,7 +1149,10 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
             "неё оплату не выставить. Спроси её и вызови set_recipient ещё "
             "раз, вместе с ФИО и телефоном."
         )
-    return written + " Если клиент уже согласился оформить заказ, вызывай confirm_order."
+    return written + (
+        " Если пункт выдачи уже выбран, счёт со сводкой код пришлёт сам — "
+        "confirm_order не вызывай и «Оформляем?» не спрашивай."
+    )
 
 
 async def _register_in_cdek(peer_id: int, draft: OrderDraft) -> str | None:
@@ -1065,6 +1235,225 @@ async def _escalate_for_payment(
         f"{html.escape(reason)}{how}\n\n{vk_client.dialog_link(peer_id)}"
     )
     await _notify_manager(peer_id, message)
+
+
+# Инструменты, после которых заказ мог стать полным — тогда код сам
+# выставляет счёт, без «Оформляем?».
+_AUTO_INVOICE_AFTER = {"set_delivery_method", "set_recipient", "add_to_order", "propose_order"}
+
+
+async def _draft_for_edit(peer_id: int) -> OrderDraft | None:
+    """Черновик для правки — или заказ, по которому уже выставлена ссылка.
+
+    Клиент получил ссылку и пишет «поменяйте пункт»: черновика уже нет, он
+    убран при выставлении счёта. Возвращаем его из заказа — номер тот же, —
+    правка идёт обычными инструментами, а новый счёт закроет старую ссылку.
+    """
+    draft = await state.get_draft(peer_id)
+    if draft is not None:
+        return draft
+    try:
+        live = await orders_repository.live_invoice_order(peer_id)
+    except Exception:
+        logger.exception("Не проверили выставленный счёт для peer_id=%s", peer_id)
+        return None
+    if live is None:
+        return None
+    await payment_service.restore_draft(live)
+    return await state.get_draft(peer_id)
+
+
+def _ready_for_invoice(draft: OrderDraft | None) -> bool:
+    """Всё ли есть для счёта: пункт, получатель, почта, телефон целиком."""
+    if draft is None or draft.stage != "awaiting_confirmation":
+        return False
+    details = draft.details
+    if not draft.delivery_method or draft.delivery_cost is None:
+        return False
+    if draft.delivery_method == "ozon_pvz" and not details.get("ozon_point_id"):
+        return False
+    if draft.delivery_method == "cdek_pvz" and not details.get("delivery_point"):
+        return False
+    if details.get("email_suggestion"):
+        return False
+    if not (details.get("recipient_name") and details.get("recipient_email")):
+        return False
+    return yookassa_client.phone_is_valid(details.get("recipient_phone", ""))
+
+
+async def _requote(draft: OrderDraft) -> None:
+    """Пересчитать доставку по уже выбранному пункту."""
+    details = draft.details
+    if draft.delivery_method == "ozon_pvz" and details.get("ozon_point_id"):
+        quote = await _ozon_price(draft, int(details["ozon_point_id"]))
+        cost = quote.total
+    elif draft.delivery_method in ("cdek_pvz", "cdek_courier") and details.get("address"):
+        tariff, cost = await _cdek_delivery(
+            draft, draft.delivery_method, details["address"],
+            delivery_point=details.get("delivery_point"),
+        )
+        details["tariff_code"] = tariff.code
+    else:
+        return
+    details.pop("carrier_delivery_cost", None)
+    draft.delivery_cost = cost
+    details["quoted_at"] = time.time()
+
+
+async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None:
+    """Перепроверить цены, наличие и доставку прямо перед счётом.
+
+    None — можно выставлять. Иначе — что сказать модели: товара нет или итог
+    изменился, и тогда клиент должен увидеть новую сумму до ссылки.
+    """
+    catalog = catalog_service.load_items()
+    missing = []
+    for item in draft.items:
+        match = _find_catalog_item(catalog, item["name"])
+        if not match or not match.get("in_stock", True):
+            missing.append(item["name"])
+            continue
+        if float(match["price"]) != float(item["price"]):
+            # Цену в таблице поменяли, пока клиент выбирал: платит текущую.
+            item["price"] = match["price"]
+    if missing:
+        return (
+            f"Счёт не выставлен: {', '.join(missing)} сейчас нет в наличии. Скажи "
+            "клиенту и предложи похожее из ассортимента."
+        )
+    draft.items_total = sum(float(i["price"]) * i["quantity"] for i in draft.items)
+
+    quoted_at = draft.details.get("quoted_at")
+    if quoted_at is None or time.time() - float(quoted_at) > settings.delivery_quote_ttl_minutes * 60:
+        try:
+            await _requote(draft)
+        except Exception:
+            # Пересчёт не удался — остаётся цена, которую клиент уже видел.
+            logger.warning("Не пересчитали доставку перед счётом для peer_id=%s", peer_id, exc_info=True)
+    _apply_free_delivery(draft)
+
+    total = draft.items_total + (draft.delivery_cost or 0)
+    seen = draft.details.get("seen_total")
+    draft.details["seen_total"] = total
+    await state.set_draft(peer_id, draft)
+    if seen is not None and abs(float(seen) - total) >= 0.01:
+        return (
+            f"Счёт не выставлен: итог изменился — клиент видел {templates.amount(seen)} ₽, "
+            f"теперь {templates.amount(total)} ₽ (товары {templates.amount(draft.items_total)} ₽, "
+            f"доставка {templates.amount(draft.delivery_cost or 0)} ₽). Покажи клиенту новую "
+            "сводку: состав, пункт, получатель, итог — и спроси «Оформляем?». После «да» "
+            "вызови confirm_order."
+        )
+    return None
+
+
+async def _auto_invoice(peer_id: int, source: str = "invoice_auto") -> ToolExecution | None:
+    """Выставить счёт сам, если заказ стал полным. None — ещё не полный."""
+    if not (settings.auto_invoice_enabled and payment_service.is_enabled()):
+        return None
+    draft = await state.get_draft(peer_id)
+    if not _ready_for_invoice(draft):
+        return None
+    note = await _refresh_before_invoice(peer_id, draft)
+    if note is not None:
+        return ToolExecution(note)
+    draft.stage = "confirmed"
+    return await _confirm_with_payment(peer_id, draft, source=source)
+
+
+def _offer_message(draft: OrderDraft, offer) -> str:
+    from app.modules.orders import offers
+
+    cost = offers.client_delivery_cost(draft, offer)
+    item = draft.details.get("upsell_item")
+    match = catalog_service.find_item(item) if item else None
+    return templates.returning_offer(
+        items=draft.items,
+        delivery_method=offer.method,
+        delivery_label=offer.label,
+        delivery_cost=cost,
+        name=offer.name,
+        phone=offer.phone,
+        email=offer.email,
+        total=draft.items_total + cost,
+        upsell=item or "",
+        upsell_price=match["price"] if match else None,
+        gap=_threshold_gap(draft.items_total) if item else None,
+    )
+
+
+def _offer_keyboard(draft: OrderDraft) -> dict | None:
+    from app.messages import keyboard as keyboards
+
+    version = draft.details.get("version")
+    rows = [[
+        keyboards.text_button("Оформить", {"a": "offer_ok", "v": version}, "positive"),
+        keyboards.text_button("Изменить", {"a": "edit", "v": version}),
+    ]]
+    item = draft.details.get("upsell_item")
+    if item:
+        rows.append([keyboards.text_button(f"Добавить {item}", {"a": "add", "v": version})])
+    return keyboards.inline(rows)
+
+
+async def _offer_as_last_time(peer_id: int, draft: OrderDraft, last) -> ToolExecution | None:
+    """Постоянному клиенту — весь заказ одним сообщением.
+
+    None — предложение не собралось (флаг выключен, оплата не подключена,
+    получателя нет): тогда прежний путь с вопросами через модель. Пункт
+    недоступен — модель скажет об этом, предложит получателя и спросит пункт.
+    """
+    from app.modules.orders import buttons, offers
+
+    if not (settings.returning_one_question_enabled and payment_service.is_enabled()):
+        return None
+    recipient = await repeat_delivery.last_recipient_for(peer_id)
+    offer = await offers.prepare(draft, last, recipient)
+    if not offer.point_ok and offer.recipient_ok:
+        await state.set_draft(peer_id, draft)
+        return ToolExecution(
+            f"Черновик создан. Постоянный клиент, но {', '.join(offer.problems)}. Скажи "
+            "об этом клиенту одной фразой. Получателя предложи прошлого: "
+            + repeat_delivery.recipient_suggestion(recipient)
+            + f" Пункт спроси заново: «{templates.ASK_WHERE}»"
+        )
+    if not offer.ready:
+        return None
+    draft.details["offer"] = offer.to_details()
+    # «Изменить» — прошлый пункт остаётся под номером 1: модель выберет его
+    # без нового поиска, если клиент меняет только получателя.
+    last.remember(draft.details)
+    # Допродажа — в том же сообщении, кнопкой; отдельная кнопка не нужна.
+    draft.details["upsell_button_sent"] = True
+    await state.set_draft(peer_id, draft)
+    text = _offer_message(draft, offer)
+    buttons.stash(peer_id, _offer_keyboard(await state.get_draft(peer_id)))
+    return ToolExecution(text, client_reply=text)
+
+
+async def accept_offer(peer_id: int) -> ToolExecution:
+    """«Оформить» или «да» на предложение «как в прошлый раз»: сразу счёт."""
+    from app.modules.orders import offers
+
+    draft = await state.get_draft(peer_id)
+    offer = offers.Offer.from_details(draft.details.get("offer")) if draft else None
+    if offer is None:
+        return ToolExecution(
+            "Предложения «как в прошлый раз» нет — продолжай оформление обычными инструментами."
+        )
+    offers.apply(draft, offer)
+    await state.set_draft(peer_id, draft)
+    invoiced = await _auto_invoice(peer_id) if payment_service.is_enabled() else None
+    if invoiced is None:
+        return ToolExecution(
+            "Доставка и получатель записаны, но счёт сам не выставился. Сверь с клиентом "
+            "заказ, спроси «Оформляем?» и после «да» вызови confirm_order."
+        )
+    return invoiced
+
+
+async def _execute_accept_offer(peer_id: int) -> ToolExecution:
+    return await accept_offer(peer_id)
 
 
 async def _execute_confirm_order(peer_id: int) -> ToolExecution:
@@ -1188,7 +1577,9 @@ async def _save_unpaid(peer_id: int, draft: OrderDraft, order_id) -> int | None:
         return None
 
 
-async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecution:
+async def _confirm_with_payment(
+    peer_id: int, draft: OrderDraft, source: str = "invoice_confirmed"
+) -> ToolExecution:
     """Подтверждение, когда оплата подключена: счёт вместо отправления.
 
     Отправление у перевозчика здесь НЕ заводится — оно создаётся после
@@ -1268,7 +1659,15 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
         await orders_repository.register_payment(
             order.id, payment.id,
             attempt=attempt, status=payment.status, amount=payment.amount,
+            snapshot=orders_repository.snapshot_of(draft),
         )
+        # Прежние ссылки по этому заказу больше не наши: клиент поправил
+        # заказ. У ЮKassa pending отменить нельзя, так что отметка — наша;
+        # если по старой всё же заплатят, поедет оплаченный снимок.
+        for row in await orders_repository.open_payments(order.id):
+            if row.payment_id != payment.id:
+                await orders_repository.close_payment(row.payment_id)
+        await funnel.record(peer_id, source, order_id=order.id, attempt=attempt, total=payment.amount)
     except Exception as error:
         # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
         # у нас не будет. Зовём человека, пока клиент ещё в диалоге.
@@ -1282,12 +1681,22 @@ async def _confirm_with_payment(peer_id: int, draft: OrderDraft) -> ToolExecutio
 
     await state.clear_draft(peer_id)
 
+    from app.modules.orders import buttons
+
+    buttons.stash(peer_id, buttons.pay_keyboard(payment.amount, payment.confirmation_url))
     # Не «заказ оформлен»: до оплаты клиент читал это как «всё готово».
-    reply = templates.invoice_ready(
+    # Сводка целиком — подтверждением теперь служит сама оплата.
+    reply = templates.invoice_summary(
+        order_id=getattr(order, "id", None) or order_id,
+        items=draft.items,
+        delivery_method=draft.delivery_method,
+        delivery_label=draft.delivery_label,
+        delivery_cost=draft.delivery_cost,
+        name=draft.details.get("recipient_name", ""),
+        phone=draft.details.get("recipient_phone", ""),
+        email=draft.details.get("recipient_email", ""),
         total=payment.amount or (draft.items_total + (draft.delivery_cost or 0)),
         link=payment.confirmation_url,
-        email=draft.details.get("recipient_email", ""),
-        phone=draft.details.get("recipient_phone", ""),
     )
     return ToolExecution(reply, client_reply=reply)
 
@@ -1370,14 +1779,11 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
     Раньше состав после propose_order поменять было нельзя вовсе: на этапе
     доставки инструмента для этого не было, а propose_order там недоступен.
     """
-    draft = await state.get_draft(peer_id)
+    # Состав меняют и после ссылки: номер заказа остаётся, счёт выставится
+    # новый, а старая ссылка закроется с нашей стороны.
+    draft = await _draft_for_edit(peer_id)
     if draft is None or draft.stage not in ("awaiting_delivery", "awaiting_confirmation"):
         return "Нет черновика заказа. Если клиент хочет купить — вызови propose_order."
-    if draft.details.get("order_id"):
-        return (
-            "По этому заказу уже выставлялся счёт — состав так не меняют. Предложи "
-            "оформить дополнение отдельным заказом или вызови escalate_to_manager."
-        )
 
     catalog = catalog_service.load_items()
     added, unresolved = [], []
@@ -1401,6 +1807,10 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
         )
 
     draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
+    if draft.details.get("offer"):
+        # Вес вырос — цена доставки в предложении устарела: пересчитаем
+        # перед счётом.
+        draft.details["offer"]["quoted_at"] = 0
     recalc = ""
     if draft.delivery_method:
         # Вес и объявленная ценность выросли — прежняя цена доставки неверна.
@@ -1408,8 +1818,17 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
             "method": draft.delivery_method,
             "city": draft.details.get("address", ""),
             "point": draft.details.get("ozon_point_address")
-            or (draft.delivery_label or "").split(": ", 1)[-1],
+            or ((draft.delivery_label or "").split(": ", 1)[1] if ": " in (draft.delivery_label or "") else ""),
+            "id": draft.details.get("ozon_point_id") or draft.details.get("delivery_point"),
         }
+        if previous["id"] and previous["point"]:
+            # Выбранный пункт остаётся выбранным: в список под номером 1, и
+            # пересчёт сведёт «1» к нему без нового поиска и вопроса.
+            points.remember(
+                draft.details, previous["method"], previous["city"],
+                [{"id": previous["id"], "address": previous["point"]}],
+            )
+            previous["point"] = "1"
         draft.delivery_method = None
         draft.delivery_label = None
         draft.delivery_cost = None
@@ -1480,7 +1899,12 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
 
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
     if name == "propose_order":
-        return ToolExecution(await _execute_propose_order(peer_id, tool_input))
+        result = await _execute_propose_order(peer_id, tool_input)
+        return result if isinstance(result, ToolExecution) else ToolExecution(result)
+    if name == "accept_offer":
+        return await _execute_accept_offer(peer_id)
+    if name == "repeat_order":
+        return await repeat_one_tap.repeat_order(peer_id, int(tool_input.get("order_id") or 0))
     if name == "set_delivery_method":
         return await _execute_set_delivery_method(peer_id, tool_input)
     if name == "confirm_order":
@@ -1557,6 +1981,21 @@ _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 _BULLET = re.compile(r"^(\s*)[*-]\s+", re.M)
 
 
+_ASKED_NOT_TO_WRITE = (
+    "Клиент просит больше ему не писать. Напоминания ему уже отключены. Ответь "
+    "коротко и дружелюбно, что поняла и сама больше писать не будешь, а если "
+    "понадобится — пусть пишет сюда. Черновик заказа не трогай, инструменты не "
+    "вызывай, ничего не уговаривай."
+)
+
+
+async def _with_buttons(peer_id: int, reply: str) -> str:
+    """Кнопки под ответом хода — по тому, чем ход закончился."""
+    from app.modules.orders import buttons
+
+    return await buttons.prepare(peer_id, reply)
+
+
 def plain_text(text: str) -> str:
     """Ответ без markdown: жирный — обычным текстом, пункты — «•»."""
     if not text:
@@ -1580,7 +2019,11 @@ def _for_history(spoken: str, images: list) -> str:
 
 
 async def handle_turn(
-    peer_id: int, user_text: str, attached: vk_attachments.Collected | None = None
+    peer_id: int,
+    user_text: str,
+    attached: vk_attachments.Collected | None = None,
+    *,
+    budget_seconds: float | None = None,
 ) -> str:
     global _cold_start
     started = time.monotonic()
@@ -1588,7 +2031,7 @@ async def handle_turn(
     cold = _cold_start
     _cold_start = False
     try:
-        return await _handle_turn(peer_id, user_text, spent, attached)
+        return await _handle_turn(peer_id, user_text, spent, attached, budget_seconds)
     finally:
         logger.info(
             "ход peer_id=%s %s%s",
@@ -1603,16 +2046,32 @@ async def _handle_turn(
     user_text: str,
     spent: _Spent,
     attached: vk_attachments.Collected | None = None,
+    budget_seconds: float | None = None,
 ) -> str:
-    if not (attached and attached.any) and marketing.is_stop_request(user_text):
-        # «Стоп» решает код, без модели: отписка должна срабатывать всегда и
-        # одинаково. Флаг гасит только продающие напоминания — сообщения по
-        # заказам идут, как шли.
+    if (
+        not (attached and attached.any)
+        and marketing.is_stop_request(user_text)
+        and await marketing.answers_sales_reminder(peer_id)
+    ):
+        # «Стоп» в ответ на напоминание решает код, без модели: отписка
+        # должна срабатывать всегда и одинаково. Флаг гасит только продающие
+        # напоминания — сообщения по заказам идут, как шли. Во всех прочих
+        # случаях «стоп» — обычная реплика: посреди оформления это пауза.
         await marketing.opt_out(peer_id)
         reply = templates.marketing_stopped()
         await dialog_history.append_exchange(peer_id, user_text, reply)
         logger.info("peer_id=%s отписался от напоминаний", peer_id)
         return reply
+
+    # «Отпишите меня», «не пишите» посреди заказа отвечает модель — по-человечески,
+    # а код тихо гасит продающие напоминания: «заказ ждёт вас» после такой
+    # просьбы был бы ровно тем, о чём просили не делать. Вернётся клиент сам —
+    # бот отвечает как обычно.
+    stop_note = ""
+    if not (attached and attached.any) and marketing.asks_not_to_write(user_text):
+        await marketing.opt_out(peer_id)
+        logger.info("peer_id=%s попросил не писать — напоминания отключены", peer_id)
+        stop_note = _ASKED_NOT_TO_WRITE
 
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
@@ -1622,11 +2081,40 @@ async def _handle_turn(
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
     system_prompt += f"\n\n{order_flow_prompt()}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
+    live = None
+    if draft is None:
+        try:
+            live = await orders_repository.live_invoice_order(peer_id)
+        except Exception:
+            logger.exception("Не проверили выставленный счёт для peer_id=%s", peer_id)
+    if live is not None:
+        system_prompt += "\n" + _describe_live_invoice(live)
+    repeatable = None
+    if draft is None and live is None and repeat_one_tap.is_enabled():
+        try:
+            repeatable = await repeat_one_tap.repeatable_order(peer_id)
+        except Exception:
+            logger.exception("Не нашли заказ для повтора у peer_id=%s", peer_id)
+    if repeatable is not None:
+        system_prompt += (
+            f"\nПоследний удачный заказ клиента — №{repeatable.id}: "
+            f"{templates.composition(repeatable.items or [])}. Если клиент хочет повторить "
+            f"его («да, давайте так же» на «повторить заказ?») — вызови repeat_order с "
+            f"order_id={repeatable.id}: инструмент сам проверит цены, пункт и получателя и "
+            "пришлёт счёт."
+        )
+    if draft is not None and draft.details.get("repeat_note"):
+        # Пояснение, почему повтор не выставил счёт, — один раз, этому ходу.
+        draft.details.pop("repeat_note")
+        await state.set_draft(peer_id, draft)
     if draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
         # То же предложение, что в ответе propose_order, — и для черновика
         # из витрины ВК, который собирается без propose_order.
         last = await repeat_delivery.last_for(peer_id)
         if last is not None:
+            if not draft.details.get("shown_points"):
+                last.remember(draft.details)
+                await state.set_draft(peer_id, draft)
             system_prompt += f"\n{repeat_delivery.suggestion(last)}"
     elif (
         draft is not None
@@ -1643,6 +2131,9 @@ async def _handle_turn(
         # лишний повод упомянуть их к месту и не к месту.
         system_prompt += f"\n\n{_ATTACHMENT_PROMPT}"
 
+    if stop_note:
+        system_prompt += f"\n\n{stop_note}"
+
     escalation_note = await _describe_escalation(peer_id)
     if escalation_note:
         system_prompt += f"\n\n{_ESCALATION_FLOW_PROMPT}\n\n{escalation_note}"
@@ -1651,7 +2142,13 @@ async def _handle_turn(
     if delivered is not None:
         system_prompt += f"\n\n{feedback.prompt_for(delivered)}"
 
-    tools = _tools_for_stage(draft.stage if draft else None, with_feedback=delivered is not None)
+    tools = _tools_for_stage(
+        draft.stage if draft else None,
+        with_feedback=delivered is not None,
+        live_invoice=live is not None,
+        with_offer=bool(draft and draft.details.get("offer")),
+        repeatable=repeatable is not None,
+    )
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
     # кладём в историю. Иначе следующий ход увидит реплику клиента пустой и
@@ -1707,8 +2204,27 @@ async def _handle_turn(
         # confirm_order уходил на пересказ, и модель теряла из готового текста
         # важное — клиент читал «Заказ оформлен! ✅» вместо честного «заказ
         # подтверждён, но в СДЭК не уехал».
+        # Заказ стал полным — счёт выставляет код, без «Оформляем?». Не после
+        # confirm_order: тот выставил счёт сам.
+        names = {block.name for block, _ in executions}
+        if (
+            executions
+            and executions[-1][1].client_reply is None
+            and names & _AUTO_INVOICE_AFTER
+            and "confirm_order" not in names
+        ):
+            invoiced = await spent.tool(_auto_invoice(peer_id))
+            if invoiced is not None:
+                if invoiced.client_reply is not None:
+                    executions.append((executions[-1][0], invoiced))
+                else:
+                    block, execution = executions[-1]
+                    executions[-1] = (
+                        block, ToolExecution(execution.tool_result + "\n" + invoiced.tool_result)
+                    )
+
         if executions and executions[-1][1].client_reply is not None:
-            reply = plain_text(executions[-1][1].client_reply)
+            reply = await _with_buttons(peer_id, plain_text(executions[-1][1].client_reply))
             await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
             return reply
 
@@ -1725,7 +2241,10 @@ async def _handle_turn(
         # в этом же ходу, а не со следующего сообщения клиента.
         fresh_draft = await state.get_draft(peer_id)
         tools = _tools_for_stage(
-            fresh_draft.stage if fresh_draft else None, with_feedback=delivered is not None
+            fresh_draft.stage if fresh_draft else None,
+            with_feedback=delivered is not None,
+            live_invoice=fresh_draft is None and live is not None,
+            with_offer=bool(fresh_draft and fresh_draft.details.get("offer")),
         )
 
         # Последний круг зовём без инструментов: модель обязана ответить
@@ -1733,7 +2252,9 @@ async def _handle_turn(
         # и клиент, спросивший цену, получал её вместо цены.
         last_round = (
             round_number == _MAX_TOOL_ROUNDS
-            or time.monotonic() - turn_started > _TURN_BUDGET_SECONDS
+            or time.monotonic() - turn_started > min(
+                _TURN_BUDGET_SECONDS, budget_seconds or _TURN_BUDGET_SECONDS
+            )
         )
         if last_round:
             logger.warning(
@@ -1748,6 +2269,8 @@ async def _handle_turn(
         if last_round:
             break
 
-    reply = plain_text(claude_client.extract_text(response, default=_NO_TEXT_FALLBACK))
+    reply = await _with_buttons(
+        peer_id, plain_text(claude_client.extract_text(response, default=_NO_TEXT_FALLBACK))
+    )
     await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
     return reply
