@@ -58,6 +58,22 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
     if details.get("offer"):
         return None, ""
 
+    # Прошлый получатель — кнопкой: модель предлагает его текстом, как только
+    # выбрана доставка, а получатель ещё не записан.
+    recipient_row = []
+    if (
+        draft.delivery_method in ("ozon_pvz", "cdek_pvz", "cdek_courier")
+        and not details.get("recipient_name")
+        and not details.get("email_suggestion")
+    ):
+        from app.modules.orders import repeat_delivery
+
+        last = await repeat_delivery.last_recipient_for(peer_id)
+        if last is not None and last.email:
+            recipient_row = [keyboards.text_button(
+                "Да, на эти данные", {"a": "last_recipient", "v": version}, "positive"
+            )]
+
     if shown and not fixed and draft.delivery_method:
         rows = [
             [keyboards.text_button(
@@ -66,7 +82,10 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
             )]
             for point in shown
         ]
-        return keyboards.inline(rows), templates.POINTS_HINT
+        return keyboards.inline(rows + [recipient_row]), templates.POINTS_HINT
+
+    if recipient_row:
+        return keyboards.inline([recipient_row]), ""
 
     if details.get("email_suggestion") and details.get("pending_recipient"):
         return keyboards.inline([[
@@ -166,9 +185,10 @@ def _missing(draft) -> str:
     details = draft.details
     if not draft.delivery_method:
         return templates.ASK_WHERE
+    has_recipient = details.get("recipient_name") and details.get("recipient_email")
     if not (details.get("ozon_point_id") or details.get("delivery_point")) and draft.delivery_method != "cdek_courier":
-        return "Выберите пункт выдачи и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
-    return templates.ASK_RECIPIENT
+        return templates.ASK_POINT if has_recipient else templates.ASK_POINT_AND_RECIPIENT
+    return "" if has_recipient else templates.ASK_RECIPIENT
 
 
 async def _on_point(peer_id: int, payload: dict) -> Press:
@@ -257,7 +277,9 @@ async def _on_email_yes(peer_id: int, payload: dict) -> Press:
         return TO_MODEL
 
     async def written() -> Press:
-        return Press(reply=f"Записала почту {suggestion}.\n{_missing(fresh)}")
+        # Пункт ещё не выбран — кнопки пунктов снова под ответом.
+        keyboard, _ = await for_reply(peer_id)
+        return Press(reply=templates.email_written(suggestion, _missing(fresh)), keyboard=keyboard)
 
     return await _invoice_or(peer_id, written)
 
@@ -366,6 +388,37 @@ async def _on_repeat(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
 
+async def _on_last_recipient(peer_id: int, payload: dict) -> Press:
+    """«Да, на эти данные» — прошлый получатель кодом, почта снова по DNS."""
+    from app.modules.orders import conversation, repeat_delivery
+
+    draft = await _draft_at(peer_id, payload)
+    if draft is None or draft.details.get("recipient_name"):
+        return STALE
+    last = await repeat_delivery.last_recipient_for(peer_id)
+    if last is None:
+        return STALE
+    result = await conversation._execute_set_recipient(
+        peer_id, {"name": last.name, "phone": last.phone, "email": last.email}
+    )
+    fresh = await state.get_draft(peer_id)
+    if fresh is None or not fresh.details.get("recipient_email"):
+        # Почта больше не проходит проверку — разговор, его ведёт модель.
+        logger.info("peer_id=%s: прошлый получатель кнопкой не записался: %s", peer_id, result[:120])
+        return TO_MODEL
+
+    async def written() -> Press:
+        details = fresh.details
+        # Пункт ещё не выбран — кнопки пунктов снова под ответом.
+        keyboard, _ = await for_reply(peer_id)
+        return Press(reply=templates.recipient_written(
+            name=details["recipient_name"], phone=details["recipient_phone"],
+            email=details["recipient_email"], next_step=_missing(fresh),
+        ), keyboard=keyboard)
+
+    return await _invoice_or(peer_id, written)
+
+
 async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
@@ -379,6 +432,7 @@ _HANDLERS = {
     "checkout": _on_checkout,
     "offer_ok": _on_offer_ok,
     "repeat": _on_repeat,
+    "last_recipient": _on_last_recipient,
     "edit": _to_model,
     "other": _to_model,
 }
