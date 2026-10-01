@@ -148,3 +148,28 @@ async def test_stop_after_client_already_answered_reminder(clean, model):
 
 def test_pause_rule_in_prompt():
     assert "«Стоп», «подождите», «секунду» посреди оформления — это пауза" in conversation.order_flow_prompt()
+
+
+async def test_unsubscribe_mid_order_is_answered_by_model_and_silences_reminders(clean, model, monkeypatch):
+    prompts = []
+
+    async def converse(messages, system_prompt, tools):
+        prompts.append(system_prompt)
+        return NS(stop_reason="end_turn", content=[NS(type="text", text="Поняла, больше писать не буду 🙂")])
+
+    monkeypatch.setattr(conversation.claude_client, "converse", converse)
+    reply = await conversation.handle_turn(PEER, "отпишите меня")
+    assert reply == "Поняла, больше писать не буду 🙂"
+    assert "Клиент просит больше ему не писать" in prompts[0]
+    assert await marketing.is_opted_out(PEER)
+
+    # Клиент вернулся сам — бот отвечает как обычно, без пометки.
+    await conversation.handle_turn(PEER, "а Да Хун Пао есть?")
+    assert "Клиент просит больше ему не писать" not in prompts[1]
+
+
+def test_unsubscribe_phrases():
+    assert marketing.asks_not_to_write("Не пишите мне больше")
+    assert marketing.asks_not_to_write("отпишите меня пожалуйста")
+    assert not marketing.asks_not_to_write("стоп")
+    assert not marketing.asks_not_to_write("а почему не пишите?")

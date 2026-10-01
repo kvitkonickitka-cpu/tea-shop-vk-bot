@@ -44,6 +44,22 @@ SALES_REMINDERS = ("draft_nudge_sent", "repeat_nudge")
 _fallback_opted_out: set[int] = set()
 
 
+def asks_not_to_write(text: str) -> bool:
+    """Прямая просьба не писать: «не пишите», «отпишите меня», «отписаться».
+
+    В отличие от «стоп», это не спутать с «подождите»: даже посреди заказа
+    такой клиент не хочет, чтобы бот писал ему сам.
+    """
+    raw = (text or "").strip().lower().replace("ё", "е")
+    if not raw or "?" in raw:
+        return False
+    words = re.findall(r"[а-яa-z]+", raw)
+    if not words or len(words) > _MAX_WORDS:
+        return False
+    phrase = " ".join(words) + " "
+    return any(stop in phrase for stop in _STOP_PHRASES)
+
+
 def is_stop_request(text: str) -> bool:
     """Просит ли клиент больше не присылать напоминаний."""
     raw = (text or "").strip().lower().replace("ё", "е")

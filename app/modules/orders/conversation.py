@@ -1981,6 +1981,14 @@ _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 _BULLET = re.compile(r"^(\s*)[*-]\s+", re.M)
 
 
+_ASKED_NOT_TO_WRITE = (
+    "Клиент просит больше ему не писать. Напоминания ему уже отключены. Ответь "
+    "коротко и дружелюбно, что поняла и сама больше писать не будешь, а если "
+    "понадобится — пусть пишет сюда. Черновик заказа не трогай, инструменты не "
+    "вызывай, ничего не уговаривай."
+)
+
+
 async def _with_buttons(peer_id: int, reply: str) -> str:
     """Кнопки под ответом хода — по тому, чем ход закончился."""
     from app.modules.orders import buttons
@@ -2055,6 +2063,16 @@ async def _handle_turn(
         logger.info("peer_id=%s отписался от напоминаний", peer_id)
         return reply
 
+    # «Отпишите меня», «не пишите» посреди заказа отвечает модель — по-человечески,
+    # а код тихо гасит продающие напоминания: «заказ ждёт вас» после такой
+    # просьбы был бы ровно тем, о чём просили не делать. Вернётся клиент сам —
+    # бот отвечает как обычно.
+    stop_note = ""
+    if not (attached and attached.any) and marketing.asks_not_to_write(user_text):
+        await marketing.opt_out(peer_id)
+        logger.info("peer_id=%s попросил не писать — напоминания отключены", peer_id)
+        stop_note = _ASKED_NOT_TO_WRITE
+
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
 
@@ -2112,6 +2130,9 @@ async def _handle_turn(
         # строчка про голосовые в промпте — это токены на каждом ходу и
         # лишний повод упомянуть их к месту и не к месту.
         system_prompt += f"\n\n{_ATTACHMENT_PROMPT}"
+
+    if stop_note:
+        system_prompt += f"\n\n{stop_note}"
 
     escalation_note = await _describe_escalation(peer_id)
     if escalation_note:
