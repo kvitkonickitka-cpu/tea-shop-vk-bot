@@ -499,7 +499,8 @@ async def quote_ozon(request: Request):
 
     Каталог лежит в базе, база живёт во внутренней сети, и повторить подбор
     скриптом с ноутбука нельзя. Поэтому проверяем изнутри контейнера:
-    `?city=Москва&point=Тверская&weight=400&value=1500`.
+    `?city=Москва&point=Тверская&weight=400&value=1500`, а `&phone=8921…` —
+    чтобы проверить, примет ли Ozon расчёт с таким номером.
     """
     if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
@@ -538,7 +539,8 @@ async def quote_ozon(request: Request):
         row = {"id": point.id, "адрес": point.address}
         try:
             quote = await ozon_quote.price_for(
-                point.id, phone="", weight_grams=weight, declared_value=value
+                point.id, phone=(params.get("phone") or "").strip(),
+                weight_grams=weight, declared_value=value,
             )
         except Exception as error:
             logger.exception("Не посчитали доставку Ozon в пункт %s", point.id)
