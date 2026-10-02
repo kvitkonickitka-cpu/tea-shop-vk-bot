@@ -37,3 +37,5 @@ class OpsEvent(Base):
     # Для ответа клиенту — сколько из duration_ms ушло на Claude.
     llm_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Когда сбой ушёл в Ops-чат подробностью (app/modules/ops/details.py).
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

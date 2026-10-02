@@ -86,7 +86,8 @@ async def _task_times() -> dict[str, datetime]:
         rows = (await session.execute(select(Heartbeat))).scalars().all()
     result = {}
     for row in rows:
-        if row.name == HEARTBEAT:
+        # Служебные отметки мониторинга — не задачи по расписанию.
+        if row.name == HEARTBEAT or row.name.startswith("ops-"):
             continue
         moment = row.last_run_at
         result[row.name] = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)

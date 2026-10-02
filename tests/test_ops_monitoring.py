@@ -340,7 +340,9 @@ async def test_daily_report_once_a_day(clean, monkeypatch):
         await session.commit()
     assert (await report.send(now=after_nine + timedelta(minutes=5)))["skipped"] == "сегодня уже отправлен"
 
-    chat, text_ = sent[0]
+    # Пульс прислал подробность сбоя Claude, отчёт — отдельным сообщением.
+    assert any(text_.startswith("🔎 <b>Claude</b>") for _, text_ in sent)
+    chat, text_ = next((c, t) for c, t in sent if t.startswith("📊"))
     assert chat == "-100500"
     assert "Аптайм" in text_ and "Claude — 1 (timeout 1) ⚠️" in text_
     assert "ответов 1" in text_ and "Диалогов" in text_
@@ -436,3 +438,90 @@ async def test_respond_records_only_delivered_replies(monkeypatch):
     with pytest.raises(RuntimeError):
         await service.respond(1, "привет", attachments.Collected())
     assert not [row for row in journal._BUFFER if row["kind"] == "turn"]
+
+
+# --- подробности сбоев --------------------------------------------------------
+
+
+@pytest.fixture
+def ops_chat(monkeypatch):
+    from app.modules.dialog import telegram_client
+
+    sent: list[str] = []
+
+    async def send_message(text_, chat_id=None):
+        assert chat_id == "-100500"
+        sent.append(text_)
+
+    monkeypatch.setattr(telegram_client, "send_message", send_message)
+    monkeypatch.setattr(settings, "telegram_ops_chat_id", "-100500")
+    return sent
+
+
+async def test_details_say_what_broke(clean, ops_chat, sent_metrics):
+    from app.modules.ops import details
+
+    @journal.watch("cdek", "создание заказа")
+    async def register_order():
+        raise RuntimeError("СДЭК не выдал токен — HTTP 401; v2_token_expired")
+
+    @journal.order_scope
+    async def register(*, order_id):
+        await register_order()
+
+    for order_id in (1042, 1045):
+        with pytest.raises(RuntimeError):
+            await register(order_id=order_id)
+    journal.note_error("cdek", "пункты", RuntimeError("СДЭК не знает города «Мсква»"), 0.1)
+
+    await pulse.run()
+    assert len(ops_chat) == 1
+    message = ops_chat[0]
+    assert message.startswith("🔎 <b>СДЭК</b> — 2 сбоя")
+    assert "создание заказа — HTTP 401, отказ в доступе — похоже, истёк или сменился ключ · заказ #1042" in message
+    assert "Заказы: #1042, #1045" in message
+    assert "Мсква" not in message and "пункты" not in message  # опечатка клиента — не сбой
+
+    # Новый сбой в пределах паузы ждёт, а не шлётся сразу.
+    journal.note_error("cdek", "статус заказа", httpx.ReadTimeout("slow"), 15.0)
+    await pulse.run()
+    assert len(ops_chat) == 1
+
+    # Пауза прошла — уходит только новый.
+    later = datetime.now(timezone.utc) + details.COOLDOWN + timedelta(seconds=1)
+    result = await details.send_pending(now=later)
+    assert result["sent"] == {"cdek": 1}
+    assert "статус заказа — таймаут" in ops_chat[1] and "#1042" not in ops_chat[1]
+
+
+async def test_details_are_released_when_telegram_fails(clean, monkeypatch, sent_metrics):
+    from app.modules.dialog import telegram_client
+    from app.modules.ops import details
+
+    async def down(text_, chat_id=None):
+        raise RuntimeError("Telegram недоступен")
+
+    monkeypatch.setattr(telegram_client, "send_message", down)
+    monkeypatch.setattr(settings, "telegram_ops_chat_id", "-100500")
+    journal.note_error("ozon", "/v1/delivery/checkout", RuntimeError("HTTP 503"), 1.0)
+
+    result = await pulse.run()  # не бросает
+    assert "details_sent" not in result
+    async with clean() as session:
+        waiting = (await session.execute(text(
+            "select count(*) from ops_events where kind='error' and notified_at is null"
+        ))).scalar_one()
+    assert waiting == 1  # следующий пульс попробует снова
+    assert (await details.send_pending())["sent"] == {}  # Telegram всё ещё лежит
+
+
+def test_details_wording():
+    from app.modules.ops import details
+
+    at = datetime(2026, 10, 3, 21, 24, tzinfo=timezone.utc)
+    row = {"at": at, "operation": journal.EMULATION, "error_kind": "http_5xx", "http_status": 503, "order_id": None}
+    rendered = details.render("yookassa", [row] * 7)
+    assert rendered.startswith("🔎 <b>ЮKassa</b> — 7 сбоев (эмуляция)")
+    assert "00:24 · эмуляция — HTTP 503, сбой на стороне сервиса" in rendered
+    assert "и ещё 2 раньше" in rendered
+    assert details._failures(21) == "21 сбой" and details._failures(12) == "12 сбоев"

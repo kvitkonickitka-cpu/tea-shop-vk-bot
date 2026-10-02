@@ -30,12 +30,13 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.ops import journal, monitoring
+from app.modules.ops import details, journal, monitoring
 
 logger = logging.getLogger(__name__)
 
 MARK = "ops-pulse"
 _DB_TIMEOUT_SECONDS = 3
+_DETAILS_TIMEOUT_SECONDS = 20
 
 
 async def window_stats(session, minutes: int, *, skip_emulation: bool = False) -> dict:
@@ -128,11 +129,21 @@ async def run() -> dict:
 
     metrics = metrics_for(db_up, stats)
     sent = await monitoring.write(metrics)
+    details_result = None
+    if db_up:
+        # Подробности сбоев — после метрик: пульс в Monitoring важнее, и
+        # медленный Telegram не должен его задержать.
+        try:
+            details_result = await asyncio.wait_for(details.send_pending(), _DETAILS_TIMEOUT_SECONDS)
+        except Exception as error:
+            logger.warning("Пульс: подробности сбоев не разосланы — %s", type(error).__name__)
     result = {
         "db_up": db_up,
         "metrics_sent": sent if monitoring.is_configured() else "YC_FOLDER_ID не задан",
         "flushed": flushed,
     }
+    if details_result and details_result.get("sent"):
+        result["details_sent"] = details_result["sent"]
     if stats is not None:
         result.update(
             turns=stats["turns"], p95=stats["p95"], llm_p95=stats["llm_p95"],
