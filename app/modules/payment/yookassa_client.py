@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.config import settings
+from app.modules.ops.journal import watch
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,13 @@ def _to_payment(data: dict) -> Payment:
     )
 
 
+def _operation(method: str, path: str, *args, **kwargs) -> str:
+    """«POST /payments» без идентификаторов: по ним ошибки не сгруппировать."""
+    parts = [part for part in path.split("?")[0].split("/") if part]
+    return f"{method} /" + "/".join("{id}" if len(part) > 20 or part[:1].isdigit() else part for part in parts)
+
+
+@watch("yookassa", _operation)
 async def _call(method: str, path: str, payload: dict | None = None, key: str = "") -> dict:
     if not is_configured():
         raise YooKassaError("YOOKASSA_SHOP_ID/YOOKASSA_SECRET_KEY не заданы")

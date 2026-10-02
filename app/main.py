@@ -7,12 +7,15 @@ from app.api.internal import router as internal_router
 from app.api.packing import router as packing_router
 from app.api.payments import router as payments_router
 from app.api.vk import router as vk_router
-from app.core import diagnostics
+from app.core import diagnostics, logs
 from app.core.config import settings
 from app.core.database import init_models, is_available
 from app.modules.catalog import sheet as catalog_sheet
+from app.modules.ops import journal as ops_journal
 
-logging.basicConfig(level=logging.INFO)
+# Строка JSON на запись: Cloud Logging разбирает её на поля, а форматтер
+# заодно маскирует телефоны, почты и токены (app/core/logs.py).
+logs.setup(logging.INFO)
 # httpx на уровне INFO пишет полный адрес каждого запроса, а в адресе бывают
 # секреты: токен бота в пути Telegram API, client_secret в запросе токена
 # СДЭКа. Они оказывались в логах контейнера открытым текстом.
@@ -20,6 +23,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+# Вебхук ВК ждёт ответа считаные секунды — журнал мониторинга после него
+# не сбрасываем, его подберёт следующий запрос или пульс.
+_NO_FLUSH_PATHS = ("/vk/callback", "/health")
+
+
+@app.middleware("http")
+async def flush_ops_journal(request: Request, call_next):
+    response = await call_next(request)
+    # Сбой мониторинга не должен испортить ответ: flush не бросает, и у него
+    # свой короткий таймаут.
+    if ops_journal.pending() and request.url.path not in _NO_FLUSH_PATHS:
+        await ops_journal.flush()
+    return response
 
 
 

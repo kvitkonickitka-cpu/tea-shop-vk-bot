@@ -1,0 +1,14 @@
+# Отметка для ежедневного отчёта Ops: задача %i отработала успешно.
+# Пишет в ту же таблицу heartbeats, что и тик бота, — отчёт читает её.
+# Запускается только через OnSuccess= у задачи (см. *.service.d/), сама
+# по себе ничего не делает. Падение отметки задачу не задевает: та уже
+# завершилась.
+#
+# Ставится на ВМ с базой: /etc/systemd/system/ops-heartbeat@.service,
+# затем systemctl daemon-reload. Удалить — удалить файл и daemon-reload.
+[Unit]
+Description=Отметка мониторинга: %i отработала
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec teashop-postgres psql -U teashop -d teashop -v ON_ERROR_STOP=1 -qc "insert into heartbeats (name, last_run_at, runs) values ('%i', now(), 1) on conflict (name) do update set last_run_at = excluded.last_run_at, runs = heartbeats.runs + 1"

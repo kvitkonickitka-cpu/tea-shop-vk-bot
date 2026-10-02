@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.config import settings
+from app.modules.ops.journal import watch
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
     return _token
 
 
+@watch("cdek", "расчёт тарифов")
 async def calculate_tariffs(
     to_address: str,
     weight_grams: int,
@@ -244,6 +246,7 @@ async def _city_code(client: httpx.AsyncClient, token: str, city: str) -> int | 
     return cities[0].get("code")
 
 
+@watch("cdek", "пункты выдачи города")
 async def city_points(city: str) -> list[DeliveryPoint]:
     """Пункты выдачи города — из кэша, если он ещё свежий."""
     cached = _points_cache.get(city.lower())
@@ -332,6 +335,7 @@ def _order_items(items: list[dict], weight_per_item: int) -> list[dict]:
     return result
 
 
+@watch("cdek", "создание заказа")
 async def register_order(
     *,
     number: str,
@@ -408,6 +412,7 @@ async def register_order(
     return RegisteredOrder(uuid=uuid, number=number)
 
 
+@watch("cdek", "статус заказа")
 async def order_state(uuid: str) -> dict:
     """Что стало с заказом: СДЭК обрабатывает регистрацию асинхронно."""
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
@@ -428,6 +433,7 @@ SERVICE_INSURANCE = "INSURANCE"
 _totals_cache: dict[tuple, tuple[float, float]] = {}
 
 
+@watch("cdek", "полный расчёт")
 async def calculate_total(
     tariff_code: int,
     to_address: str,

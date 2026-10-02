@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.messages import client as client_messages, templates
 from app.modules.orders import repository as orders_repository, state
 from app.modules.orders.state import OrderDraft
+from app.modules.ops.journal import order_scope
 from app.modules.payment import yookassa_client
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,7 @@ def missing_for_invoice(
     return missing
 
 
+@order_scope
 async def issue_for_order(order) -> tuple[yookassa_client.Payment | None, str]:
     """Выставить счёт по уже сохранённому заказу.
 

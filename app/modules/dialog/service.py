@@ -14,6 +14,7 @@ from app.modules.dialog import (
     vk_client,
 )
 from app.modules.dialog.models import ProcessedEvent
+from app.modules.ops import journal as ops_journal
 from app.modules.orders import conversation as orders_conversation
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ async def handle_message_new(message: dict[str, Any]) -> None:
     attached = await attachments.collect(message)
     if not text and not attached.any:
         return
+    ops_journal.mark_received(message.get("date"))
     await respond(peer_id, text, attached)
 
 
@@ -105,6 +107,7 @@ async def respond(
     # а не стадия, которая её съела.
     stage = "генерация ответа"
     generated: float | None = None
+    llm = ops_journal.start_turn()
 
     try:
         # Индикатор «печатает» — украшение, ответ клиента от него не зависит.
@@ -134,6 +137,8 @@ async def respond(
         markup = buttons.take_ready(peer_id)
         await vk_client.send_message(peer_id, reply, **({"keyboard": markup} if markup else {}))
         stage = "готово"
+        # Замер для мониторинга — только для ответа, который дошёл до ВК.
+        ops_journal.finish_turn(started, llm)
     finally:
         # finally вокруг всего обработчика, а не только отправки: когда VK
         # обрывает вебхук по таймауту, выполнение отменяется прямо посреди
@@ -158,10 +163,8 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
     admin_author_id = message.get("admin_author_id")
     peer_id = message.get("peer_id")
 
-    # Подробный лог сырого объекта — пока не проверяли вживую точное имя
-    # поля admin_author_id, это нужно для быстрой диагностики при первом
-    # реальном тесте.
-    logger.info("message_reply raw object: %s", message)
+    # Сырой объект в лог больше не пишем: в нём текст переписки. Поле
+    # admin_author_id проверено вживую, хватает идентификаторов.
     logger.info("message_reply: peer_id=%s admin_author_id=%s", peer_id, admin_author_id)
 
     if not admin_author_id or peer_id is None:

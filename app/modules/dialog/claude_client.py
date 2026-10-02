@@ -3,6 +3,7 @@ from pathlib import Path
 from anthropic import AsyncAnthropic
 
 from app.core.config import settings
+from app.modules.ops.journal import watch
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "system_prompt.md"
 _BASE_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -16,6 +17,7 @@ _client = AsyncAnthropic(
 )
 
 
+@watch("claude", "ответ без инструментов")
 async def generate_reply(user_message: str, catalog_context: str = "") -> str:
     system_prompt = _BASE_SYSTEM_PROMPT
     if catalog_context:
@@ -33,6 +35,7 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
     raise ValueError("Claude response contained no text block")
 
 
+@watch("claude", "мини-отчёт по диалогу")
 async def generate_dialog_report(transcript: str) -> str:
     # Вызывается из задачи по таймеру, а не из обработки сообщения, поэтому
     # спешить некуда: восьмисекундный бюджет вебхука VK здесь ни при чём.
@@ -48,6 +51,7 @@ async def generate_dialog_report(transcript: str) -> str:
     raise ValueError("Claude response contained no text block")
 
 
+@watch("claude", "ход диалога")
 async def converse(messages: list[dict], system_prompt: str, tools: list[dict]):
     # Пустой список инструментов не передаём вовсе: так вызывается последний
     # круг хода, когда модель обязана ответить словами, а не просить ещё

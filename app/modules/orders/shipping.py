@@ -21,6 +21,7 @@ from app.modules.delivery import cdek_client, ozon_client
 from app.messages import manager as manager_messages, templates
 from app.modules.dialog import vk_client
 from app.modules.orders import contacts
+from app.modules.ops.journal import order_scope
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ async def _warn_manager(peer_id: int, carrier: str, order_id=None) -> None:
     )
 
 
+@order_scope
 async def register(
     *,
     peer_id: int,

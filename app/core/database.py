@@ -137,6 +137,7 @@ async def init_models() -> None:
     from app.messages import models as message_models  # noqa: F401
     from app.modules.marking import models as marking_models  # noqa: F401
     from app.modules.catalog import models as catalog_models  # noqa: F401
+    from app.modules.ops import models as ops_models  # noqa: F401
 
     try:
         async with _engine.begin() as conn:

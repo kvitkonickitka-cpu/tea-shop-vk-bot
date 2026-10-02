@@ -90,7 +90,7 @@ async def prepare(
             else:
                 offer.problems.append("прошлый пункт выдачи неизвестен")
         except Exception as error:
-            logger.info("Прошлый пункт %s недоступен: %s", delivery.place, error)
+            logger.info("Прошлый пункт %s недоступен: %s", delivery.point_id or delivery.method, type(error).__name__)
             offer.problems.append(f"прошлый пункт «{delivery.place}» сейчас не принимает посылки")
         offer.point_ok = offer.carrier_cost is not None
         offer.quoted_at = time.time()
