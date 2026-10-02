@@ -191,11 +191,33 @@ async def _respond(batch: Batch, budget_seconds: float) -> None:
         return
     batch = Batch(batch.peer_id, texts)
 
+    from app.modules.ops import journal as ops_journal
+
+    ops_journal.mark_received(_first_written(batch.rows))
     attached = await attachments.collect(batch.merged_message)
     words = batch.text
     if not words and not attached.any:
         return
     await service.respond(batch.peer_id, words, attached, budget_seconds=budget_seconds)
+
+
+def _first_written(rows: list[InboundMessage]) -> float | None:
+    """Когда клиент написал первое сообщение пачки — по часам ВК или по приёму.
+
+    Только для замера мониторинга, поэтому никогда не бросает: странное поле
+    `date` не должно стоить клиенту ответа.
+    """
+    moments = []
+    for row in rows:
+        try:
+            written = row.message.get("date")
+            if written:
+                moments.append(float(written))
+            elif row.received_at is not None:
+                moments.append(row.received_at.timestamp())
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return min(moments) if moments else None
 
 
 async def _run_turn(peer_id: int, started: float) -> bool:

@@ -98,7 +98,7 @@ async def clean(db):
         "conversations",
         "escalations", "escalation_states", "client_notices",
         "manager_notifications", "processed_events", "dialog_reports",
-        "heartbeats", "marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events",
+        "heartbeats", "marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events", "ops_events",
     )
     async with db() as session:
         rows = (

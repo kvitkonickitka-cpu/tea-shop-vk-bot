@@ -25,6 +25,7 @@ from app.modules.orders import (
     repository as orders_repository,
     shipping,
 )
+from app.modules.ops.journal import watch
 from app.modules.payment import service as payment_service, settlement, yookassa_client
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ EVENT_REFUNDED = "refund.succeeded"
 STATUS_REFUNDED = "refunded"
 
 
+# Сбой разбора уведомления — сбой ЮKassa для мониторинга. Если внутри упал
+# СДЭК или Ozon, он уже записан своей обёрткой и второй раз не считается.
+@watch("yookassa", "уведомление о платеже")
 async def handle(body: dict) -> dict:
     """Разобрать уведомление. Исключения наружу — чтобы ЮKassa повторила."""
     event = str(body.get("event") or "")

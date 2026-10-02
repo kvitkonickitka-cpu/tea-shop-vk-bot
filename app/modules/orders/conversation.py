@@ -806,7 +806,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 draft, method, address, delivery_point=chosen["id"] if chosen else None
             )
         except Exception:
-            logger.exception("Не посчитали доставку СДЭК для peer_id=%s по адресу «%s»", peer_id, address)
+            # Адрес в лог не пишем: у курьерской доставки это адрес клиента.
+            logger.exception("Не посчитали доставку СДЭК для peer_id=%s (%s)", peer_id, method)
             return ToolExecution(
                 "Расчёт СДЭКа сейчас недоступен. Скажи клиенту, что стоимость "
                 "доставки уточнит менеджер, и вызови escalate_to_manager."
@@ -826,7 +827,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             try:
                 city_list = await cdek_client.city_points(address)
             except Exception:
-                logger.exception("Не нашли пункты выдачи СДЭК в «%s» для peer_id=%s", address, peer_id)
+                logger.exception("Не нашли пункты выдачи СДЭК для peer_id=%s", peer_id)
                 city_list = []
             found = cdek_client.match_points(city_list, hint, limit=points.MAX_SHOWN) if hint else []
             if hint and not found:

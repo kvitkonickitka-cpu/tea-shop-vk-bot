@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.config import settings
+from app.modules.ops.journal import watch
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,7 @@ async def _get_token(client: httpx.AsyncClient) -> str:
     return _token
 
 
+@watch("ozon", lambda path, *a, **k: path)
 async def call(path: str, payload: dict) -> dict:
     """Вызов метода Ozon Delivery API с авторизацией."""
     if not is_configured():
@@ -372,6 +374,7 @@ async def available_points(
     return allowed
 
 
+@watch("ozon", "расчёт (checkout)")
 async def checkout(
     *,
     shipment_method_id: int,
@@ -432,6 +435,7 @@ def describe_items(items: list[dict]) -> str:
     return text[:_MAX_DESCRIPTION]
 
 
+@watch("ozon", "создание отправления")
 async def create_order(
     *,
     external_id: str,

@@ -12,6 +12,7 @@ from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
+from app.modules.ops import journal as ops_journal, pulse as ops_pulse, report as ops_report
 from app.modules.dialog import escalation_watch, inbound, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import (
@@ -157,6 +158,8 @@ async def _run_scheduled() -> dict:
     result["undelivered"] = await _run_task(
         "Отчёт о недоставленном менеджеру", reports_service.report_undelivered()
     )
+    # Сутки бота для Ops-чата — раз в день после девяти утра по Москве.
+    result["ops_report"] = await _run_task("Отчёт для Ops", ops_report.send())
     # Отметка после всех задач: по ней видно, дошёл ли тик до конца или его
     # убили на середине — и firing ли триггер вообще.
     await heartbeat.note("расписание")
@@ -687,4 +690,70 @@ async def trigger_entrypoint(request: Request):
             )
         return {"queue_events": len(vk_events), "handled": handled}
 
+    # Минутный таймер мониторинга: в его поле «Данные» — `ops-pulse` и токен.
+    # Тик расписания ему запускать нельзя: тот идёт до 50 секунд и тянет
+    # внешние сервисы, а пульс должен быть лёгким и каждую минуту.
+    if ops_pulse.MARK in raw:
+        return await ops_pulse.run()
+
     return await _run_scheduled()
+
+
+@router.post("/internal/ops/pulse")
+async def ops_pulse_now(request: Request):
+    """Пульс вручную: что ушло бы в Monitoring прямо сейчас.
+
+        scripts/api.sh ops/pulse
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    return await ops_pulse.run()
+
+
+@router.post("/internal/ops/report")
+async def ops_report_now(request: Request):
+    """Ежедневный отчёт в Ops-чат прямо сейчас — без отметки «отправлен».
+
+        scripts/api.sh ops/report
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    try:
+        return await ops_report.send(force=True)
+    except Exception as error:
+        logger.exception("Отчёт для Ops не отправился")
+        return {"sent": False, "error": _hide_token(f"{type(error).__name__}: {error}")[:300]}
+
+
+@router.post("/internal/ops/emulate")
+async def ops_emulate(request: Request):
+    """Проверка алертов: записать поддельные сбои или медленные ответы.
+
+    Внешние сервисы при этом не вызываются вовсе — запись идёт прямо в
+    журнал с операцией «эмуляция», которую ежедневный отчёт не считает.
+    Следом запускается пульс, так что метрика уходит сразу.
+
+        scripts/api.sh 'ops/emulate?api=cdek&count=3&kind=http_5xx'
+        scripts/api.sh 'ops/emulate?latency=45&count=5'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    params = request.query_params
+    try:
+        count = max(1, min(int(params.get("count") or 1), 20))
+        latency = float(params["latency"]) if params.get("latency") else None
+    except ValueError:
+        return {"error": "count и latency — числа"}
+    api = params.get("api")
+    if latency is not None:
+        for _ in range(count):
+            ops_journal.note_turn(latency, latency * 0.8, operation=ops_journal.EMULATION)
+    elif api in ops_journal.APIS:
+        kind = params.get("kind") or "http_5xx"
+        status = {"http_5xx": 503, "http_4xx": 400, "auth": 401}.get(kind)
+        error = RuntimeError(f"Эмуляция сбоя: HTTP {status}" if status else f"Эмуляция сбоя: {kind}")
+        for _ in range(count):
+            ops_journal.note_error(api, ops_journal.EMULATION, error, 0.0)
+    else:
+        return {"error": f"нужен latency=секунды или api=одно из {', '.join(ops_journal.APIS)}"}
+    return {"emulated": count, "pulse": await ops_pulse.run()}

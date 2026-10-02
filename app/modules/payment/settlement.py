@@ -42,6 +42,7 @@ from app.modules.marking import packing
 from app.modules.marking.models import ASSIGNED, SOLD, MarkingCodeRow
 from app.modules.orders import order_chat, repository as orders_repository
 from app.modules.orders.models import Order
+from app.modules.ops.journal import order_scope
 from app.modules.payment import yookassa_client
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,7 @@ async def _mark_sold(order_id: int) -> None:
         await session.commit()
 
 
+@order_scope
 async def issue(order: Order) -> dict:
     """Отправить закрывающий чек по заказу. Возвращает, что вышло."""
     if not is_enabled():
@@ -272,6 +274,7 @@ async def issue(order: Order) -> dict:
     return {"чек": receipt.id, "статус": receipt.status, "попытка": attempt}
 
 
+@order_scope
 async def on_delivered(order: Order) -> dict:
     """Событие «вручено»: чек уходит сразу, тихие часы тут ни при чём."""
     if not is_enabled():
