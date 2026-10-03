@@ -43,6 +43,7 @@ SAMPLES = {
     "waited_minutes": 120, "weeks": 3, "delivery_method": "ozon_pvz", "delivery_cost": 117,
     "gap": 200, "free": False, "next_step": "Куда везти — город и улица, где удобно забрать?",
     "ask_recipient": True, "upsell": "Да Хун Пао", "upsell_price": 1500,
+    "eta": "≈ 6–7 дней: 1–2 дня соберём и сдадим, 5 дней в пути у Ozon",
     "name": "Иванов Иван", "method": "ozon_pvz", "label": "Ozon, пункт выдачи: Краснодар, Красная, 1",
 }
 

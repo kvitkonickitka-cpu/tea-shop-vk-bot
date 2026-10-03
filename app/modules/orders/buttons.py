@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass
 
 from app.messages import funnel, keyboard as keyboards, templates
-from app.modules.orders import points, repository as orders_repository, state
+from app.modules.orders import eta, points, repository as orders_repository, state
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +218,7 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
             delivery_cost=fresh.delivery_cost,
             total=fresh.items_total + (fresh.delivery_cost or 0),
             ask_recipient=True,
+            eta=eta.phrase(fresh.details),
         ))
 
     return await _invoice_or(peer_id, chosen_reply)

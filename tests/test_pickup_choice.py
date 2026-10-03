@@ -132,7 +132,7 @@ async def test_cdek_list_and_choice(clean, monkeypatch):
         return city
 
     async def delivery(draft, method, address, delivery_point=None):
-        return NS(code=136, period="3–4 раб. дн."), 397.0
+        return NS(code=136, period_min=3, period_max=4), 397.0
 
     monkeypatch.setattr(cdek_client, "city_points", city_points)
     monkeypatch.setattr(conversation, "_cdek_delivery", delivery)

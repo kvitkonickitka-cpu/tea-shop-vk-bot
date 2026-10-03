@@ -144,6 +144,7 @@ async def test_point_button_without_recipient_asks_for_data(clean, world):
     await say("1. Ставропольская улица, 230", 1, {"a": "pt", "n": 1, "v": version})
     assert world["sent"][-1][0] == (
         "Записала пункт: Краснодар, Ставропольская улица, 230. Доставка — 121 ₽, итого 1621 ₽.\n"
+        "Срок: ≈ 7–8 дней: 1–2 дня соберём и сдадим, 6 дней в пути у Ozon.\n"
         + templates.ASK_RECIPIENT
     )
 
