@@ -231,14 +231,17 @@ async def call(path: str, payload: dict) -> dict:
     client = _shared_client()
     try:
         response = await _post_authorized(client, path, payload)
-    except (httpx.TimeoutException, httpx.NetworkError):
+    except httpx.TransportError:
         # Чтение каталога пунктов — фоновое и безопасное для повтора: один
         # таймаут Ozon за тик ничего не значит, а сообщением в Ops выглядел
-        # как поломка. Запросы, которые что-то создают, не повторяем: после
-        # таймаута неизвестно, выполнил ли Ozon первый.
+        # как поломка. Ловим любой транспортный сбой, а не только таймаут:
+        # Ozon закрывает соединение, которое общий клиент держит между
+        # тиками, и следующий запрос падает с RemoteProtocolError — он не
+        # таймаут и не NetworkError. Запросы, которые что-то создают, не
+        # повторяем: после сбоя неизвестно, выполнил ли Ozon первый.
         if path not in _RETRY_ON_TIMEOUT:
             raise
-        logger.info("Ozon не ответил на %s — повторяем один раз", path)
+        logger.info("Связь с Ozon на %s оборвалась — повторяем один раз", path)
         response = await _post_authorized(client, path, payload)
     if response.status_code == 401:
         # Токен по часам ещё жив, а Ozon его уже не принимает: похоже,

@@ -34,6 +34,8 @@ def _ozon(monkeypatch, answers):
         status = answers.pop(0)
         if status == "timeout":
             raise httpx.ReadTimeout("Ozon молчит", request=request)
+        if status == "disconnect":
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
         return httpx.Response(status, json={"delivery_points": [1]} if status == 200 else {"message": "Unauthorized"})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -110,3 +112,12 @@ def test_vanished_points_are_not_a_failure():
     )
     assert journal.classify(error) == ("validation", 404)
     assert journal.classify(CdekError("Не нашли город «Мсква» — HTTP 400")) == ("validation", 400)
+
+
+async def test_catalog_read_survives_a_dropped_connection(monkeypatch):
+    from app.modules.ops import journal
+
+    journal._BUFFER.clear()
+    _ozon(monkeypatch, ["disconnect", 200])
+    assert await ozon_client.call("/v1/delivery-point/info", {}) == {"delivery_points": [1]}
+    assert not journal._BUFFER
