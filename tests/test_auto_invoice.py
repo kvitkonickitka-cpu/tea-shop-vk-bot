@@ -199,7 +199,6 @@ async def test_paying_old_link_ships_what_was_paid(clean, world, monkeypatch):
 
     monkeypatch.setattr(webhook.shipping, "register", register)
     monkeypatch.setattr(webhook.order_chat, "send", to_manager)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", lambda pid: _raise())
 
     await webhook.handle_paid(yookassa_client.Payment(
         id="pay-1", status="succeeded", paid=True, confirmation_url="",
@@ -210,10 +209,6 @@ async def test_paying_old_link_ships_what_was_paid(clean, world, monkeypatch):
     async with clean() as session:
         order = (await session.execute(select(Order))).scalar_one()
     assert float(order.total) == 1621 and len(order.items) == 1
-
-
-async def _raise():
-    raise yookassa_client.YooKassaError("payment can not be canceled")
 
 
 def test_prompt_has_no_mandatory_confirmation():

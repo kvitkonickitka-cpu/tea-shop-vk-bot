@@ -8,6 +8,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from app.core.config import settings
+from app.messages import templates
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
 from app.modules.orders import conversation, points, state
@@ -87,10 +88,35 @@ async def test_street_puts_its_points_first_with_prices(clean, ozon):
     assert "Выберите пункт и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт" in result.tool_result
 
 
-async def test_city_only_shows_four(clean, ozon):
+async def test_city_only_in_a_big_city_asks_for_the_point(clean, ozon):
     await fresh_draft()
-    await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})
-    assert len((await state.get_draft(PEER)).details["shown_points"]) == 4
+    result = await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})
+    draft = await state.get_draft(PEER)
+    # Пять пунктов в городе — список не показываем, просим адрес пункта.
+    assert "shown_points" not in draft.details and draft.details["point_asked"]
+    assert templates.ask_point_address("Ozon") in result.tool_result
+    assert "Предварительная стоимость доставки" in result.tool_result
+    assert ozon["priced"] == [11]  # цена «около» — по одному пункту
+    assert draft.delivery_cost == 111 and "ozon_point_id" not in draft.details
+    # Описание черновика на следующем ходу напомнит модели, чего ждём.
+    assert "клиента попросили назвать улицу и дом пункта" in conversation._describe_draft(draft)
+
+    # Клиент назвал улицу — пункты рядом, с номерами.
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская 230"}
+    )
+    draft = await state.get_draft(PEER)
+    assert [p["id"] for p in draft.details["shown_points"]] == [11, 12] and "point_asked" not in draft.details
+
+
+async def test_city_only_in_a_small_town_shows_all(clean, ozon, monkeypatch):
+    async def few(draft, city, hint=""):
+        return ozon_quote.Picked(KRD[:3], 3, 3, not hint)
+
+    monkeypatch.setattr(conversation, "_ozon_points", few)
+    await fresh_draft()
+    await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Крымск"})
+    assert len((await state.get_draft(PEER)).details["shown_points"]) == 3
 
 
 async def test_single_found_point_is_not_fixed(clean, ozon):
@@ -104,7 +130,9 @@ async def test_single_found_point_is_not_fixed(clean, ozon):
 
 async def test_number_picks_from_shown_list(clean, ozon):
     await fresh_draft()
-    await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"}
+    )
     searches = len(ozon["search"])
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "второй"}
@@ -122,6 +150,8 @@ async def test_unknown_address_is_not_accepted(clean, ozon):
         PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Луговая 5"}
     )
     assert "«Луговая 5» в нашем списке не нашёлся" in result.tool_result
+    # Большой город — и после ненайденного адреса просим адрес снова, а не список.
+    assert templates.ask_point_address("Ozon") in result.tool_result
     assert "ozon_point_id" not in (await state.get_draft(PEER)).details
 
 
@@ -138,6 +168,10 @@ async def test_cdek_list_and_choice(clean, monkeypatch):
     monkeypatch.setattr(conversation, "_cdek_delivery", delivery)
     await fresh_draft()
     result = await conversation._execute_set_delivery_method(PEER, {"method": "cdek_pvz", "address": "Краснодар"})
+    assert templates.ask_point_address("СДЭК") in result.tool_result  # шесть пунктов — просим адрес
+    result = await conversation._execute_set_delivery_method(
+        PEER, {"method": "cdek_pvz", "address": "Краснодар", "pickup_point": "Красная"}
+    )
     assert "1) ул. Красная, 1; 2) ул. Красная, 2; 3) ул. Красная, 3; 4) ул. Красная, 4" in result.tool_result
     await conversation._execute_set_delivery_method(
         PEER, {"method": "cdek_pvz", "address": "Краснодар", "pickup_point": "3"}
@@ -172,7 +206,9 @@ async def test_point_and_recipient_in_one_message_end_with_invoice(clean, ozon, 
     monkeypatch.setattr(catalog_service, "load_items", lambda: [
         {"name": "Те Гуань Инь (тест)", "price": 1500, "in_stock": True}])
     await fresh_draft()
-    await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"}
+    )
 
     reply = await conversation.handle_turn(PEER, "1, Иванов Иван, 89001234567, ivanov@mail.ru")
     assert len(rounds) == 1 and payments == [11]

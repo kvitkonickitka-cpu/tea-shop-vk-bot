@@ -60,15 +60,16 @@ def world(monkeypatch):
             amount=kwargs["amount"],
         )
 
-    async def cancel(payment_id):
-        box["canceled"].append(payment_id)
-        raise yookassa_client.YooKassaError("payment can not be canceled")
+    async def cancel(method, path, payload=None, key=""):
+        # Отмену ЮKassa бот больше не просит: pending она не отменяет.
+        box["canceled"].append(path)
+        raise yookassa_client.YooKassaError("неожиданный запрос в ЮKassa")
 
     monkeypatch.setattr("app.messages.client.vk_client.send_message", to_client)
     monkeypatch.setattr(webhook.order_chat, "send", to_manager)
     monkeypatch.setattr(webhook.shipping, "register", register)
     monkeypatch.setattr(yookassa_client, "create_refund", create_refund)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", cancel)
+    monkeypatch.setattr(yookassa_client, "_call", cancel)
     return box
 
 

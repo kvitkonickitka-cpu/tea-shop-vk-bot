@@ -170,3 +170,18 @@ async def test_flag_off(clean, shop, monkeypatch):
     text, board = await storefront(shop)
     assert "Ближайшие пункты" not in text and board is None
     assert not (await state.get_draft(PEER)).delivery_method
+
+
+async def test_city_without_street_asks_for_the_point(clean, shop):
+    shop["order"]["delivery"] = {"address": "Россия, Краснодар"}
+    text, board = await storefront(shop)
+    assert text == "\n".join([
+        "Заказ №77 принят: Те Гуань Инь (тест) × 1 — 1500 ₽.",
+        "Дешевле всего — пункт выдачи Ozon в городе Краснодар — около 121 ₽, заберёте сами. "
+        "Быстрее, но дороже — пункт выдачи СДЭК или курьер: напишите, если нужен он.",
+        templates.ask_point_address("Ozon"),
+        templates.storefront_with_point_email("Петров Пётр", "+79007654321"),
+    ])
+    assert board is None  # пунктов в тексте нет — и кнопок под ними нет
+    draft = await state.get_draft(PEER)
+    assert draft.details["point_asked"] and "shown_points" not in draft.details

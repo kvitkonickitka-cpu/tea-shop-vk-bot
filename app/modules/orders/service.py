@@ -76,6 +76,9 @@ async def _direct_points(
 ) -> bool:
     """Сразу пункты Ozon рядом с адресом из заказа. False — прежний вопрос «в какой город».
 
+    Улицы в адресе нет, а пунктов в городе много — вместо списка просим
+    адрес пункта (улица и дом, адрес с карты Ozon или скриншот).
+
     Тот же поиск, что и «город и улица» в диалоге: до четырёх пунктов с
     номерами, первыми — на этой улице, с ценой у каждого, если Ozon ответил
     вовремя; список ложится в черновик, и выбор «1», кнопкой или адресом идёт
@@ -99,7 +102,10 @@ async def _direct_points(
         return False
     draft = await state.get_draft(user_id)
     shown = list((draft.details.get("shown_points") if draft else None) or [])
-    if draft is None or not shown or draft.details.get("ozon_point_id"):
+    # Улицы в адресе нет, а город большой — пункты не перечисляем, просим
+    # адрес пункта, как и в диалоге.
+    asked = bool(draft and draft.delivery_method == "ozon_pvz" and draft.details.get("point_asked"))
+    if draft is None or not (shown or asked) or draft.details.get("ozon_point_id"):
         return False
 
     keyboard, hint = await buttons.for_reply(user_id)
@@ -107,18 +113,28 @@ async def _direct_points(
     last = await repeat_delivery.last_recipient_for(user_id)
     candidate = _recipient_of(order)
     if last is not None and last.email:
-        ask = templates.storefront_ask_last(last.name, last.phone, last.email, button=shows_buttons)
+        ask = (
+            templates.ask_last_recipient(last.name, last.phone, last.email, button=shows_buttons)
+            if asked else
+            templates.storefront_ask_last(last.name, last.phone, last.email, button=shows_buttons)
+        )
     elif candidate is not None:
         draft.details["storefront_recipient"] = {"name": candidate[0], "phone": candidate[1]}
         await state.set_draft(user_id, draft)
-        ask = templates.storefront_ask_email(*candidate)
+        ask = (templates.storefront_with_point_email if asked else templates.storefront_ask_email)(*candidate)
     else:
-        ask = templates.STOREFRONT_ASK_ALL
-    text = templates.storefront_points(
-        order_id=order_id, items=items, items_total=items_total, shown=shown,
-        per_point_prices=all(point.get("price") is not None for point in shown),
-        delivery_cost=draft.delivery_cost, ask=ask, hint=hint if shows_buttons else "",
-    )
+        ask = templates.STOREFRONT_WITH_POINT_ALL if asked else templates.STOREFRONT_ASK_ALL
+    if asked:
+        text = templates.storefront_ask_point(
+            order_id=order_id, items=items, items_total=items_total, city=city,
+            delivery_cost=draft.delivery_cost, ask=ask,
+        )
+    else:
+        text = templates.storefront_points(
+            order_id=order_id, items=items, items_total=items_total, shown=shown,
+            per_point_prices=all(point.get("price") is not None for point in shown),
+            delivery_cost=draft.delivery_cost, ask=ask, hint=hint if shows_buttons else "",
+        )
     await client_messages.send(
         peer_id=user_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
         text=text, keyboard=keyboard,

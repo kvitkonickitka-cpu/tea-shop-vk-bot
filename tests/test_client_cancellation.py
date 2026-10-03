@@ -72,16 +72,17 @@ def world(monkeypatch):
             amount=kwargs["amount"],
         )
 
-    async def cancel(payment_id):
-        box["canceled"].append(payment_id)
-        raise yookassa_client.YooKassaError("payment can not be canceled")
+    async def cancel(method, path, payload=None, key=""):
+        # Отмену ЮKassa бот больше не просит: pending она не отменяет.
+        box["canceled"].append(path)
+        raise yookassa_client.YooKassaError("неожиданный запрос в ЮKassa")
 
     monkeypatch.setattr("app.messages.client.vk_client.send_message", to_client)
     monkeypatch.setattr(cancellation.order_chat, "send", to_manager)
     monkeypatch.setattr(webhook.order_chat, "send", to_manager)
     monkeypatch.setattr(webhook.shipping, "register", register)
     monkeypatch.setattr(yookassa_client, "create_refund", create_refund)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", cancel)
+    monkeypatch.setattr(yookassa_client, "_call", cancel)
     return box
 
 
@@ -103,7 +104,7 @@ async def test_unpaid_order_is_canceled_without_a_manager(clean, world):
     async with clean() as session:
         attempt = await session.get(OrderPayment, "pay-1")
     assert attempt.closed_at is not None
-    assert world["canceled"] == ["pay-1"]
+    assert world["canceled"] == []
     assert len(world["manager"]) == 1 and "отменён клиентом" in world["manager"][0]
 
 
@@ -253,4 +254,4 @@ async def test_manager_cancels_an_unpaid_order(clean, world):
     order = await make_order(clean)
     done = await cancellation.cancel_by_manager(order.id)
     assert done["отменён"] is True
-    assert world["canceled"] == ["pay-1"]
+    assert world["canceled"] == []

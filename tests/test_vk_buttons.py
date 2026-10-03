@@ -99,7 +99,8 @@ async def listing(recipient: bool = True):
     await state.set_draft(PEER, OrderDraft(
         items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 1500}], items_total=1500,
         stage="awaiting_delivery", details=details))
-    await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"})
 
 
 async def test_points_get_buttons_and_a_hint(clean, world):
