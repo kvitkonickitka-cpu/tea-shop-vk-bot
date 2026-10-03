@@ -55,6 +55,32 @@ def test_yo_and_e_are_the_same():
     assert take.mentioned("лао ча тоу елочный", catalog)
 
 
+@pytest.mark.parametrize("reply", [
+    "Советую тегуанинь — цветочный.",
+    "Советую Те-Гуань-Инь — цветочный.",
+    "ТГИ сейчас самый свежий.",
+    "Возьмите «железную богиню» — не пожалеете.",
+])
+def test_synonyms(reply):
+    catalog = [{"name": "Те Гуань Инь (тест)", "price": 1500, "in_stock": True,
+                "synonyms": ["Железная богиня милосердия", "железная богиня"]}]
+    assert [item["name"] for item in take.mentioned(reply, catalog)] == ["Те Гуань Инь (тест)"]
+
+
+def test_short_names_have_no_initials():
+    catalog = [{"name": "Шу Пуэр", "price": 900, "in_stock": True},
+               {"name": "Да Хун Пао", "price": 1500, "in_stock": True}]
+    assert take.mentioned("шп и дхп", catalog) == [{**catalog[1], "_several": False}]
+    assert take.mentioned("шупуэр", catalog)[0]["name"] == "Шу Пуэр"
+
+
+def test_sheet_reads_synonyms():
+    from app.modules.catalog import sheet
+
+    parsed = sheet.parse_csv("Название,Цена,Синонимы\nТе Гуань Инь,1500,\"ТГИ, железная богиня\"\n")
+    assert not parsed.errors and parsed.items[0]["synonyms"] == ["ТГИ", "железная богиня"]
+
+
 @pytest.fixture
 def shop(world, monkeypatch):
     monkeypatch.setattr(catalog_service, "load_items", lambda: CATALOG)

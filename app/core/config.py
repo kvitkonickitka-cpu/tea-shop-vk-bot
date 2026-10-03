@@ -80,8 +80,10 @@ class Settings(BaseSettings):
     # второе за несколько минут до истечения.
     payment_reminder_1_after_minutes: int = 25
     payment_reminder_2_before_expiry_minutes: int = 10
-    # Не напоминаем, если разговор и так идёт.
-    payment_reminder_skip_if_talked_minutes: int = 30
+    # Не напоминаем, если разговор и так идёт. 20, а не 30: постоянному
+    # клиенту счёт приходит в ответ на его сообщение, и при 30 минутах
+    # первое напоминание (через 25) молчало бы всегда.
+    payment_reminder_skip_if_talked_minutes: int = 20
 
     # Через сколько рабочих минут без ответа менеджеру напоминают о вопросе.
     escalation_reping_after_working_minutes: int = 120

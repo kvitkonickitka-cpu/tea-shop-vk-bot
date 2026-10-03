@@ -10,6 +10,12 @@
 несколько, тогда кнопка на каждую («Взять Те Гуань Инь 100 г»), но всего не
 больше трёх.
 
+Синонимы. Модель пишет название не всегда как в таблице: «тегуанинь»,
+«те-гуань-инь», «ТГИ». Поэтому кроме названия сравниваем его же без
+пробелов и дефисов, первые буквы слов (для названий из трёх слов и
+длиннее — у двух слов «ШП» слишком легко совпасть случайно) и то, что
+менеджер вписал в столбец «Синонимы» таблицы.
+
 Чтобы кнопки не висели под каждой репликой, набор под последним сообщением
 бота хранится в `client_preferences.last_offer_buttons`: тот же набор — не
 ставим.
@@ -38,6 +44,9 @@ _MEDICAL = ("врач", "медицинск", "по здоровью")
 
 def normalize(text: str) -> str:
     text = _QUOTES.sub(" ", (text or "").lower().replace("ё", "е"))
+    # «Те-Гуань-Инь» и «Те Гуань Инь» — одно и то же; мягкий и твёрдый
+    # знак в транскрипциях китайских названий пишут как попало.
+    text = re.sub(r"(?<=\w)[-‐–](?=\w)", " ", text).replace("ь", "").replace("ъ", "")
     return " ".join(text.split())
 
 
@@ -55,11 +64,48 @@ def base_name(item: dict) -> str:
     return normalize(_SIZE.sub("", name))
 
 
+_MIN_INITIALS_WORDS = 3
+
+
+def variants(item: dict) -> set[str]:
+    """Как ещё модель может назвать товар: слитно, первыми буквами, синонимы из таблицы."""
+    base = base_name(item)
+    found = {base} if base else set()
+    words = base.split()
+    if len(words) > 1:
+        found.add("".join(words))
+    if len(words) >= _MIN_INITIALS_WORDS:
+        found.add("".join(word[0] for word in words))
+    for synonym in item.get("synonyms") or []:
+        synonym = normalize(synonym)
+        if synonym:
+            found.add(synonym)
+            found.add(synonym.replace(" ", ""))
+    return found
+
+
+_STEM_FROM = 5
+
+
+def _word_pattern(word: str) -> str:
+    # Окончание длинного слова свободно: «железную богиню» — это синоним
+    # «железная богиня». Короткие слова («да», «хун», «пао») — точно.
+    if len(word) >= _STEM_FROM:
+        return re.escape(word[:-2]) + r"\w{0,3}"
+    return re.escape(word)
+
+
 def _position(text: str, base: str) -> int | None:
     if not base:
         return None
-    match = re.search(rf"(?<!\w){re.escape(base)}(?!\w)", text)
+    pattern = r"\s+".join(_word_pattern(word) for word in base.split())
+    match = re.search(rf"(?<!\w){pattern}(?!\w)", text)
     return match.start() if match else None
+
+
+def _earliest(text: str, names: set[str]) -> int | None:
+    places = [where for where in (_position(text, name) for name in names) if where is not None]
+    return min(places) if places else None
 
 
 def mentioned(reply: str, catalog: list[dict], *, exclude: set[str] = frozenset()) -> list[dict]:
@@ -71,8 +117,9 @@ def mentioned(reply: str, catalog: list[dict], *, exclude: set[str] = frozenset(
             continue
         groups.setdefault(base_name(item), []).append(item)
     found = []
-    for base, rows in groups.items():
-        where = _position(text, base)
+    for rows in groups.values():
+        names = set().union(*(variants(row) for row in rows))
+        where = _earliest(text, names)
         if where is not None:
             found.append((where, rows))
     found.sort(key=lambda pair: pair[0])

@@ -163,8 +163,10 @@ async def test_reminders_follow_the_common_rules(clean, world, monkeypatch):
     # Клиент писал только что — молчим.
     assert await watch._remind(order, pending, later) is None
     async with clean() as session:
+        # Счёт пришёл в ответ на сообщение клиента; через 25 минут после
+        # него разговор уже не «идёт» — окно 20 минут.
         await session.execute(update(ConversationMessage).values(
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=40)))
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=25)))
         await session.commit()
     assert await watch._remind(order, pending, later) == "payment_reminder_1"
     assert "ждёт оплаты" in world["sent"][-1][0]

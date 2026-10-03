@@ -62,6 +62,8 @@ _COLUMNS = {
     "ссылка": "link",
     "описание": "description",
     "с чем советуем": "recommended",
+    "синонимы": "synonyms",
+    "другие названия": "synonyms",
 }
 _REQUIRED = ("name", "price")
 
@@ -167,6 +169,11 @@ def parse_csv(text: str) -> Parsed:
                 part.strip()
                 for part in values.get("recommended", "").split(",")
                 if part.strip()
+            ],
+            # Как ещё называют товар — чтобы кнопка «Взять» нашла его в
+            # ответе модели, написанном не по таблице.
+            "synonyms": [
+                part.strip() for part in re.split(r"[;,]", values.get("synonyms", "")) if part.strip()
             ],
             "_row": number,
         }

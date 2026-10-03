@@ -78,6 +78,9 @@ async def build_catalog_context() -> str:
         link = item.get("link")
         if link:
             line += f" Ссылка на товар (в т.ч. с фото): {link}"
+        synonyms = item.get("synonyms") or []
+        if synonyms:
+            line += f" Ещё называют: {', '.join(synonyms)}."
         recommended = item.get("recommended") or []
         if recommended:
             line += f" С чем советуем: {', '.join(recommended)}."
