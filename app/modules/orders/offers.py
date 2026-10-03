@@ -18,7 +18,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 
-from app.modules.orders import contacts, points
+from app.modules.orders import contacts, eta, points
 from app.modules.orders.repeat_delivery import LastDelivery, LastRecipient
 from app.modules.orders.state import OrderDraft
 
@@ -37,6 +37,8 @@ class Offer:
     phone: str = ""
     email: str = ""
     quoted_at: float = 0.0
+    # Срок перевозчика рядом с ценой (app/modules/orders/eta.py).
+    eta: dict | None = None
     # Что не сошлось: пункт недоступен, почта не прошла проверку.
     problems: list[str] = field(default_factory=list)
     point_ok: bool = False
@@ -65,6 +67,12 @@ class Offer:
         return cls(**known)
 
 
+def _eta(carrier: str, days_min, days_max, *, working: bool) -> dict | None:
+    holder: dict = {}
+    eta.remember(holder, carrier=carrier, days_min=days_min, days_max=days_max, working=working)
+    return holder.get(eta.KEY)
+
+
 async def prepare(
     draft: OrderDraft, delivery: LastDelivery | None, recipient: LastRecipient | None
 ) -> Offer:
@@ -79,14 +87,17 @@ async def prepare(
             if delivery.method == "ozon_pvz" and delivery.point_id:
                 quote = await conversation._ozon_price(draft, int(delivery.point_id))
                 offer.carrier_cost = quote.total
+                offer.eta = _eta("ozon", quote.days, quote.days, working=False)
             elif delivery.method == "cdek_pvz" and delivery.point_id:
                 tariff, total = await conversation._cdek_delivery(
                     draft, "cdek_pvz", delivery.city, delivery_point=delivery.point_id
                 )
                 offer.carrier_cost, offer.tariff_code = total, tariff.code
+                offer.eta = _eta("cdek", tariff.period_min, tariff.period_max, working=True)
             elif delivery.method == "cdek_courier":
                 tariff, total = await conversation._cdek_delivery(draft, "cdek_courier", delivery.place)
                 offer.carrier_cost, offer.tariff_code = total, tariff.code
+                offer.eta = _eta("cdek", tariff.period_min, tariff.period_max, working=True)
             else:
                 offer.problems.append("прошлый пункт выдачи неизвестен")
         except Exception as error:
@@ -144,6 +155,10 @@ def apply(draft: OrderDraft, offer: Offer) -> None:
     details["recipient_name"] = offer.name
     details["recipient_phone"] = offer.phone
     details["recipient_email"] = offer.email
+    if offer.eta:
+        details[eta.KEY] = dict(offer.eta)
+    else:
+        eta.forget(details)
     details.pop("offer", None)
     draft.stage = "awaiting_confirmation"
     conversation._apply_free_delivery(draft)

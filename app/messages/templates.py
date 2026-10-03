@@ -177,6 +177,7 @@ def invoice_summary(
     email: str,
     total,
     link: str,
+    eta: str = "",
 ) -> str:
     """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
 
@@ -194,6 +195,8 @@ def invoice_summary(
         )
     cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
     lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    if eta:
+        lines.append(f"Срок: {eta}")
     lines.append(f"Получатель: {name}, {phone}, {email}")
     lines.append(f"Итого: {amount(total)} ₽")
     lines.append("")
@@ -482,10 +485,12 @@ def button_stale() -> str:
     return "Эта кнопка уже неактуальна."
 
 
-def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool) -> str:
+def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "") -> str:
     """Пункт выбран кнопкой, а данных получателя ещё нет."""
     cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
     lines = [f"Записала пункт: {address}. Доставка — {cost}, итого {amount(total)} ₽."]
+    if eta:
+        lines.append(f"Срок: {eta}.")
     if ask_recipient:
         lines.append(ASK_RECIPIENT)
     return "\n".join(lines)
@@ -535,6 +540,7 @@ def returning_offer(
     upsell: str = "",
     upsell_price=None,
     gap=None,
+    eta: str = "",
 ) -> str:
     """Постоянному клиенту — весь заказ одним сообщением вместо трёх вопросов.
 
@@ -550,6 +556,8 @@ def returning_offer(
         )
     cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
     lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    if eta:
+        lines.append(f"Срок: {eta}")
     lines.append(f"Получатель: {name}, {phone}, {email}")
     lines.append(f"Итого: {amount(total)} ₽")
     if upsell:

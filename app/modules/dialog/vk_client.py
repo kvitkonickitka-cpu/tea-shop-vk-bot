@@ -104,6 +104,11 @@ async def send_message(
     if keyboard:
         # Inline-клавиатура JSON-строкой; её собирает app/messages/keyboard.py.
         params["keyboard"] = keyboard
+    if settings.conditions_url and settings.conditions_url in text:
+        # Ссылку на условия ВК разворачивал в карточку статьи во весь экран, и
+        # сводка со счётом становилась вдвое длиннее. Ссылка остаётся
+        # ссылкой, карточки нет — только в сообщениях с условиями.
+        params["dont_parse_links"] = 1
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(f"{VK_API_URL}/messages.send", data=params)
         response.raise_for_status()

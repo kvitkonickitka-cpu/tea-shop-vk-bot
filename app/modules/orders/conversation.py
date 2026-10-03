@@ -24,6 +24,7 @@ from app.modules.dialog import (
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
 from app.modules.orders import cancellation
 from app.modules.orders import contacts
+from app.modules.orders import eta
 from app.modules.orders import feedback
 from app.modules.orders import order_chat
 from app.modules.orders import points
@@ -536,6 +537,9 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         lines.append("Доставка для клиента бесплатная: сумма товаров прошла порог.")
     if draft.delivery_label:
         lines.append(f"Способ доставки: {draft.delivery_label}, стоимость {draft.delivery_cost} ₽")
+        when = eta.phrase(draft.details)
+        if when:
+            lines.append(f"Срок доставки (называй только так): {when}")
 
     # Показываем, что записано на самом деле. Без этого модель судит по
     # собственной прошлой реплике: написала клиенту «получатель записан», а
@@ -782,7 +786,6 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             "и предложи пункт выдачи Ozon или СДЭК."
         )
 
-    period = ""
     # Список пунктов, который увидит клиент, — пока пункт не выбран.
     shown: list[dict] = []
     per_point_prices = False
@@ -813,7 +816,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 "доставки уточнит менеджер, и вызови escalate_to_manager."
             )
 
-        period = tariff.period
+        eta.remember(draft.details, carrier="cdek", days_min=tariff.period_min,
+                     days_max=tariff.period_max, working=True)
         label = "СДЭК, курьером до адреса" if method == "cdek_courier" else "СДЭК, пункт выдачи"
         draft.details["tariff_code"] = tariff.code
         draft.details["address"] = address
@@ -927,7 +931,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         # строкой, и «забыть» её значит доплачивать за клиента.
         draft.details.pop("carrier_delivery_cost", None)
         draft.delivery_cost = quote.total
-        period = f"{quote.days} дн." if quote.days else ""
+        eta.remember(draft.details, carrier="ozon", days_min=quote.days, days_max=quote.days,
+                     working=False)
     else:
         tariffs = _load_tariffs()
         tariff = tariffs.get(method)
@@ -937,6 +942,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             )
         draft.delivery_label = tariff["label"]
         draft.delivery_cost = tariff["price"]
+        eta.forget(draft.details)
 
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
@@ -949,7 +955,6 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     draft.details["seen_total"] = total
     await state.set_draft(peer_id, draft)
 
-    # Срок у СДЭКа уже заканчивается точкой («3–4 раб. дн.»), своей не добавляем.
     # Состав заказа перечисляем прямо здесь. Без него модель писала клиенту
     # «Товары: 800 руб.» — сумму, по которой не проверить, то ли он заказывает.
     items_line = ", ".join(
@@ -960,7 +965,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     # пунктов города, а цена у Ozon от пункта зависит.
     fixed = "Предварительная стоимость доставки" if shown else "Способ доставки зафиксирован"
     head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} ₽"
-    head += f", срок {period}\n" if period else ".\n"
+    when = eta.phrase(draft.details)
+    head += f", срок {when}\n" if when else ".\n"
+    if when:
+        # Срок — вместе с ценой и этими словами: в нём уже учтена сборка, а
+        # голый срок перевозчика клиент принял бы за срок от оплаты.
+        head += "Срок называй вместе с ценой, этой же фразой. "
     head += f"Состав заказа (перечисли клиенту названия и количество, а не "
     head += f"только сумму): {items_line} — {draft.items_total} ₽\n"
     head += f"Итого с доставкой: {total} ₽\n"
@@ -1292,12 +1302,15 @@ async def _requote(draft: OrderDraft) -> None:
     if draft.delivery_method == "ozon_pvz" and details.get("ozon_point_id"):
         quote = await _ozon_price(draft, int(details["ozon_point_id"]))
         cost = quote.total
+        eta.remember(details, carrier="ozon", days_min=quote.days, days_max=quote.days, working=False)
     elif draft.delivery_method in ("cdek_pvz", "cdek_courier") and details.get("address"):
         tariff, cost = await _cdek_delivery(
             draft, draft.delivery_method, details["address"],
             delivery_point=details.get("delivery_point"),
         )
         details["tariff_code"] = tariff.code
+        eta.remember(details, carrier="cdek", days_min=tariff.period_min,
+                     days_max=tariff.period_max, working=True)
     else:
         return
     details.pop("carrier_delivery_cost", None)
@@ -1384,6 +1397,7 @@ def _offer_message(draft: OrderDraft, offer) -> str:
         upsell=item or "",
         upsell_price=match["price"] if match else None,
         gap=_threshold_gap(draft.items_total) if item else None,
+        eta=eta.phrase_for(offer.eta),
     )
 
 
@@ -1702,6 +1716,7 @@ async def _confirm_with_payment(
         email=draft.details.get("recipient_email", ""),
         total=payment.amount or (draft.items_total + (draft.delivery_cost or 0)),
         link=payment.confirmation_url,
+        eta=eta.phrase(draft.details),
     )
     return ToolExecution(reply, client_reply=reply)
 
@@ -1839,6 +1854,7 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
         draft.delivery_cost = None
         for key in ("carrier_delivery_cost", "ozon_point_id", "ozon_point_address", "delivery_point"):
             draft.details.pop(key, None)
+        eta.forget(draft.details)
         draft.stage = "awaiting_delivery"
         recalc = (
             "\nДоставку надо посчитать заново: вызови set_delivery_method с "
