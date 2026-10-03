@@ -87,6 +87,9 @@ class ClientPreference(Base):
     # Нужно и сообщениям, которые бот пишет сам по таймеру: у них своего
     # message_new нет.
     client_info: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Названия товаров на кнопках «Взять»/«Добавить» под последним
+    # сообщением бота — чтобы не ставить тот же набор под каждой репликой.
+    last_offer_buttons: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
 
 class FunnelEvent(Base):

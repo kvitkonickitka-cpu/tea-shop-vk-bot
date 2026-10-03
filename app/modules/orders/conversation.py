@@ -2103,11 +2103,16 @@ _ASKED_NOT_TO_WRITE = (
 )
 
 
-async def _with_buttons(peer_id: int, reply: str) -> str:
+async def _with_buttons(peer_id: int, reply: str, *, consult: bool = False) -> str:
     """Кнопки под ответом хода — по тому, чем ход закончился."""
     from app.modules.orders import buttons
 
-    return await buttons.prepare(peer_id, reply)
+    return await buttons.prepare(peer_id, reply, consult=consult)
+
+
+# После этих инструментов «Взять» под ответом неуместно: вопрос передан
+# человеку, и предлагать купить посреди этого — глухота.
+_NO_TAKE_AFTER = {"escalate_to_manager"}
 
 
 def plain_text(text: str) -> str:
@@ -2286,6 +2291,7 @@ async def _handle_turn(
     turn_started = time.monotonic()
     response = await spent.claude(claude_client.converse(messages, system_prompt, tools))
 
+    called: set[str] = set()
     for round_number in range(1, _MAX_TOOL_ROUNDS + 1):
         if response.stop_reason != "tool_use":
             break
@@ -2321,6 +2327,7 @@ async def _handle_turn(
         # Заказ стал полным — счёт выставляет код, без «Оформляем?». Не после
         # confirm_order: тот выставил счёт сам.
         names = {block.name for block, _ in executions}
+        called |= names
         if (
             executions
             and executions[-1][1].client_reply is None
@@ -2383,8 +2390,10 @@ async def _handle_turn(
         if last_round:
             break
 
+    text = claude_client.extract_text(response, default=_NO_TEXT_FALLBACK)
     reply = await _with_buttons(
-        peer_id, plain_text(claude_client.extract_text(response, default=_NO_TEXT_FALLBACK))
+        peer_id, plain_text(text),
+        consult=text != _NO_TEXT_FALLBACK and not (called & _NO_TAKE_AFTER),
     )
     await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
     return reply

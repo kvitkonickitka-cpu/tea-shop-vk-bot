@@ -496,6 +496,17 @@ def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool, eta
     return "\n".join(lines)
 
 
+def taken(*, name: str, price, upsell: str = "", upsell_price=None, gap=None) -> str:
+    """«Взять <сорт>» под консультацией: то, что модель писала после «беру»."""
+    lines = [f"Записала: {name} — {amount(price)} ₽."]
+    extra = upsell_line(upsell, upsell_price, gap)
+    if extra:
+        lines.append(extra)
+    lines.append("Если нужно больше пачек — напишите сколько.")
+    lines.append(ASK_WHERE)
+    return "\n".join(lines)
+
+
 def item_added(*, name: str, items_total, gap=None, free: bool = False, next_step: str = "") -> str:
     """Допродажа кнопкой «Добавить»."""
     lines = [f"Добавила {name}. Товаров на {amount(items_total)} ₽."]

@@ -212,6 +212,9 @@ class Settings(BaseSettings):
     # подтверждением служит оплата. Выключено — прежнее «Оформить как в
     # прошлый раз?» с кнопкой.
     returning_instant_invoice_enabled: bool = True
+    # Кнопки «Взять <сорт>» под консультацией: код ставит их по названиям
+    # товаров в ответе модели.
+    take_buttons_enabled: bool = True
     # «Повторить заказ» одним нажатием: сразу счёт по прошлому заказу.
     repeat_one_tap_enabled: bool = True
 

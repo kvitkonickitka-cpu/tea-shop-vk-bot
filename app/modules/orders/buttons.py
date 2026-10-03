@@ -17,7 +17,8 @@ import logging
 from dataclasses import dataclass
 
 from app.messages import funnel, keyboard as keyboards, templates
-from app.modules.orders import eta, points, repository as orders_repository, state
+from app.core.config import settings
+from app.modules.orders import eta, points, repository as orders_repository, state, take
 
 logger = logging.getLogger(__name__)
 
@@ -109,18 +110,59 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
     return None, ""
 
 
-async def prepare(peer_id: int, reply: str) -> str:
+async def _consult_keyboard(peer_id: int, reply: str) -> tuple[dict | None, list[str] | None]:
+    """«Взять <сорт>» под консультацией или «Добавить <сорт>» на этапе доставки."""
+    from app.modules.catalog import service as catalog_service
+
+    if not settings.take_buttons_enabled or take.unsuitable(reply):
+        return None, None
+    draft = await state.get_draft(peer_id)
+    if draft is None:
+        # После выставления счёта под консультацией кнопок нет.
+        if await orders_repository.live_invoice_order(peer_id) is not None:
+            return None, None
+        found = take.mentioned(reply, catalog_service.load_items())
+        prefix, action, version = "Взять", "take", None
+    elif draft.stage == "awaiting_delivery":
+        found = take.mentioned(
+            reply, catalog_service.load_items(), exclude={row["name"] for row in draft.items}
+        )
+        prefix, action, version = "Добавить", "add_item", draft.details.get("version")
+    else:
+        return None, None
+    if not found:
+        return None, None
+    names = [item["name"] for item in found]
+    if await take.last_set(peer_id) == names:
+        # Тот же набор уже под предыдущим сообщением — не повторяем.
+        return None, None
+    rows = []
+    for item in found:
+        payload = {"a": action, "n": item["name"]}
+        if version is not None:
+            payload["v"] = version
+        rows.append([keyboards.text_button(take.label(prefix, item), payload, "positive")])
+    return keyboards.inline(rows), names
+
+
+async def prepare(peer_id: int, reply: str, *, consult: bool = False) -> str:
     """Решить, пойдёт ли под ответом клавиатура; вернуть ответ с подсказкой.
 
     Подсказку дописываем, только когда кнопки клиент действительно увидит,
     и до записи в историю — туда попадает ровно то, что ушло клиенту.
+    `consult` — ответ модели словами, не шаблон и не эскалация: под ним
+    можно поставить «Взять».
     """
+    names = None
     try:
         keyboard, hint = await for_reply(peer_id)
+        if keyboard is None and consult:
+            keyboard, names = await _consult_keyboard(peer_id, reply)
         markup = await keyboards.for_peer(peer_id, keyboard)
     except Exception:
         logger.exception("Не собрали кнопки для peer_id=%s", peer_id)
         return reply
+    await take.remember_set(peer_id, names if markup is not None else None)
     if markup is None:
         return reply
     _ready[peer_id] = markup
@@ -150,6 +192,9 @@ async def handle(peer_id: int, message: dict) -> Press:
         return TO_MODEL
     order_id = payload.get("o") if isinstance(payload.get("o"), int) else None
     await funnel.record(peer_id, f"button:{action}", order_id=order_id, version=payload.get("v"))
+    # Под ответом на нажатие свои кнопки — набор «Взять» под прошлым
+    # сообщением больше не последний.
+    await take.remember_set(peer_id, None)
     try:
         press = await handler(peer_id, payload)
     except Exception:
@@ -395,6 +440,81 @@ async def _on_add_more(peer_id: int, payload: dict) -> Press:
     return await _invoice_or(peer_id, not_ready)
 
 
+def _catalog_item(name) -> dict | None:
+    """Товар каталога ровно с этим названием и в наличии — или None."""
+    from app.modules.catalog import service as catalog_service
+
+    if not isinstance(name, str):
+        return None
+    match = catalog_service.find_item(name)
+    if match is None or match["name"] != name or not match.get("in_stock", True):
+        return None
+    return match
+
+
+async def _on_take(peer_id: int, payload: dict) -> Press:
+    """«Взять <сорт>» под консультацией: черновик на пачку кодом.
+
+    Постоянному клиенту propose_order сам пришлёт заказ как в прошлый раз со
+    ссылкой (если всё сошлось); остальным — «Записала» и вопрос, куда везти.
+    """
+    from app.modules.catalog import service as catalog_service
+    from app.modules.orders import conversation
+
+    match = _catalog_item(payload.get("n"))
+    if match is None:
+        return STALE
+    if await state.get_draft(peer_id) is not None or await orders_repository.live_invoice_order(peer_id) is not None:
+        return STALE
+    result = await conversation._execute_propose_order(
+        peer_id, {"items": [{"name": match["name"], "quantity": 1}]}
+    )
+    if isinstance(result, conversation.ToolExecution) and result.client_reply is not None:
+        return Press(reply=result.client_reply, keyboard=_stashed.pop(peer_id, None))
+    draft = await state.get_draft(peer_id)
+    if draft is None:
+        return TO_MODEL
+    item = draft.details.get("upsell_item")
+    upsell = catalog_service.find_item(item) if item else None
+    keyboard = None
+    if upsell is not None and upsell.get("in_stock", True) and item not in {r["name"] for r in draft.items}:
+        draft.details["upsell_button_sent"] = True
+        await state.set_draft(peer_id, draft)
+        draft = await state.get_draft(peer_id)
+        keyboard = keyboards.inline([[keyboards.text_button(
+            f"Добавить {item}", {"a": "add", "v": draft.details.get("version")}, "positive"
+        )]])
+    else:
+        upsell = None
+    return Press(reply=templates.taken(
+        name=take.display_name(match["name"]), price=match["price"],
+        upsell=item if upsell else "", upsell_price=upsell["price"] if upsell else None,
+        gap=conversation._threshold_gap(draft.items_total) if upsell else None,
+    ), keyboard=keyboard)
+
+
+async def _on_add_item(peer_id: int, payload: dict) -> Press:
+    """«Добавить <сорт>» под консультацией, пока доставка не выбрана."""
+    from app.modules.orders import conversation
+
+    draft = await _draft_at(peer_id, payload)
+    match = _catalog_item(payload.get("n"))
+    if draft is None or match is None or draft.stage != "awaiting_delivery":
+        return STALE
+    if match["name"] in {row["name"] for row in draft.items}:
+        return STALE
+    await conversation._execute_add_to_order(peer_id, {"items": [{"name": match["name"], "quantity": 1}]})
+    fresh = await state.get_draft(peer_id)
+    if fresh is None or match["name"] not in {row["name"] for row in fresh.items}:
+        return TO_MODEL
+    gap = conversation._threshold_gap(fresh.items_total)
+    free = gap is None and conversation.free_delivery_threshold() is not None
+    return Press(reply=templates.item_added(
+        name=take.display_name(match["name"]), items_total=fresh.items_total, gap=gap, free=free,
+        next_step=_missing(fresh),
+    ))
+
+
 async def _on_offer_ok(peer_id: int, payload: dict) -> Press:
     from app.modules.orders import conversation
 
@@ -476,6 +596,8 @@ _HANDLERS = {
     "repeat": _on_repeat,
     "last_recipient": _on_last_recipient,
     "add_more": _on_add_more,
+    "take": _on_take,
+    "add_item": _on_add_item,
     "edit": _to_model,
     "other": _to_model,
 }
