@@ -47,11 +47,11 @@ def sent(monkeypatch):
     async def fake_send(peer_id, text, random_id=None):
         box.append(text)
 
-    async def no_cancel(payment_id):
-        raise yookassa_client.YooKassaError("payment can not be canceled")
+    async def no_cancel(method, path, payload=None, key=""):
+        raise AssertionError(f"неожиданный запрос в ЮKassa: {path}")
 
     monkeypatch.setattr("app.messages.client.vk_client.send_message", fake_send)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", no_cancel)
+    monkeypatch.setattr(yookassa_client, "_call", no_cancel)
     return box
 
 

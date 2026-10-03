@@ -159,20 +159,20 @@ async def test_expired_invoice_closes_and_returns_the_draft(clean, sent, monkeyp
     order = await make_order(clean, created_minutes_ago=70)
     canceled: list[str] = []
 
-    async def fake_cancel(payment_id):
-        canceled.append(payment_id)
-        raise yookassa_client.YooKassaError("HTTP 400 — payment can not be canceled")
+    async def fake_cancel(method, path, payload=None, key=""):
+        canceled.append(path)
+        raise yookassa_client.YooKassaError("неожиданный запрос в ЮKassa")
 
-    monkeypatch.setattr(yookassa_client, "cancel_payment", fake_cancel)
+    monkeypatch.setattr(yookassa_client, "_call", fake_cancel)
     await state.clear_draft(PEER)
 
     await payment_service.close_invoice(order, payment(), notice=templates.PAYMENT_EXPIRED)
 
-    # Заказ закрыт, отказ ЮKassa в отмене не помешал.
+    # Заказ закрыт, счёт помечен у себя — ЮKassa закроет его сама.
     async with clean() as session:
         fresh = await session.get(Order, order.id)
     assert fresh.status == payment_service.STATUS_UNPAID
-    assert canceled == ["pay-r"]
+    assert canceled == []  # отменять pending у ЮKassa не просим
 
     # Черновик вернулся на подтверждение и всё сохранил.
     draft = await state.get_draft(PEER)
@@ -191,7 +191,6 @@ async def test_expired_invoice_closes_and_returns_the_draft(clean, sent, monkeyp
 
 async def test_expired_invoice_keeps_a_newer_draft(clean, sent, monkeypatch):
     order = await make_order(clean, created_minutes_ago=70)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
 
     from app.modules.orders.state import OrderDraft
 
@@ -216,7 +215,6 @@ async def test_new_confirmation_makes_a_new_idempotence_key(clean):
 
 async def test_client_hears_about_closing_only_once(clean, sent, monkeypatch):
     order = await make_order(clean, created_minutes_ago=70)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
     await state.clear_draft(PEER)
 
     await payment_service.close_invoice(
@@ -249,7 +247,6 @@ async def test_closed_invoice_message_waits_for_morning(clean, sent, monkeypatch
     from app.modules.payment import service as payment_service
 
     order = await make_order(clean, created_minutes_ago=70)
-    monkeypatch.setattr(yookassa_client, "cancel_payment", lambda payment_id: None)
     await state.clear_draft(PEER)
 
     # Ночь: счёт закрываем, клиенту не пишем.

@@ -244,13 +244,9 @@ async def _close_other_payments(order_id: int, paid_payment_id: str) -> None:
     for row in await orders_repository.payments_of(order_id):
         if row.payment_id == paid_payment_id or row.closed_at is not None:
             continue
+        # Только у себя: pending ЮKassa по запросу не отменяет, ссылка
+        # истечёт сама, а оплата по ней уйдёт в возврат.
         await orders_repository.close_payment(row.payment_id)
-        try:
-            await yookassa_client.cancel_payment(row.payment_id)
-        except Exception as error:
-            # Ожидаемо: pending ЮKassa отменять отказывается. Отметка у нас
-            # уже стоит, и оплата по такому счёту уйдёт в возврат.
-            logger.info("Счёт %s ЮKassa не отменила — %s", row.payment_id, error)
 
 
 async def _refund_whole(

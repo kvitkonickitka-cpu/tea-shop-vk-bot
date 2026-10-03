@@ -31,7 +31,7 @@ from app.core.database import get_session_factory
 from app.messages import templates
 from app.modules.orders import order_chat, repository as orders_repository, state
 from app.modules.orders.models import Order
-from app.modules.payment import service as payment_service, yookassa_client
+from app.modules.payment import service as payment_service
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +126,14 @@ async def cancel_for_client(peer_id: int) -> Outcome:
 
 
 async def _close_invoices(order: Order) -> None:
-    """Закрыть счета отменённого заказа у себя и попросить ЮKassa о том же.
+    """Закрыть счета отменённого заказа у себя.
 
-    `pending` ЮKassa отменять обычно отказывается и закрывает сама по
-    сроку — это штатный исход. Если клиент успеет заплатить, деньги уйдут в
-    автоматический возврат: заказ отменён, `claim_paid` его не возьмёт.
+    ЮKassa их не отменяем: `/cancel` берёт только платёж, ждущий
+    подтверждения, а наши одностадийные (`capture: true`) в этом статусе
+    не бывают — запрос всегда получал HTTP 400 и шёл в Ops как сбой.
+    Ссылка истекает у ЮKassa сама через час. Если клиент успеет заплатить,
+    деньги уйдут в автоматический возврат: заказ отменён, `claim_paid` его
+    не возьмёт.
     """
     payment_ids = [
         row.payment_id
@@ -143,12 +146,6 @@ async def _close_invoices(order: Order) -> None:
 
     for payment_id in payment_ids:
         await orders_repository.close_payment(payment_id)
-        try:
-            await yookassa_client.cancel_payment(payment_id)
-        except Exception as error:
-            logger.info(
-                "Заказ %s: ЮKassa не отменила счёт %s — %s", order.id, payment_id, error
-            )
 
 
 async def cancel_by_manager(order_id: int, *, paid_too: bool = False) -> dict:
