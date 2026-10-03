@@ -485,14 +485,88 @@ def button_stale() -> str:
     return "Эта кнопка уже неактуальна."
 
 
-def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "") -> str:
-    """Пункт выбран кнопкой, а данных получателя ещё нет."""
+def point_chosen(
+    *, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "", ask: str = ""
+) -> str:
+    """Пункт выбран кнопкой, а данных получателя ещё нет. `ask` — своя просьба вместо общей."""
     cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
     lines = [f"Записала пункт: {address}. Доставка — {cost}, итого {amount(total)} ₽."]
     if eta:
         lines.append(f"Срок: {eta}.")
     if ask_recipient:
-        lines.append(ASK_RECIPIENT)
+        lines.append(ask or ASK_RECIPIENT)
+    return "\n".join(lines)
+
+
+STOREFRONT_ORDER = "storefront_order"
+
+
+def storefront_points(
+    *,
+    order_id,
+    items: list[dict],
+    items_total,
+    shown: list[dict],
+    per_point_prices: bool,
+    delivery_cost,
+    ask: str,
+    hint: str = "",
+) -> str:
+    """Заказ из витрины: сразу пункты рядом с адресом из заказа и просьба о данных."""
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    lines = [f"Заказ №{order_id} принят: {listed} — {amount(items_total)} ₽."]
+    head = "Ближайшие пункты выдачи Ozon — дешевле всего, заберёте сами"
+    if not per_point_prices and delivery_cost is not None:
+        head += f", доставка около {amount(delivery_cost)} ₽"
+    lines.append(head + ":")
+    for point in shown:
+        price = f" — {amount(point['price'])} ₽" if per_point_prices and point.get("price") is not None else ""
+        lines.append(f"{point['n']}) {point['address']}{price}")
+    lines.append("Быстрее, но дороже — пункт выдачи СДЭК или курьер: напишите, если нужен он.")
+    lines.append(ask)
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
+
+
+STOREFRONT_ASK_ALL = "Выберите пункт и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
+
+
+def storefront_ask_email(name: str, phone: str) -> str:
+    """Получатель есть в заказе витрины — показать для проверки и попросить почту."""
+    return (
+        f"Получатель из заказа: {name}, {phone}. Выберите пункт и пришлите почту для чека — "
+        "сразу пришлю счёт. Если получатель другой — напишите ФИО, телефон и почту."
+    )
+
+
+def storefront_ask_email_only(name: str, phone: str) -> str:
+    """Пункт выбран, получатель из заказа витрины — осталась почта."""
+    return f"Пришлите почту для чека — получатель {name}, {phone}, сразу пришлю счёт."
+
+
+def ask_last_recipient(name: str, phone: str, email: str, *, button: bool = True) -> str:
+    """Прошлый получатель постоянного клиента — кнопкой или словом «да»."""
+    how = "Нажмите «Да, на эти данные»" if button else "Ответьте «да»"
+    return (
+        f"Получатель как в прошлый раз — {name}, {phone}, {email}? "
+        f"{how} или пришлите ФИО, телефон и почту — сразу пришлю счёт."
+    )
+
+
+def storefront_ask_last(name: str, phone: str, email: str, button: bool = True) -> str:
+    """Заказ витрины от постоянного клиента: пункт и прошлый получатель."""
+    return "Выберите пункт. " + ask_last_recipient(name, phone, email, button=button)
+
+
+def taken(*, name: str, price, upsell: str = "", upsell_price=None, gap=None) -> str:
+    """«Взять <сорт>» под консультацией: то, что модель писала после «беру»."""
+    lines = [f"Записала: {name} — {amount(price)} ₽."]
+    extra = upsell_line(upsell, upsell_price, gap)
+    if extra:
+        lines.append(extra)
+    lines.append("Если нужно больше пачек — напишите сколько.")
+    lines.append(ASK_WHERE)
     return "\n".join(lines)
 
 
@@ -561,12 +635,71 @@ def returning_offer(
     lines.append(f"Получатель: {name}, {phone}, {email}")
     lines.append(f"Итого: {amount(total)} ₽")
     if upsell:
-        extra = f"К нему можно добавить {upsell}"
-        extra += f" — {amount(upsell_price)} ₽" if upsell_price is not None else ""
-        if gap:
-            extra += f", до бесплатной доставки как раз не хватает {amount(gap)} ₽"
-        lines.append(extra + ".")
-    lines.append("Ответьте «да» — пришлю ссылку на оплату. Если что-то поменять — напишите.")
+        lines.append(upsell_line(upsell, upsell_price, gap))
+    lines.append(
+        "Нажмите «Оформить» или ответьте «оформить» — пришлю ссылку на оплату. "
+        "Если что-то поменять — напишите."
+    )
+    return "\n".join(lines)
+
+
+def upsell_line(upsell: str, upsell_price=None, gap=None) -> str:
+    """«К нему можно добавить …» — строка допродажи в сводках, или пусто."""
+    if not upsell:
+        return ""
+    extra = f"К нему можно добавить {upsell}"
+    extra += f" — {amount(upsell_price)} ₽" if upsell_price is not None else ""
+    if gap:
+        extra += f", до бесплатной доставки как раз не хватает {amount(gap)} ₽"
+    return extra + "."
+
+
+def returning_invoice(
+    *,
+    items: list[dict],
+    delivery_method: str | None,
+    delivery_label: str | None,
+    delivery_cost,
+    name: str,
+    phone: str,
+    email: str,
+    total,
+    link: str,
+    eta: str = "",
+    upsell: str = "",
+    upsell_price=None,
+    gap=None,
+) -> str:
+    """Постоянному клиенту — заказ как в прошлый раз сразу со ссылкой.
+
+    Подтверждением служит оплата, поэтому вопроса «Оформить?» нет: всё, что
+    клиент проверил бы перед ним, стоит здесь, и поправить можно словами.
+    """
+    lines = ["Как в прошлый раз — проверьте, всё ли верно:"]
+    for item in items:
+        quantity = int(item.get("quantity") or 1)
+        lines.append(
+            f"• {item.get('name', 'товар')} × {quantity} — "
+            f"{amount(float(item.get('price') or 0) * quantity)} ₽"
+        )
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    if eta:
+        lines.append(f"Срок: {eta}")
+    lines.append(f"Получатель: {name}, {phone}, {email}")
+    lines.append(f"Итого: {amount(total)} ₽")
+    lines.append("")
+    lines.append(f"Оплатить: {link}")
+    lines.append(
+        f"Ссылка действует {settings.payment_invoice_ttl_minutes} минут. После "
+        f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
+    )
+    if settings.conditions_url:
+        lines.append(f"Условия покупки, доставки и возврата: {settings.conditions_url}")
+    extra = upsell_line(upsell, upsell_price, gap)
+    if extra:
+        lines.append(extra)
+    lines.append("Оплатите по ссылке — или напишите, что поменять.")
     return "\n".join(lines)
 
 

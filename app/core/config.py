@@ -80,8 +80,10 @@ class Settings(BaseSettings):
     # второе за несколько минут до истечения.
     payment_reminder_1_after_minutes: int = 25
     payment_reminder_2_before_expiry_minutes: int = 10
-    # Не напоминаем, если разговор и так идёт.
-    payment_reminder_skip_if_talked_minutes: int = 30
+    # Не напоминаем, если разговор и так идёт. 20, а не 30: постоянному
+    # клиенту счёт приходит в ответ на его сообщение, и при 30 минутах
+    # первое напоминание (через 25) молчало бы всегда.
+    payment_reminder_skip_if_talked_minutes: int = 20
 
     # Через сколько рабочих минут без ответа менеджеру напоминают о вопросе.
     escalation_reping_after_working_minutes: int = 120
@@ -208,6 +210,16 @@ class Settings(BaseSettings):
     vk_buttons_enabled: bool = True
     # Постоянному клиенту — одно сообщение со всем заказом вместо трёх вопросов.
     returning_one_question_enabled: bool = True
+    # Постоянному клиенту — сразу сводка со ссылкой, без «Оформить»:
+    # подтверждением служит оплата. Выключено — прежнее «Оформить как в
+    # прошлый раз?» с кнопкой.
+    returning_instant_invoice_enabled: bool = True
+    # Кнопки «Взять <сорт>» под консультацией: код ставит их по названиям
+    # товаров в ответе модели.
+    take_buttons_enabled: bool = True
+    # Заказ из витрины: сразу пункты Ozon рядом с адресом из заказа, а не
+    # вопрос «в какой город везём?».
+    storefront_direct_points_enabled: bool = True
     # «Повторить заказ» одним нажатием: сразу счёт по прошлому заказу.
     repeat_one_tap_enabled: bool = True
 
@@ -215,7 +227,14 @@ class Settings(BaseSettings):
     # последнего, но не дольше потолка от первого. 0 — выключено. Работает
     # только с очередью: без неё сообщение разбирается прямо в вебхуке, и
     # ожидание съело бы восемь секунд, что VK даёт на ответ.
-    message_debounce_seconds: float = 4
+    #
+    # Пауза зависит от этапа (app/modules/dialog/inbound.py): в консультации
+    # клиент обычно пишет одним сообщением, и ждать четыре секунды на каждое
+    # незачем; когда бот попросил город и улицу, пункт или ФИО, телефон и
+    # почту — данные приходят кусками, и ждём дольше. 0 в DEFAULT выключает
+    # склейку целиком.
+    message_debounce_seconds_default: float = 2
+    message_debounce_seconds_collecting: float = 5
     message_debounce_max_seconds: float = 12
 
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».

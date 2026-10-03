@@ -32,7 +32,8 @@ def turns(monkeypatch):
 
     monkeypatch.setattr(service, "respond", respond)
     monkeypatch.setattr(inbound, "is_enabled", lambda: True)
-    monkeypatch.setattr(settings, "message_debounce_seconds", 0.6)
+    monkeypatch.setattr(settings, "message_debounce_seconds_default", 0.6)
+    monkeypatch.setattr(settings, "message_debounce_seconds_collecting", 0.6)
     monkeypatch.setattr(settings, "message_debounce_max_seconds", 3)
     # Без очереди остаток разбирается сразу здесь же.
     monkeypatch.setattr("app.modules.queue.client.is_configured", lambda: False)

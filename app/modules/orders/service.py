@@ -14,9 +14,10 @@
 import logging
 from typing import Any
 
-from app.messages import manager as manager_messages, templates
+from app.core.config import settings
+from app.messages import client as client_messages, manager as manager_messages, templates
 from app.modules.dialog import vk_client
-from app.modules.orders import order_chat, state, vk_orders_client
+from app.modules.orders import address as address_parser, contacts, order_chat, state, vk_orders_client
 from app.modules.orders.state import OrderDraft
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,78 @@ def _items_of(raw_items: list[dict]) -> list[dict]:
     return items
 
 
+def _address_of(order: dict) -> str:
+    """Адрес доставки из заказа ВК — в объекте `delivery`, у старых схем — в корне."""
+    delivery = order.get("delivery") if isinstance(order.get("delivery"), dict) else {}
+    address = delivery.get("address") or order.get("delivery_address") or order.get("address")
+    if isinstance(address, dict):
+        address = address.get("address") or address.get("text")
+    return str(address or "").strip()
+
+
+def _recipient_of(order: dict) -> tuple[str, str] | None:
+    """Получатель из заказа ВК (`recipient.name`, `recipient.phone`) — если телефон настоящий."""
+    raw = order.get("recipient") if isinstance(order.get("recipient"), dict) else {}
+    name = str(raw.get("name") or "").strip()
+    phone = contacts.normalize_phone(str(raw.get("phone") or ""))
+    return (name, phone) if name and phone else None
+
+
+async def _direct_points(
+    user_id: int, order_id, order: dict, items: list[dict], items_total: float, address: str
+) -> bool:
+    """Сразу пункты Ozon рядом с адресом из заказа. False — прежний вопрос «в какой город».
+
+    Тот же поиск, что и «город и улица» в диалоге: до четырёх пунктов с
+    номерами, первыми — на этой улице, с ценой у каждого, если Ozon ответил
+    вовремя; список ложится в черновик, и выбор «1», кнопкой или адресом идёт
+    обычным путём до автоматического счёта.
+    """
+    from app.messages import keyboard as keyboards
+    from app.modules.orders import buttons, conversation, repeat_delivery
+
+    if not settings.storefront_direct_points_enabled:
+        return False
+    parsed = address_parser.city_and_street(address)
+    if parsed is None:
+        return False
+    city, street = parsed
+    try:
+        await conversation._execute_set_delivery_method(
+            user_id, {"method": "ozon_pvz", "address": city, "pickup_point": street}
+        )
+    except Exception:
+        logger.exception("Витринный заказ %s: пункты рядом с адресом не подобрали", order_id)
+        return False
+    draft = await state.get_draft(user_id)
+    shown = list((draft.details.get("shown_points") if draft else None) or [])
+    if draft is None or not shown or draft.details.get("ozon_point_id"):
+        return False
+
+    keyboard, hint = await buttons.for_reply(user_id)
+    shows_buttons = await keyboards.for_peer(user_id, keyboard) is not None
+    last = await repeat_delivery.last_recipient_for(user_id)
+    candidate = _recipient_of(order)
+    if last is not None and last.email:
+        ask = templates.storefront_ask_last(last.name, last.phone, last.email, button=shows_buttons)
+    elif candidate is not None:
+        draft.details["storefront_recipient"] = {"name": candidate[0], "phone": candidate[1]}
+        await state.set_draft(user_id, draft)
+        ask = templates.storefront_ask_email(*candidate)
+    else:
+        ask = templates.STOREFRONT_ASK_ALL
+    text = templates.storefront_points(
+        order_id=order_id, items=items, items_total=items_total, shown=shown,
+        per_point_prices=all(point.get("price") is not None for point in shown),
+        delivery_cost=draft.delivery_cost, ask=ask, hint=hint if shows_buttons else "",
+    )
+    await client_messages.send(
+        peer_id=user_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
+        text=text, keyboard=keyboard,
+    )
+    return True
+
+
 async def _tell_manager(order_id: int, user_id: int, text: str) -> None:
     await manager_messages.notify(
         manager_messages.STOREFRONT_ORDER,
@@ -75,10 +148,15 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
         logger.exception("Failed to fetch order %s from VK", order_id)
         return
 
-    # Логируем сырой объект заказа: точную схему полей ВК для этого события
-    # вживую пока не проверяли, и при первом настоящем заказе это первое,
-    # на что придётся смотреть.
-    logger.info("Fetched order %s: %s", order_id, order)
+    # Сырой объект в лог не пишем: в нём имя, телефон и адрес покупателя.
+    # Для разбора схемы хватает ключей — по ним видно, где лежат адрес и
+    # получатель.
+    logger.info(
+        "Заказ витрины %s: поля %s, delivery %s, recipient %s",
+        order_id, sorted(order.keys()),
+        sorted((order.get("delivery") or {}).keys()) if isinstance(order.get("delivery"), dict) else "—",
+        sorted((order.get("recipient") or {}).keys()) if isinstance(order.get("recipient"), dict) else "—",
+    )
 
     user_id = order.get("user_id")
     if not user_id:
@@ -114,15 +192,26 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
     draft = OrderDraft(items=items, items_total=items_total, stage="awaiting_delivery")
 
     # Адрес из витрины — подсказка, а не выбор: доставку всё равно считает
-    # перевозчик, а пункт выдачи клиент называет сам.
-    address = order.get("delivery_address") or order.get("address")
-    if isinstance(address, dict):
-        address = address.get("address") or address.get("text")
+    # перевозчик, а пункт выдачи клиент выбирает сам из показанных.
+    address = _address_of(order)
     if address:
-        draft.details["vk_order_address"] = str(address)
+        draft.details["vk_order_address"] = address
     draft.details["vk_order_id"] = order_id
 
     await state.set_draft(user_id, draft)
+
+    if address and await _direct_points(user_id, order_id, order, items, items_total, address):
+        listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+        await _tell_manager(
+            order_id, user_id,
+            f"{listed} — {templates.amount(items_total)} ₽. Клиенту показаны пункты рядом с адресом из заказа.",
+        )
+        return
+    # Прежний путь: пункты не подобрали — черновик возвращаем к выбору доставки.
+    await state.set_draft(user_id, OrderDraft(
+        items=items, items_total=items_total, stage="awaiting_delivery",
+        details={key: value for key, value in (("vk_order_address", address), ("vk_order_id", order_id)) if value},
+    ))
 
     listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
     lines = [
@@ -136,7 +225,12 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
         if address
         else "В какой город везём?"
     )
-    await vk_client.send_message(user_id, "\n".join(lines))
+    # Через журнал отправок: одно событие — одно сообщение, и сказанное
+    # ботом попадает в историю диалога.
+    await client_messages.send(
+        peer_id=user_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
+        text="\n".join(lines),
+    )
 
     await _tell_manager(
         order_id,

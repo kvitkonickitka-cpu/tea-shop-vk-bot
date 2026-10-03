@@ -3,9 +3,12 @@
 Клиент часто пишет данные в несколько сообщений: «Иванов Иван», «89001234567»,
 «ivanov@mail.ru» — и получал три ответа, два из которых просили то, что он
 уже прислал. Теперь входящее сообщение сначала ложится в `inbound_messages`,
-вызов ждёт тишины `message_debounce_seconds` после последнего сообщения
-(но не дольше `message_debounce_max_seconds` от первого), и один ход модели
-отвечает на всю пачку.
+вызов ждёт тишины после последнего сообщения (но не дольше
+`message_debounce_max_seconds` от первого), и один ход модели отвечает на
+всю пачку. Пауза — по этапу: `message_debounce_seconds_default` (2 с) в
+консультации и `..._collecting` (5 с), когда бот ждёт данные кусками —
+город и улицу, пункт, ФИО, телефон и почту. Пришли и телефон, и почта —
+ждать дольше короткой паузы незачем.
 
 Как договариваются вызовы. Каждое событие ВК разбирает свой вызов
 контейнера, иногда в разных экземплярах, поэтому всё общее — в базе:
@@ -36,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -90,7 +94,7 @@ class Batch:
 def is_enabled() -> bool:
     from app.modules.queue import client as queue_client
 
-    return settings.message_debounce_seconds > 0 and queue_client.is_configured()
+    return settings.message_debounce_seconds_default > 0 and queue_client.is_configured()
 
 
 def _lock_key(peer_id: int) -> int:
@@ -128,14 +132,71 @@ async def _quiet_for(peer_id: int) -> tuple[float, float] | None:
     return float(row[0]), float(row[1])
 
 
+# Последняя реплика бота, после которой данные приходят кусками: вопрос
+# «город и улица», список пунктов с подсказкой, просьба прислать ФИО, телефон
+# и почту. Шаблоны известны коду, а модель по инструкции спрашивает теми же
+# словами.
+_COLLECTING_MARKERS = ("город и улица", "ФИО", "номер пункта")
+_PHONE = re.compile(r"(?<!\d)(?:\+7|8|7)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+async def _collecting(peer_id: int) -> bool:
+    """Ждёт ли бот данные кусками: черновик есть и последняя реплика бота — просьба."""
+    from app.modules.orders import state
+
+    try:
+        if await state.get_draft(peer_id) is None:
+            return False
+        async with get_session_factory()() as session:
+            last = (
+                await session.execute(
+                    text(
+                        "select content from conversation_messages where peer_id = :peer "
+                        "and role = 'assistant' order by created_at desc, id desc limit 1"
+                    ),
+                    {"peer": peer_id},
+                )
+            ).scalar()
+    except Exception:
+        logger.exception("peer_id=%s: не поняли этап для склейки, ждём коротко", peer_id)
+        return False
+    return bool(last) and any(marker in last for marker in _COLLECTING_MARKERS)
+
+
+async def _pending_text(peer_id: int) -> str:
+    async with get_session_factory()() as session:
+        rows = await _pending(session, peer_id)
+    return "\n".join((row.message.get("text") or "") for row in rows)
+
+
+def has_contacts(text: str) -> bool:
+    """Есть и телефон, и почта — данные пришли целиком."""
+    return bool(_PHONE.search(text or "")) and bool(_EMAIL.search(text or ""))
+
+
+async def pause_for(peer_id: int) -> float:
+    """Сколько ждать тишины для этого диалога сейчас."""
+    default = settings.message_debounce_seconds_default
+    if not await _collecting(peer_id):
+        return default
+    if has_contacts(await _pending_text(peer_id)):
+        return default
+    return max(default, settings.message_debounce_seconds_collecting)
+
+
 async def _wait_for_quiet(peer_id: int) -> None:
-    pause = settings.message_debounce_seconds
+    default = settings.message_debounce_seconds_default
+    pause = await pause_for(peer_id)
     ceiling = max(settings.message_debounce_max_seconds, pause)
     while True:
         quiet = await _quiet_for(peer_id)
         if quiet is None:
             return
         since_last, since_first = quiet
+        if pause > default and has_contacts(await _pending_text(peer_id)):
+            # Телефон и почта уже здесь — дальше ждать незачем.
+            pause = default
         if since_last >= pause or since_first >= ceiling:
             return
         await asyncio.sleep(min(_POLL_SECONDS, pause - since_last, ceiling - since_first) + 0.01)

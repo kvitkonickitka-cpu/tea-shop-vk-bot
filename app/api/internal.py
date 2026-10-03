@@ -588,11 +588,17 @@ async def ozon_posting(request: Request):
 
 
 @router.post("/internal/payments/me")
+@router.post("/internal/yookassa/me")
 async def payments_account(request: Request):
-    """Чей магазин отвечает на ключи ревизии. Ничего не создаёт.
+    """Чей магазин отвечает на ключи ревизии и что в нём включено. Ничего не создаёт.
 
     Проверять надо именно отсюда: ключи в `.env` на ноутбуке и ключи,
     вшитые в ревизию, — две независимые копии.
+
+        scripts/api.sh yookassa/me
+
+    Способы оплаты и фискализацию показываем ровно так, как их отдал
+    `GET /v3/me`: если поля в ответе нет, так и пишем, без догадок.
     """
     if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
@@ -606,14 +612,22 @@ async def payments_account(request: Request):
         logger.exception("Не спросили у ЮKassa, чей это магазин")
         return {"error": str(error)[:300]}
 
+    missing = "ЮKassa в ответе /me это поле не отдала"
     test = data.get("test")
+    fiscalization = data.get("fiscalization")
+    if fiscalization is None and "fiscalization_enabled" in data:
+        fiscalization = {"enabled": data.get("fiscalization_enabled")}
     return {
         "магазин": data.get("account_id"),
         "контур": "тестовый" if test else ("БОЕВОЙ" if test is False else "не сказано"),
-        "состояние": data.get("status"),
-        "фискализация": data.get("fiscalization"),
-        "способы оплаты": data.get("payment_methods"),
+        "состояние": data.get("status", missing),
+        "фискализация": fiscalization if fiscalization is not None else missing,
+        "способы оплаты": data.get("payment_methods", missing),
         "оплата включена в боте": settings.payments_enabled,
+        # Способ оплаты бот не фиксирует: confirmation=redirect без
+        # payment_method_data — клиент выбирает его сам на странице ЮKassa.
+        "способ выбирает клиент": True,
+        "поля ответа": sorted(data.keys()),
     }
 
 
