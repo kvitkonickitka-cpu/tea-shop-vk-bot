@@ -57,6 +57,9 @@ _VALIDATION_MARKERS = (
     "не вернул ни одного тарифа",
     "отказал в расчёте",
     "нет ни кода пункта, ни адреса",
+    # Ozon отвечает 404 на пачку пунктов, если хоть один из них уже убран;
+    # выгрузка выбрасывает пропавших и спрашивает остальных — это штатно.
+    "Не найдены пункты выдачи",
 )
 
 
@@ -86,6 +89,10 @@ def classify(error: BaseException) -> tuple[str, int | None]:
     if not isinstance(status, int):
         match = _HTTP_STATUS.search(str(error))
         status = int(match.group(1)) if match else None
+    # Ожидаемый отказ — раньше кода ответа: «Не нашли город — HTTP 400» или
+    # 404 на пропавший пункт — не сбой сервиса, хотя код у них 4xx.
+    if any(marker in str(error) for marker in _VALIDATION_MARKERS):
+        return VALIDATION, status
     if status is not None:
         if status in (401, 403):
             return "auth", status
@@ -93,9 +100,6 @@ def classify(error: BaseException) -> tuple[str, int | None]:
             return "http_5xx", status
         if status >= 400:
             return "http_4xx", status
-    text = str(error)
-    if any(marker in text for marker in _VALIDATION_MARKERS):
-        return VALIDATION, status
     return "other", status
 
 
