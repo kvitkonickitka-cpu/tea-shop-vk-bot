@@ -602,7 +602,15 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         )
 
     shown = draft.details.get("shown_points") or []
-    if shown and not offer and not (draft.details.get("ozon_point_id") or draft.details.get("delivery_point")):
+    fixed_point = draft.details.get("ozon_point_id") or draft.details.get("delivery_point")
+    if draft.details.get("point_asked") and not shown and not fixed_point:
+        lines.append(
+            f"Пункт выдачи не выбран: клиента попросили назвать улицу и дом пункта, "
+            f"прислать адрес с карты или скриншот. Его ответ (адрес со скриншота — "
+            f"тоже) передай в pickup_point set_delivery_method с городом "
+            f"«{draft.details.get('address', '')}»."
+        )
+    if shown and not offer and not fixed_point:
         lines.append(
             f"Клиенту показаны пункты: {points.listing(shown)}. Выбор номером или адресом "
             "передай в pickup_point set_delivery_method."
@@ -836,6 +844,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     per_point_prices = False
     not_found_note = ""
     city = ""
+    # Город большой, а улица не названа (или не нашлась): список не
+    # показываем, просим адрес пункта. Четыре случайных пункта из сотни —
+    # не выбор: клиент всё равно идёт на карту, а потом пишет адрес.
+    ask_point = False
 
     if method in ("cdek_pvz", "cdek_courier"):
         address = (tool_input.get("address") or "").strip()
@@ -881,17 +893,19 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             found = cdek_client.match_points(city_list, hint, limit=points.MAX_SHOWN) if hint else []
             if hint and not found:
                 not_found_note = f"Пункт «{hint}» в городе {address} не нашёлся — скажи об этом клиенту. "
-            if not found:
-                found = city_list[: points.MAX_SHOWN]
-            if not found:
+            if not city_list:
                 return ToolExecution(
                     f"Пунктов выдачи СДЭК в городе {address} не нашлось. Предложи "
                     f"курьера СДЭК или пункт выдачи Ozon, карта пунктов СДЭК: {CDEK_OFFICES_MAP_URL}"
                 )
-            shown = points.remember(
-                draft.details, method, address,
-                [{"id": point.code, "address": point.describe()} for point in found],
-            )
+            if not found and len(city_list) > points.MAX_SHOWN:
+                ask_point = True
+                points.forget(draft.details)
+            else:
+                shown = points.remember(
+                    draft.details, method, address,
+                    [{"id": point.code, "address": point.describe()} for point in (found or city_list)],
+                )
 
         draft.delivery_label = label
         # Именно total: в нём НДС и сбор за объявленную стоимость.
@@ -935,14 +949,18 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 picked = ozon_quote.Picked([], 0, 0, False)
 
             candidates = list(picked.points)[: points.MAX_SHOWN]
+            narrowed = bool(hint) and picked.hint_matched
+            # Без улицы в большом городе — просим адрес пункта; в маленьком
+            # пункты города и есть полный список, его и показываем.
+            ask_point = bool(candidates) and not narrowed and picked.total > points.MAX_SHOWN
             if hint and not picked.hint_matched:
                 # Адрес с карты Ozon может не найтись у нас: копия каталога
                 # неполная. Тупик «не нашёлся» хуже, чем пункты города.
-                logger.info("Пункт Ozon «%s» в городе %s не нашёлся, показываем что есть", hint, city)
+                logger.info("Пункт Ozon «%s» в городе %s не нашёлся", hint, city)
                 if candidates:
                     not_found_note = (
-                        f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом "
-                        "клиенту и предложи выбрать из тех, что есть, или назвать адрес иначе. "
+                        f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом клиенту. "
+                        + ("" if ask_point else "Предложи выбрать из тех, что есть, или назвать адрес иначе. ")
                     )
                 hint = ""
 
@@ -958,14 +976,20 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                     "клиента адрес пункта или предложи доставку СДЭКом."
                 )
 
-            priced, quote = await _price_ozon_points(draft, candidates, peer_id)
+            # Без списка цена нужна одна — «около», по первому пункту города.
+            priced, quote = await _price_ozon_points(
+                draft, candidates[:1] if ask_point else candidates, peer_id
+            )
             if quote is None:
                 return ToolExecution(
                     "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
                     "а если он хочет именно Ozon — вызови escalate_to_manager."
                 )
-            per_point_prices = all(row.get("price") is not None for row in priced)
-            shown = points.remember(draft.details, method, city, priced)
+            if ask_point:
+                points.forget(draft.details)
+            else:
+                per_point_prices = all(row.get("price") is not None for row in priced)
+                shown = points.remember(draft.details, method, city, priced)
             # Пункт не фиксируем, даже если он один: выбирает клиент.
             draft.details.pop("ozon_point_id", None)
             draft.details.pop("ozon_point_address", None)
@@ -989,6 +1013,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.delivery_cost = tariff["price"]
         eta.forget(draft.details)
 
+    if ask_point:
+        draft.details["point_asked"] = True
+    else:
+        draft.details.pop("point_asked", None)
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
     free_note = _apply_free_delivery(draft)
@@ -1008,7 +1036,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
     # Пока пункт не выбран, сумма предварительная: считали её по одному из
     # пунктов города, а цена у Ozon от пункта зависит.
-    fixed = "Предварительная стоимость доставки" if shown else "Способ доставки зафиксирован"
+    fixed = "Предварительная стоимость доставки" if shown or ask_point else "Способ доставки зафиксирован"
     head = f"{fixed}: {draft.delivery_label}, {draft.delivery_cost} ₽"
     when = eta.phrase(draft.details)
     head += f", срок {when}\n" if when else ".\n"
@@ -1022,6 +1050,11 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     head += free_note
 
     recipient_ask = await _recipient_ask(peer_id, draft, method)
+    if ask_point:
+        return ToolExecution(
+            head + "Назови клиенту состав заказа и эти суммы (доставку — «около»). " + not_found_note
+            + _ask_point_instruction(method, city, recipient_ask)
+        )
     if shown:
         return ToolExecution(
             head + "Назови клиенту состав заказа и эти суммы. " + not_found_note
@@ -1048,6 +1081,28 @@ _ASK_RECIPIENT = (
     "Попроси одним сообщением ФИО получателя, телефон и почту — как только "
     "запишешь их через set_recipient, счёт со ссылкой код пришлёт сам."
 )
+
+
+def _ask_point_instruction(method: str, city: str, recipient_ask: str) -> str:
+    carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
+    lines = [
+        f"Пункт выдачи ещё НЕ выбран. Пунктов {carrier} в городе {city} много — список "
+        "не перечисляй и адреса не придумывай. Попроси этими словами, ссылку не "
+        f"обрамляй знаками препинания:\n{templates.ask_point_address(carrier)}\n"
+    ]
+    if recipient_ask == _ASK_RECIPIENT:
+        lines.append(
+            "В том же сообщении попроси вместе с пунктом прислать ФИО, телефон и почту — "
+            "сразу пришлю счёт."
+        )
+    else:
+        lines.append(recipient_ask)
+    lines.append(
+        "Когда клиент назовёт улицу и дом, пришлёт адрес с карты или скриншот (адрес "
+        "прочитай с картинки) — вызови set_delivery_method с тем же городом и этим "
+        "адресом в pickup_point: инструмент покажет пункты рядом с номерами."
+    )
+    return " ".join(lines)
 
 
 def _points_instruction(

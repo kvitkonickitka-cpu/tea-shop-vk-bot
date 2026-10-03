@@ -67,7 +67,8 @@ async def test_button_next_to_points_asks_only_for_point(clean, world):
     await state.set_draft(PEER, OrderDraft(
         items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 1500}], items_total=1500,
         stage="awaiting_delivery"))
-    await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"})
     world["script"] = [said("Пункты: 1) … 2) … Оформить на прошлого получателя?")]
     await say("какие пункты?", 1)
     rows = world["sent"][-1][1]["buttons"]

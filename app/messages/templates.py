@@ -498,6 +498,18 @@ def point_chosen(
     return "\n".join(lines)
 
 
+_POINT_MAPS = {"Ozon": "https://www.ozon.ru/geo/", "СДЭК": "https://www.cdek.ru/ru/offices"}
+
+
+def ask_point_address(carrier: str = "Ozon") -> str:
+    """Город большой, улица не названа: просим адрес пункта вместо списка."""
+    return (
+        f"Пунктов выдачи {carrier} в городе много — подскажите, какой удобен: напишите "
+        "улицу и номер дома пункта, скопируйте его адрес с карты или пришлите скриншот. "
+        f"Все пункты {carrier} на карте: {_POINT_MAPS[carrier]}"
+    )
+
+
 STOREFRONT_ORDER = "storefront_order"
 
 
@@ -527,6 +539,33 @@ def storefront_points(
     if hint:
         lines.append(hint)
     return "\n".join(lines)
+
+
+def storefront_ask_point(*, order_id, items: list[dict], items_total, city: str, delivery_cost, ask: str) -> str:
+    """Заказ из витрины, город большой, а улицы в адресе нет — просим адрес пункта."""
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    if delivery_cost is None:
+        cost = ""
+    else:
+        cost = f" — около {amount(delivery_cost)} ₽" if delivery_cost else " — бесплатно"
+    return "\n".join([
+        f"Заказ №{order_id} принят: {listed} — {amount(items_total)} ₽.",
+        f"Дешевле всего — пункт выдачи Ozon в городе {city}{cost}, заберёте сами. "
+        "Быстрее, но дороже — пункт выдачи СДЭК или курьер: напишите, если нужен он.",
+        ask_point_address("Ozon"),
+        ask,
+    ])
+
+
+STOREFRONT_WITH_POINT_ALL = "Вместе с пунктом пришлите ФИО, телефон и почту — сразу пришлю счёт."
+
+
+def storefront_with_point_email(name: str, phone: str) -> str:
+    """Получатель есть в заказе витрины, пункт ещё не назван."""
+    return (
+        f"Получатель из заказа: {name}, {phone}. Вместе с пунктом пришлите почту для чека — "
+        "сразу пришлю счёт. Если получатель другой — напишите ФИО, телефон и почту."
+    )
 
 
 STOREFRONT_ASK_ALL = "Выберите пункт и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
