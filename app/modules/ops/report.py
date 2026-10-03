@@ -20,7 +20,7 @@ from sqlalchemy import text
 from app.core import heartbeat, worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.ops import journal, monitoring, pulse
+from app.modules.ops import host, journal, pulse
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ async def collect(now: datetime | None = None) -> dict:
     if first_pulse is not None:
         first = first_pulse if first_pulse.tzinfo else first_pulse.replace(tzinfo=timezone.utc)
         expected = int(min(_DAY, now - first).total_seconds() // 60) or 1
-    disk = await monitoring.read_last(settings.ops_disk_query) if settings.ops_disk_query else None
+    disk = await host.disk()
     return {
         "now": now, "stats": stats, "pulses": int(pulses or 0), "expected": expected,
         "dialogs": int(dialogs or 0), "tasks": tasks, "disk": disk,
@@ -86,7 +86,8 @@ async def _task_times() -> dict[str, datetime]:
         rows = (await session.execute(select(Heartbeat))).scalars().all()
     result = {}
     for row in rows:
-        if row.name == HEARTBEAT:
+        # Служебные отметки мониторинга — не задачи по расписанию.
+        if row.name == HEARTBEAT or row.name.startswith("ops-"):
             continue
         moment = row.last_run_at
         result[row.name] = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
@@ -134,11 +135,20 @@ def render(data: dict) -> str:
         lines.append("Ввод клиентов, не ошибки: " + ", ".join(validation))
 
     disk = data["disk"]
-    if disk is None:
-        lines += ["", "<b>Диск ВМ с базой</b>: нет данных"]
+    if disk.percent is None:
+        lines += ["", "<b>Диск ВМ с базой</b>: нет данных" + (
+            f" · база {host.megabytes(disk.db_bytes)}" if disk.db_bytes else ""
+        )]
     else:
-        mark = " 🔴" if disk >= 90 else " ⚠️" if disk >= 80 else ""
-        lines += ["", f"<b>Диск ВМ с базой</b>: {_num(disk, 0)} %{mark}"]
+        mark = (
+            " 🔴" if disk.percent >= settings.ops_disk_alarm_percent
+            else " ⚠️" if disk.percent >= settings.ops_disk_warn_percent else ""
+        )
+        lines += ["", (
+            f"<b>Диск ВМ с базой</b>: {disk.percent} %{mark} — свободно "
+            f"{host.gigabytes(disk.free_bytes)} из {host.gigabytes(disk.total_bytes)} · "
+            f"база {host.megabytes(disk.db_bytes)}"
+        )]
 
     lines += ["", "<b>Задачи по расписанию</b>"]
     if not data["tasks"]:

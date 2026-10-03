@@ -12,7 +12,7 @@ from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
-from app.modules.ops import journal as ops_journal, pulse as ops_pulse, report as ops_report
+from app.modules.ops import alerts as ops_alerts, journal as ops_journal, pulse as ops_pulse, report as ops_report
 from app.modules.dialog import escalation_watch, inbound, telegram_client
 from app.modules.delivery import ozon_catalog, ozon_client, ozon_quote
 from app.modules.orders import (
@@ -160,6 +160,7 @@ async def _run_scheduled() -> dict:
     )
     # Сутки бота для Ops-чата — раз в день после девяти утра по Москве.
     result["ops_report"] = await _run_task("Отчёт для Ops", ops_report.send())
+    result["disk"] = await _run_task("Диск ВМ с базой", ops_alerts.check_disk())
     # Отметка после всех задач: по ней видно, дошёл ли тик до конца или его
     # убили на середине — и firing ли триггер вообще.
     await heartbeat.note("расписание")

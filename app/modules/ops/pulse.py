@@ -30,12 +30,13 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.ops import journal, monitoring
+from app.modules.ops import alerts, details, journal, monitoring
 
 logger = logging.getLogger(__name__)
 
 MARK = "ops-pulse"
 _DB_TIMEOUT_SECONDS = 3
+_DETAILS_TIMEOUT_SECONDS = 20
 
 
 async def window_stats(session, minutes: int, *, skip_emulation: bool = False) -> dict:
@@ -117,6 +118,14 @@ async def _collect() -> tuple[bool, dict | None]:
     return True, stats
 
 
+async def _quietly(what: str, coro):
+    try:
+        return await asyncio.wait_for(coro, _DETAILS_TIMEOUT_SECONDS)
+    except Exception as error:
+        logger.warning("Пульс: %s — не вышло (%s)", what, type(error).__name__)
+        return None
+
+
 async def run() -> dict:
     """Один пульс. Никогда не бросает: пульс, упавший с ошибкой, — не пульс."""
     flushed = await journal.flush()
@@ -128,11 +137,21 @@ async def run() -> dict:
 
     metrics = metrics_for(db_up, stats)
     sent = await monitoring.write(metrics)
+    # Сообщения в Ops — после метрик: пульс в Monitoring важнее, и медленный
+    # Telegram не должен его задержать. Каждое — само по себе: упавшее не
+    # мешает остальным и пульсу.
+    details_result = None
+    if db_up:
+        details_result = await _quietly("подробности сбоев", details.send_pending())
+        await _quietly("медленные ответы", alerts.check_slow(stats))
+    await _quietly("база", alerts.check_db(db_up))
     result = {
         "db_up": db_up,
         "metrics_sent": sent if monitoring.is_configured() else "YC_FOLDER_ID не задан",
         "flushed": flushed,
     }
+    if details_result and details_result.get("sent"):
+        result["details_sent"] = details_result["sent"]
     if stats is not None:
         result.update(
             turns=stats["turns"], p95=stats["p95"], llm_p95=stats["llm_p95"],
