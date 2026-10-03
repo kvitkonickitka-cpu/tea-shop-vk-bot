@@ -30,7 +30,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.ops import details, journal, monitoring
+from app.modules.ops import alerts, details, journal, monitoring
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,14 @@ async def _collect() -> tuple[bool, dict | None]:
     return True, stats
 
 
+async def _quietly(what: str, coro):
+    try:
+        return await asyncio.wait_for(coro, _DETAILS_TIMEOUT_SECONDS)
+    except Exception as error:
+        logger.warning("Пульс: %s — не вышло (%s)", what, type(error).__name__)
+        return None
+
+
 async def run() -> dict:
     """Один пульс. Никогда не бросает: пульс, упавший с ошибкой, — не пульс."""
     flushed = await journal.flush()
@@ -129,14 +137,14 @@ async def run() -> dict:
 
     metrics = metrics_for(db_up, stats)
     sent = await monitoring.write(metrics)
+    # Сообщения в Ops — после метрик: пульс в Monitoring важнее, и медленный
+    # Telegram не должен его задержать. Каждое — само по себе: упавшее не
+    # мешает остальным и пульсу.
     details_result = None
     if db_up:
-        # Подробности сбоев — после метрик: пульс в Monitoring важнее, и
-        # медленный Telegram не должен его задержать.
-        try:
-            details_result = await asyncio.wait_for(details.send_pending(), _DETAILS_TIMEOUT_SECONDS)
-        except Exception as error:
-            logger.warning("Пульс: подробности сбоев не разосланы — %s", type(error).__name__)
+        details_result = await _quietly("подробности сбоев", details.send_pending())
+        await _quietly("медленные ответы", alerts.check_slow(stats))
+    await _quietly("база", alerts.check_db(db_up))
     result = {
         "db_up": db_up,
         "metrics_sent": sent if monitoring.is_configured() else "YC_FOLDER_ID не задан",

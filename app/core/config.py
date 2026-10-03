@@ -282,10 +282,12 @@ class Settings(BaseSettings):
     ops_report_hour_msk: int = 9
     # Сколько дней хранить журнал ops_events.
     ops_events_keep_days: int = 30
-    # Запрос заполненности диска ВМ с базой к Monitoring (язык запросов
-    # Monitoring), например метрика Unified Agent. Пусто = в отчёте «нет
-    # данных». Задаётся после установки агента, когда видно имя метрики.
-    ops_disk_query: str = ""
+    # Когда бот сам пишет в Ops (app/modules/ops/alerts.py): p95 ответа
+    # выше порога при стольких ответах в окне, и пороги диска ВМ с базой.
+    ops_slow_seconds: int = 60
+    ops_slow_min_turns: int = 3
+    ops_disk_warn_percent: int = 80
+    ops_disk_alarm_percent: int = 90
 
 
 settings = Settings()

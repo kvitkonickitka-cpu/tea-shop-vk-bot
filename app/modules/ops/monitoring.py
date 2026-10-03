@@ -1,4 +1,4 @@
-"""Запись и чтение метрик Yandex Monitoring.
+"""Запись метрик Yandex Monitoring.
 
 Авторизация — IAM-токен сервисного аккаунта ревизии из сервиса метаданных:
 статических ключей нет, а токен живёт ровно столько, сколько ревизия.
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 
@@ -79,38 +79,3 @@ async def write(metrics: list[dict]) -> bool:
     except Exception as error:
         logger.warning("Метрики не отправлены: %s", type(error).__name__)
         return False
-
-
-async def read_last(query: str, minutes: int = 30) -> float | None:
-    """Последнее значение по запросу за последние минуты, или None."""
-    if not is_configured() or not query:
-        return None
-    now = datetime.now(timezone.utc)
-    body = {
-        "query": query,
-        "fromTime": (now - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "toTime": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "downsampling": {"disabled": True},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-            token = await _iam_token(client)
-            response = await client.post(
-                f"{settings.monitoring_api_url}/read",
-                params={"folderId": settings.yc_folder_id},
-                headers={"Authorization": f"Bearer {token}"},
-                json=body,
-            )
-        if response.status_code >= 400:
-            logger.warning("Monitoring не отдал метрику: HTTP %s", response.status_code)
-            return None
-        values = []
-        for metric in response.json().get("metrics") or []:
-            series = metric.get("timeseries") or {}
-            points = series.get("doubleValues") or series.get("int64Values") or []
-            if points:
-                values.append(float(points[-1]))
-        return max(values) if values else None
-    except Exception as error:
-        logger.warning("Метрика не прочиталась: %s", type(error).__name__)
-        return None
