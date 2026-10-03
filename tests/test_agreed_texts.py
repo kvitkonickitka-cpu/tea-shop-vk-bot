@@ -122,4 +122,4 @@ async def test_not_handed_over_is_reported_once(clean, monkeypatch):
     assert await delivery_watch.report_not_handed_over(now) == 1
     assert await delivery_watch.report_not_handed_over(now) == 0
     assert len(sent) == 1 and sent[0].startswith(f"⏰ Заказ №{late.id} оплачен")
-    assert "ещё не сдан в Ozon" in sent[0] and "в течение 1–2 дней" in sent[0]
+    assert "ещё не сдан в Ozon" in sent[0] and f"обещали сдать {settings.handover_promise}" in sent[0]

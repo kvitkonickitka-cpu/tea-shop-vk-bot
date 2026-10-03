@@ -19,12 +19,12 @@ def _eta(carrier, low, high, working):
 
 
 def test_phrase_ozon_and_cdek():
-    assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 6–7 дней: 1–2 дня соберём и сдадим, 5 дней в пути у Ozon"
+    assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon"
     assert eta.phrase(_eta("cdek", 3, 4, True)) == (
-        "≈ 4–6 рабочих дней: 1–2 дня соберём и сдадим, 3–4 рабочих дня в пути у СДЭКа"
+        "≈ 4–5 рабочих дней: 1 день соберём и сдадим, 3–4 рабочих дня в пути у СДЭКа"
     )
     assert eta.phrase(_eta("cdek", 1, 1, True)) == (
-        "≈ 2–3 рабочих дня: 1–2 дня соберём и сдадим, 1 рабочий день в пути у СДЭКа"
+        "≈ 2 рабочих дня: 1 день соберём и сдадим, 1 рабочий день в пути у СДЭКа"
     )
 
 
@@ -40,7 +40,7 @@ async def test_ozon_tool_result_and_draft_carry_the_phrase(clean, ozon):  # noqa
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "ozon_pvz", "address": "Краснодар"}
     )
-    phrase = "≈ 6–7 дней: 1–2 дня соберём и сдадим, 5 дней в пути у Ozon"
+    phrase = "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon"
     assert f"срок {phrase}" in result.tool_result
     assert "Срок называй вместе с ценой" in result.tool_result
     draft = await state.get_draft(PEER)
@@ -57,11 +57,11 @@ async def test_cdek_courier_tool_result(clean, monkeypatch):
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "cdek_courier", "address": "Москва, Тверская 1"}
     )
-    assert "срок ≈ 4–6 рабочих дней: 1–2 дня соберём и сдадим, 3–4 рабочих дня в пути у СДЭКа" in result.tool_result
+    assert "срок ≈ 4–5 рабочих дней: 1 день соберём и сдадим, 3–4 рабочих дня в пути у СДЭКа" in result.tool_result
 
 
 def test_client_messages_show_the_phrase():
-    phrase = "≈ 6–7 дней: 1–2 дня соберём и сдадим, 5 дней в пути у Ozon"
+    phrase = "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon"
     common = dict(
         items=[{"name": "Те Гуань Инь", "quantity": 1, "price": 1500}],
         delivery_method="ozon_pvz", delivery_label="Ozon, пункт выдачи: Красная, 176",
@@ -85,6 +85,39 @@ async def test_returning_offer_brings_the_eta_into_the_order(clean, ozon):  # no
     recipient = LastRecipient(1, "Иванов Иван", "+79001234567", "")
     offer = await offers.prepare(draft, delivery, recipient)
     assert offer.eta == {"carrier": "ozon", "min": 5, "max": 5, "working": False}
-    assert "Срок: ≈ 6–7 дней" in conversation._offer_message(draft, offer)
+    assert "Срок: ≈ 6 дней:" in conversation._offer_message(draft, offer)
     offers.apply(draft, offer)
-    assert eta.phrase(draft.details).startswith("≈ 6–7 дней")
+    assert eta.phrase(draft.details).startswith("≈ 6 дней:")
+
+
+async def test_handover_range_still_supported(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "handover_days_min", 1)
+    monkeypatch.setattr(settings, "handover_days", 2)
+    assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 6–7 дней: 1–2 дня соберём и сдадим, 5 дней в пути у Ozon"
+
+
+@pytest.mark.parametrize("with_conditions", [True, False])
+async def test_conditions_link_without_preview_card(monkeypatch, with_conditions):
+    import httpx
+
+    from app.core.config import settings
+    from app.modules.dialog import vk_client
+
+    sent = []
+
+    def handler(request):
+        sent.append(dict(httpx.QueryParams(request.content.decode())))
+        return httpx.Response(200, json={"response": 1})
+
+    original = httpx.AsyncClient
+
+    class Mocked(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(vk_client.httpx, "AsyncClient", Mocked)
+    text = "Итого: 3000 ₽" + (f"\nУсловия: {settings.conditions_url}" if with_conditions else "")
+    await vk_client.send_message(1, text)
+    assert ("dont_parse_links" in sent[0]) is with_conditions
