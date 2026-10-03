@@ -205,6 +205,21 @@ async def _get_token(client: httpx.AsyncClient) -> str:
     return _token
 
 
+def _forget_token() -> None:
+    global _token, _token_expires_at
+    _token, _token_expires_at = None, 0.0
+
+
+async def _post_authorized(client: httpx.AsyncClient, path: str, payload: dict) -> httpx.Response:
+    token = await _get_token(client)
+    return await _post(
+        client,
+        f"{settings.ozon_api_base_url}{path}",
+        payload,
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+
+
 @watch("ozon", lambda path, *a, **k: path)
 async def call(path: str, payload: dict) -> dict:
     """Вызов метода Ozon Delivery API с авторизацией."""
@@ -212,13 +227,20 @@ async def call(path: str, payload: dict) -> dict:
         raise OzonError("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы")
 
     client = _shared_client()
-    token = await _get_token(client)
-    response = await _post(
-        client,
-        f"{settings.ozon_api_base_url}{path}",
-        payload,
-        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    )
+    response = await _post_authorized(client, path, payload)
+    if response.status_code == 401:
+        # Токен по часам ещё жив, а Ozon его уже не принимает: похоже,
+        # выдав новый токен другому экземпляру контейнера, он отзывает
+        # старый. Без перезапроса экземпляр с отозванным токеном получал
+        # 401 на каждом тике до истечения срока — выгрузка каталога стояла
+        # с 02.10 22:10, при том что расчёт для клиентов шёл. 401 значит, что
+        # запрос не выполнен, поэтому повтор безопасен и для создания
+        # отправления. Повторный 401 со свежим токеном — уже права
+        # приложения в кабинете, и он уходит в ошибку как есть.
+        _forget_token()
+        response = await _post_authorized(client, path, payload)
+        if response.status_code < 400:
+            logger.info("Ozon не принял токен на %s — взяли новый, запрос прошёл", path)
 
     if response.status_code >= 400:
         raise OzonError(f"Ozon отказал на {path} — {_describe_failure(response)}")
