@@ -38,6 +38,8 @@ SCOPES = [
 ]
 
 _TIMEOUT_SECONDS = 10
+# Только чтение каталога пунктов: повтор после таймаута ничего не создаст.
+_RETRY_ON_TIMEOUT = frozenset({"/v1/delivery-point/list", "/v1/delivery-point/info"})
 _MAX_REDIRECTS = 3
 # Проверено живым запросом: Ozon отвечает «размер страницы должен быть от 1
 # до 100», хотя в спецификации ограничения нет.
@@ -227,7 +229,17 @@ async def call(path: str, payload: dict) -> dict:
         raise OzonError("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы")
 
     client = _shared_client()
-    response = await _post_authorized(client, path, payload)
+    try:
+        response = await _post_authorized(client, path, payload)
+    except (httpx.TimeoutException, httpx.NetworkError):
+        # Чтение каталога пунктов — фоновое и безопасное для повтора: один
+        # таймаут Ozon за тик ничего не значит, а сообщением в Ops выглядел
+        # как поломка. Запросы, которые что-то создают, не повторяем: после
+        # таймаута неизвестно, выполнил ли Ozon первый.
+        if path not in _RETRY_ON_TIMEOUT:
+            raise
+        logger.info("Ozon не ответил на %s — повторяем один раз", path)
+        response = await _post_authorized(client, path, payload)
     if response.status_code == 401:
         # Токен по часам ещё жив, а Ozon его уже не принимает: похоже,
         # выдав новый токен другому экземпляру контейнера, он отзывает

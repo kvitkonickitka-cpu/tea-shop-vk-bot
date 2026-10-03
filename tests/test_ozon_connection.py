@@ -32,6 +32,8 @@ def _ozon(monkeypatch, answers):
             return httpx.Response(200, json={"access_token": f"t{seen['tokens']}", "expires_in": 3600})
         seen["auth"].append(request.headers["Authorization"])
         status = answers.pop(0)
+        if status == "timeout":
+            raise httpx.ReadTimeout("Ozon молчит", request=request)
         return httpx.Response(status, json={"delivery_points": [1]} if status == 200 else {"message": "Unauthorized"})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -64,3 +66,47 @@ async def test_second_401_is_a_real_error(monkeypatch):
     assert seen["tokens"] == 1  # один перезапрос, без цикла
     assert journal._BUFFER[-1]["error_kind"] == "auth"
     journal._BUFFER.clear()
+
+
+async def test_catalog_read_survives_one_timeout(monkeypatch):
+    from app.modules.ops import journal
+
+    journal._BUFFER.clear()
+    _ozon(monkeypatch, ["timeout", 200])
+    assert await ozon_client.call("/v1/delivery-point/list", {}) == {"delivery_points": [1]}
+    assert not journal._BUFFER  # прошедший повтор — не сбой
+
+
+async def test_two_timeouts_are_a_real_error(monkeypatch):
+    import httpx
+    import pytest
+
+    from app.modules.ops import journal
+
+    journal._BUFFER.clear()
+    _ozon(monkeypatch, ["timeout", "timeout"])
+    with pytest.raises(httpx.ReadTimeout):
+        await ozon_client.call("/v1/delivery-point/info", {})
+    assert journal._BUFFER[-1]["error_kind"] == "timeout"
+    journal._BUFFER.clear()
+
+
+async def test_creating_a_posting_is_never_repeated(monkeypatch):
+    import httpx
+    import pytest
+
+    seen = _ozon(monkeypatch, ["timeout", 200])
+    with pytest.raises(httpx.ReadTimeout):
+        await ozon_client.call("/v2/order/create", {})
+    assert len(seen["auth"]) == 1  # после таймаута не знаем, создал ли Ozon заказ
+
+
+def test_vanished_points_are_not_a_failure():
+    from app.modules.delivery.cdek_client import CdekError
+    from app.modules.ops import journal
+
+    error = ozon_client.OzonError(
+        "Ozon отказал на /v1/delivery-point/info — HTTP 404: Не найдены пункты выдачи: 101, 202"
+    )
+    assert journal.classify(error) == ("validation", 404)
+    assert journal.classify(CdekError("Не нашли город «Мсква» — HTTP 400")) == ("validation", 400)

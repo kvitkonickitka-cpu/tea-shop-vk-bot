@@ -132,7 +132,7 @@ def render(data: dict) -> str:
         if errors.get(api, {}).get(journal.VALIDATION):
             validation.append(f"{name} {errors[api][journal.VALIDATION]}")
     if validation:
-        lines.append("Ввод клиентов, не ошибки: " + ", ".join(validation))
+        lines.append("Ожидаемые отказы, не сбои (опечатки клиентов, пропавшие пункты): " + ", ".join(validation))
 
     disk = data["disk"]
     if disk.percent is None:
