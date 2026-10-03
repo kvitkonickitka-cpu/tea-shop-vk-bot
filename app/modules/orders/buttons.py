@@ -257,14 +257,23 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
         logger.info("peer_id=%s: пункт %s кнопкой не выбрался: %s", peer_id, chosen["n"], result.tool_result[:120])
         return TO_MODEL
 
-    # Получатель из заказа витрины уже показан клиенту — просим только почту.
-    candidate = fresh.details.get("storefront_recipient")
-    ask = (
-        templates.storefront_ask_email_only(candidate["name"], candidate["phone"])
-        if candidate and not fresh.details.get("recipient_name") else ""
-    )
-
     async def chosen_reply() -> Press:
+        # Пункт записан, получателя нет. Получатель из заказа витрины уже
+        # показан клиенту — просим только почту; у постоянного клиента под
+        # ответом снова [Да, на эти данные]: кнопка под списком пунктов
+        # после выбора пункта устарела.
+        ask, keyboard = "", None
+        candidate = fresh.details.get("storefront_recipient")
+        if candidate and not fresh.details.get("recipient_name"):
+            ask = templates.storefront_ask_email_only(candidate["name"], candidate["phone"])
+        else:
+            keyboard, _ = await for_reply(peer_id)
+            if keyboard is not None:
+                from app.modules.orders import repeat_delivery
+
+                last = await repeat_delivery.last_recipient_for(peer_id)
+                if last is not None and last.email:
+                    ask = templates.ask_last_recipient(last.name, last.phone, last.email)
         return Press(reply=templates.point_chosen(
             address=chosen["address"],
             delivery_cost=fresh.delivery_cost,
@@ -272,7 +281,7 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
             ask_recipient=True,
             eta=eta.phrase(fresh.details),
             ask=ask,
-        ))
+        ), keyboard=keyboard)
 
     return await _invoice_or(peer_id, chosen_reply)
 

@@ -102,19 +102,18 @@ async def _direct_points(
     if draft is None or not shown or draft.details.get("ozon_point_id"):
         return False
 
+    keyboard, hint = await buttons.for_reply(user_id)
+    shows_buttons = await keyboards.for_peer(user_id, keyboard) is not None
     last = await repeat_delivery.last_recipient_for(user_id)
     candidate = _recipient_of(order)
     if last is not None and last.email:
-        ask = templates.storefront_ask_last(last.name, last.phone, last.email)
+        ask = templates.storefront_ask_last(last.name, last.phone, last.email, button=shows_buttons)
     elif candidate is not None:
         draft.details["storefront_recipient"] = {"name": candidate[0], "phone": candidate[1]}
         await state.set_draft(user_id, draft)
         ask = templates.storefront_ask_email(*candidate)
     else:
         ask = templates.STOREFRONT_ASK_ALL
-
-    keyboard, hint = await buttons.for_reply(user_id)
-    shows_buttons = await keyboards.for_peer(user_id, keyboard) is not None
     text = templates.storefront_points(
         order_id=order_id, items=items, items_total=items_total, shown=shown,
         per_point_prices=all(point.get("price") is not None for point in shown),

@@ -545,12 +545,18 @@ def storefront_ask_email_only(name: str, phone: str) -> str:
     return f"Пришлите почту для чека — получатель {name}, {phone}, сразу пришлю счёт."
 
 
-def storefront_ask_last(name: str, phone: str, email: str) -> str:
-    """Постоянный клиент — прошлый получатель кнопкой."""
+def ask_last_recipient(name: str, phone: str, email: str, *, button: bool = True) -> str:
+    """Прошлый получатель постоянного клиента — кнопкой или словом «да»."""
+    how = "Нажмите «Да, на эти данные»" if button else "Ответьте «да»"
     return (
-        f"Выберите пункт. Получатель как в прошлый раз — {name}, {phone}, {email}? "
-        "Нажмите «Да, на эти данные» или пришлите ФИО, телефон и почту — сразу пришлю счёт."
+        f"Получатель как в прошлый раз — {name}, {phone}, {email}? "
+        f"{how} или пришлите ФИО, телефон и почту — сразу пришлю счёт."
     )
+
+
+def storefront_ask_last(name: str, phone: str, email: str, button: bool = True) -> str:
+    """Заказ витрины от постоянного клиента: пункт и прошлый получатель."""
+    return "Выберите пункт. " + ask_last_recipient(name, phone, email, button=button)
 
 
 def taken(*, name: str, price, upsell: str = "", upsell_price=None, gap=None) -> str:

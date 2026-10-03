@@ -45,7 +45,7 @@ SAMPLES = {
     "ask_recipient": True, "upsell": "Да Хун Пао", "upsell_price": 1500,
     "eta": "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon",
     "price": 1500,
-    "ask": "Пришлите почту для чека.", "hint": "", "per_point_prices": True,
+    "ask": "Пришлите почту для чека.", "button": True, "hint": "", "per_point_prices": True,
     "shown": [{"n": 1, "address": "Краснодар, Ставропольская улица, 230", "price": 121}],
     "name": "Иванов Иван", "method": "ozon_pvz", "label": "Ozon, пункт выдачи: Краснодар, Красная, 1",
 }

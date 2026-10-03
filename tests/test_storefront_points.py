@@ -122,14 +122,25 @@ async def test_returning_client_gets_same_data_button(clean, shop):
     # Пункт кнопкой, затем «Да, на эти данные» — счёт без модели.
     version = (await state.get_draft(PEER)).details["version"]
     await say("1. Ставропольская улица, 230", 1, {"a": "pt", "n": 1, "v": version})
-    version = (await state.get_draft(PEER)).details["version"]
-    await say("Да, на эти данные", 2, {"a": "last_recipient", "v": version})
+    # Под «Записала пункт» — снова кнопка: прежняя под списком устарела.
+    text, board = shop["sent"][-1]
+    assert text.endswith(templates.ask_last_recipient("Иванов Иван", "+79001234567", "ivanov@mail.ru"))
+    same = board["buttons"][0][0]["action"]
+    assert same["label"] == "Да, на эти данные"
+    await say(same["label"], 2, json.loads(same["payload"]))
     assert shop["model"] == [] and shop["payments"] == [1]
 
 
 async def test_no_buttons_without_client_info_keeps_text(clean, shop):
     text, board = await storefront(shop, buttons=False)
     assert board is None and templates.POINTS_HINT not in text and "1) Краснодар" in text
+
+
+async def test_returning_client_without_buttons_answers_yes(clean, shop):
+    await past_order(clean)
+    text, board = await storefront(shop, buttons=False)
+    assert board is None and "Нажмите" not in text
+    assert templates.storefront_ask_last("Иванов Иван", "+79001234567", "ivanov@mail.ru", button=False) in text
 
 
 async def test_unparsed_address_falls_back(clean, shop):
