@@ -109,6 +109,18 @@ async def client_info_of(peer_id: int) -> dict | None:
     return row.client_info if row is not None else None
 
 
+async def shows_link_button(peer_id: int) -> bool:
+    """Увидит ли клиент кнопку-ссылку — тогда ссылку на оплату в текст не кладём.
+
+    Ссылка на ЮKassa в тексте сообщения сообщества идёт через
+    `vk.ru/away.php`, и ВК помечает такое сообщение «подозрительным»:
+    клиент видит «Не переходите по ней, чтобы не рисковать» (03.10.2026).
+    Кнопка `open_link` открывает ЮKassa напрямую, без этой проверки.
+    """
+    probe = inline([[link_button("Оплатить", "https://yoomoney.ru/")]])
+    return await for_peer(peer_id, probe) is not None
+
+
 async def for_peer(peer_id: int, keyboard: dict | None) -> str | None:
     """JSON клавиатуры для messages.send — или None, если слать только текст."""
     if keyboard is None or not settings.vk_buttons_enabled:

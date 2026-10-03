@@ -136,7 +136,9 @@ async def test_take_new_client_full_path(clean, shop):
     shop["script"] = [tool_use("set_delivery_method", method="ozon_pvz", address="Краснодар", pickup_point="1"),
                       tool_use("set_recipient", name="Иванов Иван", phone="89001234567", email="ivanov@mail.ru")]
     await say("1, Иванов Иван, 89001234567, ivanov@mail.ru", 4)
-    assert shop["payments"] == [1] and "Оплатить: https://yoomoney.ru/checkout/1" in shop["sent"][-1][0]
+    text, board = shop["sent"][-1]
+    assert shop["payments"] == [1] and "yoomoney" not in text
+    assert board["buttons"][0][0]["action"]["link"] == "https://yoomoney.ru/checkout/1"
 
 
 async def test_take_returning_client_gets_the_link(clean, shop):

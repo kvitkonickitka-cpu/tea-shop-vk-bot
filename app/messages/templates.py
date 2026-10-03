@@ -178,8 +178,12 @@ def invoice_summary(
     total,
     link: str,
     eta: str = "",
+    button: bool = False,
 ) -> str:
     """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
+
+    `button` — клиент видит кнопку «Оплатить»: тогда ссылки в тексте нет
+    (см. `keyboard.shows_link_button`).
 
     Подтверждением стала сама оплата, поэтому всё, что клиент мог бы
     проверить на «Оформляем?», стоит здесь: состав, пункт, получатель и
@@ -200,9 +204,9 @@ def invoice_summary(
     lines.append(f"Получатель: {name}, {phone}, {email}")
     lines.append(f"Итого: {amount(total)} ₽")
     lines.append("")
-    lines.append(f"Оплатить: {link}")
+    lines.append(pay_line(link, button))
     lines.append(
-        f"Ссылка действует {settings.payment_invoice_ttl_minutes} минут. После "
+        f"{_link_noun(button)} действует {settings.payment_invoice_ttl_minutes} минут. После "
         f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
     )
     if settings.conditions_url:
@@ -324,17 +328,26 @@ def receipt_delayed(order, *, email: str = "", phone: str = "") -> str:
     )
 
 
-def reminder_1(order, link: str) -> str:
+def pay_line(link: str, button: bool = False) -> str:
+    """Строка оплаты: ссылка текстом — только когда кнопки клиент не увидит."""
+    return "Оплатить — кнопкой ниже 👇" if button else f"Оплатить: {link}"
+
+
+def _link_noun(button: bool) -> str:
+    return "Кнопка оплаты" if button else "Ссылка"
+
+
+def reminder_1(order, link: str, button: bool = False) -> str:
     """Мягкое напоминание про выставленный счёт."""
     return (
         f"Заказ №{order.id} на {amount(order.total)} ₽ ждёт оплаты 🙂\n"
-        f"Оплатить: {link}\n"
+        f"{pay_line(link, button)}\n"
         "Если с оплатой что-то не получается или хотите поменять заказ — просто "
         "напишите."
     )
 
 
-def reminder_2(order, link: str, expires_at) -> str:
+def reminder_2(order, link: str, expires_at, button: bool = False) -> str:
     """Последнее напоминание: скоро срок счёта истечёт.
 
     «Счёт действителен до», а не «ссылка перестанет работать»: закрыть
@@ -343,7 +356,7 @@ def reminder_2(order, link: str, expires_at) -> str:
     return (
         f"Счёт по заказу №{order.id} действителен до {worktime.hhmm(expires_at)} "
         "по Москве.\n"
-        f"Оплатить: {link}\n"
+        f"{pay_line(link, button)}\n"
         "Если не успеете — ничего страшного, напишите, и я пришлю новую ссылку."
     )
 
@@ -708,6 +721,7 @@ def returning_invoice(
     upsell: str = "",
     upsell_price=None,
     gap=None,
+    button: bool = False,
 ) -> str:
     """Постоянному клиенту — заказ как в прошлый раз сразу со ссылкой.
 
@@ -728,9 +742,9 @@ def returning_invoice(
     lines.append(f"Получатель: {name}, {phone}, {email}")
     lines.append(f"Итого: {amount(total)} ₽")
     lines.append("")
-    lines.append(f"Оплатить: {link}")
+    lines.append(pay_line(link, button))
     lines.append(
-        f"Ссылка действует {settings.payment_invoice_ttl_minutes} минут. После "
+        f"{_link_noun(button)} действует {settings.payment_invoice_ttl_minutes} минут. После "
         f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
     )
     if settings.conditions_url:
@@ -738,7 +752,10 @@ def returning_invoice(
     extra = upsell_line(upsell, upsell_price, gap)
     if extra:
         lines.append(extra)
-    lines.append("Оплатите по ссылке — или напишите, что поменять.")
+    lines.append(
+        "Оплатите кнопкой — или напишите, что поменять." if button
+        else "Оплатите по ссылке — или напишите, что поменять."
+    )
     return "\n".join(lines)
 
 

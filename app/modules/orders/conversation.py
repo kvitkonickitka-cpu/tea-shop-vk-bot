@@ -1503,7 +1503,7 @@ def _offer_message(draft: OrderDraft, offer) -> str:
     )
 
 
-def _returning_invoice_reply(peer_id: int, draft: OrderDraft, payment, order_id) -> ToolExecution:
+async def _returning_invoice_reply(peer_id: int, draft: OrderDraft, payment, order_id) -> ToolExecution:
     """Сводка «как в прошлый раз» со ссылкой и кнопками [Оплатить] [Изменить] [Добавить]."""
     from app.messages import keyboard as keyboards
     from app.modules.orders import buttons
@@ -1527,6 +1527,7 @@ def _returning_invoice_reply(peer_id: int, draft: OrderDraft, payment, order_id)
         upsell=item or "",
         upsell_price=match["price"] if match else None,
         gap=_threshold_gap(draft.items_total) if item else None,
+        button=await keyboards.shows_link_button(peer_id),
     )
     # Ссылка — своим рядом: open_link ВК растягивает на всю ширину.
     rows = [[keyboards.link_button(f"Оплатить {templates.amount(total)} ₽", payment.confirmation_url)]]
@@ -1853,10 +1854,11 @@ async def _confirm_with_payment(
 
     await state.clear_draft(peer_id)
 
+    from app.messages import keyboard as keyboards
     from app.modules.orders import buttons
 
     if style == "returning":
-        return _returning_invoice_reply(peer_id, draft, payment, getattr(order, "id", None) or order_id)
+        return await _returning_invoice_reply(peer_id, draft, payment, getattr(order, "id", None) or order_id)
 
     buttons.stash(peer_id, buttons.pay_keyboard(payment.amount, payment.confirmation_url))
     # Не «заказ оформлен»: до оплаты клиент читал это как «всё готово».
@@ -1873,6 +1875,7 @@ async def _confirm_with_payment(
         total=payment.amount or (draft.items_total + (draft.delivery_cost or 0)),
         link=payment.confirmation_url,
         eta=eta.phrase(draft.details),
+        button=await keyboards.shows_link_button(peer_id),
     )
     return ToolExecution(reply, client_reply=reply)
 

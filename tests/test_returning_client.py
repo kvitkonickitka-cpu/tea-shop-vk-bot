@@ -87,7 +87,10 @@ async def test_text_yes_goes_through_accept_offer(clean, world):
     await say("хочу ещё те гуань инь", 1)
     world["script"] = [tool_use("accept_offer")]
     await say("да", 2)
-    assert world["payments"] == [1] and "Оплатить: https://yoomoney.ru/checkout/1" in world["sent"][-1][0]
+    text, board = world["sent"][-1]
+    # Кнопку клиент видит — ссылки в тексте нет: ВК помечает её подозрительной.
+    assert world["payments"] == [1] and "Оплатить — кнопкой ниже 👇" in text and "yoomoney" not in text
+    assert board["buttons"][0][0]["action"]["link"] == "https://yoomoney.ru/checkout/1"
 
 
 async def test_add_button_rebuilds_the_offer(clean, world):
