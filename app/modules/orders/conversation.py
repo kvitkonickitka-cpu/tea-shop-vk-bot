@@ -184,7 +184,23 @@ TOOLS = [
                         },
                         "required": ["name", "quantity"],
                     },
-                }
+                },
+                "delivery_hint": {
+                    "type": "string",
+                    "description": (
+                        "Только если клиент в этом же сообщении назвал, куда везти: "
+                        "город, улицу, адрес или пункт («в Москву», «на Ленина»). "
+                        "Его слова как есть. Не назвал — не передавай."
+                    ),
+                },
+                "recipient_hint": {
+                    "type": "string",
+                    "description": (
+                        "Только если клиент в этом же сообщении назвал получателя или "
+                        "его данные («на маму», «получит Иванов»). Его слова как есть. "
+                        "Не назвал — не передавай."
+                    ),
+                },
             },
             "required": ["items"],
         },
@@ -680,6 +696,27 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
     # Постоянному клиенту первым предлагаем то, куда он уже получал: одно
     # «да» вместо города, пункта и карты.
     last = await repeat_delivery.last_for(peer_id)
+    delivery_hint = str(tool_input.get("delivery_hint") or "").strip()
+    recipient_hint = str(tool_input.get("recipient_hint") or "").strip()
+    if last is not None and (delivery_hint or recipient_hint):
+        # Клиент сам назвал другую доставку или получателя — «как в прошлый
+        # раз» не к месту: предложение и счёт по прошлым данным ушли бы
+        # мимо того, что он только что написал.
+        if delivery_hint:
+            return result + (
+                f"\nКлиент постоянный, но сейчас назвал, куда везти: «{delivery_hint}». "
+                "Прошлую доставку не предлагай — вызови set_delivery_method с этим "
+                "городом в address и улицей или пунктом, если он их назвал, в "
+                "pickup_point (первым — пункт выдачи Ozon)."
+                + (f" Получатель — новый: «{recipient_hint}», попроси недостающие "
+                   "ФИО, телефон и почту." if recipient_hint else "")
+            )
+        last.remember(draft.details)
+        await state.set_draft(peer_id, draft)
+        return result + "\n" + repeat_delivery.suggestion(last) + (
+            f" Получатель в этот раз другой: «{recipient_hint}» — прошлого не предлагай, "
+            "попроси ФИО, телефон и почту нового."
+        )
     if last is not None:
         offered = await _offer_as_last_time(peer_id, draft, last)
         if offered is not None:
@@ -1365,7 +1402,9 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
     return None
 
 
-async def _auto_invoice(peer_id: int, source: str = "invoice_auto") -> ToolExecution | None:
+async def _auto_invoice(
+    peer_id: int, source: str = "invoice_auto", style: str = "summary"
+) -> ToolExecution | None:
     """Выставить счёт сам, если заказ стал полным. None — ещё не полный."""
     if not (settings.auto_invoice_enabled and payment_service.is_enabled()):
         return None
@@ -1376,7 +1415,7 @@ async def _auto_invoice(peer_id: int, source: str = "invoice_auto") -> ToolExecu
     if note is not None:
         return ToolExecution(note)
     draft.stage = "confirmed"
-    return await _confirm_with_payment(peer_id, draft, source=source)
+    return await _confirm_with_payment(peer_id, draft, source=source, style=style)
 
 
 def _offer_message(draft: OrderDraft, offer) -> str:
@@ -1399,6 +1438,43 @@ def _offer_message(draft: OrderDraft, offer) -> str:
         gap=_threshold_gap(draft.items_total) if item else None,
         eta=eta.phrase_for(offer.eta),
     )
+
+
+def _returning_invoice_reply(peer_id: int, draft: OrderDraft, payment, order_id) -> ToolExecution:
+    """Сводка «как в прошлый раз» со ссылкой и кнопками [Оплатить] [Изменить] [Добавить]."""
+    from app.messages import keyboard as keyboards
+    from app.modules.orders import buttons
+
+    item = draft.details.get("upsell_item")
+    match = catalog_service.find_item(item) if item else None
+    if match is None or not match.get("in_stock", True) or item in {row["name"] for row in draft.items}:
+        item, match = None, None
+    total = payment.amount or (draft.items_total + (draft.delivery_cost or 0))
+    reply = templates.returning_invoice(
+        items=draft.items,
+        delivery_method=draft.delivery_method,
+        delivery_label=draft.delivery_label,
+        delivery_cost=draft.delivery_cost,
+        name=draft.details.get("recipient_name", ""),
+        phone=draft.details.get("recipient_phone", ""),
+        email=draft.details.get("recipient_email", ""),
+        total=total,
+        link=payment.confirmation_url,
+        eta=eta.phrase(draft.details),
+        upsell=item or "",
+        upsell_price=match["price"] if match else None,
+        gap=_threshold_gap(draft.items_total) if item else None,
+    )
+    # Ссылка — своим рядом: open_link ВК растягивает на всю ширину.
+    rows = [[keyboards.link_button(f"Оплатить {templates.amount(total)} ₽", payment.confirmation_url)]]
+    second = [keyboards.text_button("Изменить", {"a": "edit", "o": order_id})]
+    if item:
+        second.append(keyboards.text_button(
+            f"Добавить {item}", {"a": "add_more", "o": order_id, "n": item}, "positive"
+        ))
+    rows.append(second)
+    buttons.stash(peer_id, keyboards.inline(rows))
+    return ToolExecution(reply, client_reply=reply)
 
 
 def _offer_keyboard(draft: OrderDraft) -> dict | None:
@@ -1438,6 +1514,20 @@ async def _offer_as_last_time(peer_id: int, draft: OrderDraft, last) -> ToolExec
         )
     if not offer.ready:
         return None
+    if settings.returning_instant_invoice_enabled:
+        # Подтверждением служит оплата: всё проверено — сразу счёт, а не
+        # «Оформить?» и та же сводка второй раз, уже со ссылкой.
+        offers.apply(draft, offer)
+        last.remember(draft.details)
+        await state.set_draft(peer_id, draft)
+        invoiced = await _auto_invoice(peer_id, source="invoice_returning", style="returning")
+        if invoiced is not None:
+            return invoiced
+        # Счёт сам не выставился (оплата выключена, данных не хватило) —
+        # прежний путь: предложение с «Оформить».
+        draft = await state.get_draft(peer_id)
+        if draft is None:
+            return None
     draft.details["offer"] = offer.to_details()
     # «Изменить» — прошлый пункт остаётся под номером 1: модель выберет его
     # без нового поиска, если клиент меняет только получателя.
@@ -1597,7 +1687,7 @@ async def _save_unpaid(peer_id: int, draft: OrderDraft, order_id) -> int | None:
 
 
 async def _confirm_with_payment(
-    peer_id: int, draft: OrderDraft, source: str = "invoice_confirmed"
+    peer_id: int, draft: OrderDraft, source: str = "invoice_confirmed", style: str = "summary"
 ) -> ToolExecution:
     """Подтверждение, когда оплата подключена: счёт вместо отправления.
 
@@ -1701,6 +1791,9 @@ async def _confirm_with_payment(
     await state.clear_draft(peer_id)
 
     from app.modules.orders import buttons
+
+    if style == "returning":
+        return _returning_invoice_reply(peer_id, draft, payment, getattr(order, "id", None) or order_id)
 
     buttons.stash(peer_id, buttons.pay_keyboard(payment.amount, payment.confirmation_url))
     # Не «заказ оформлен»: до оплаты клиент читал это как «всё готово».

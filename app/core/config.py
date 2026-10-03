@@ -208,6 +208,10 @@ class Settings(BaseSettings):
     vk_buttons_enabled: bool = True
     # Постоянному клиенту — одно сообщение со всем заказом вместо трёх вопросов.
     returning_one_question_enabled: bool = True
+    # Постоянному клиенту — сразу сводка со ссылкой, без «Оформить»:
+    # подтверждением служит оплата. Выключено — прежнее «Оформить как в
+    # прошлый раз?» с кнопкой.
+    returning_instant_invoice_enabled: bool = True
     # «Повторить заказ» одним нажатием: сразу счёт по прошлому заказу.
     repeat_one_tap_enabled: bool = True
 

@@ -354,6 +354,47 @@ async def _add_to_offer(peer_id: int, item: str) -> Press:
     )
 
 
+async def _on_add_more(peer_id: int, payload: dict) -> Press:
+    """«Добавить <сорт>» под сводкой со ссылкой: новая сумма — новая ссылка.
+
+    Черновика уже нет — он убран при выставлении счёта. Возвращаем его из
+    заказа тем же путём, что и правку после ссылки словами: номер тот же,
+    доставка пересчитывается по тому же пункту (вес вырос), новый счёт
+    закрывает прежнюю попытку.
+    """
+    from app.modules.catalog import service as catalog_service
+    from app.modules.orders import conversation
+
+    order_id, name = payload.get("o"), payload.get("n")
+    if not isinstance(order_id, int) or not isinstance(name, str):
+        return STALE
+    live = await orders_repository.live_invoice_order(peer_id)
+    if live is None or live.id != order_id:
+        return STALE
+    match = catalog_service.find_item(name)
+    if match is None or not match.get("in_stock", True):
+        return STALE
+    draft = await conversation._draft_for_edit(peer_id)
+    if draft is None or draft.details.get("order_id") != order_id:
+        return STALE
+    if match["name"] in {row["name"] for row in draft.items}:
+        return STALE
+    method, city = draft.delivery_method, draft.details.get("address", "")
+    await conversation._execute_add_to_order(peer_id, {"items": [{"name": match["name"], "quantity": 1}]})
+    fresh = await state.get_draft(peer_id)
+    if fresh is None or match["name"] not in {row["name"] for row in fresh.items} or not (method and city):
+        return TO_MODEL
+    pickup = "1" if fresh.details.get("shown_points") else ""
+    await conversation._execute_set_delivery_method(
+        peer_id, {"method": method, "address": city, "pickup_point": pickup}
+    )
+
+    async def not_ready() -> Press:
+        return TO_MODEL
+
+    return await _invoice_or(peer_id, not_ready)
+
+
 async def _on_offer_ok(peer_id: int, payload: dict) -> Press:
     from app.modules.orders import conversation
 
@@ -434,6 +475,7 @@ _HANDLERS = {
     "offer_ok": _on_offer_ok,
     "repeat": _on_repeat,
     "last_recipient": _on_last_recipient,
+    "add_more": _on_add_more,
     "edit": _to_model,
     "other": _to_model,
 }
