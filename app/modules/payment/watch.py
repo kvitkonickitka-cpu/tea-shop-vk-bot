@@ -36,7 +36,7 @@ from sqlalchemy import or_, select
 from app.core import worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages import client as client_messages, templates
+from app.messages import client as client_messages, keyboard as keyboards, templates
 from app.modules.dialog import history as dialog_history
 from app.modules.dialog.models import ConversationMessage
 from app.modules.orders import order_chat, repository as orders_repository, state
@@ -101,6 +101,13 @@ async def _tell_about_closed_invoices(now: datetime) -> int:
         if await payment_service.tell_about_closed_invoice(order, templates.PAYMENT_EXPIRED):
             told += 1
     return told
+
+
+def _pay_keyboard(order: Order, payment) -> dict | None:
+    """Кнопка «Оплатить» под напоминанием: ссылку текстом ВК помечает подозрительной."""
+    from app.modules.orders import buttons
+
+    return buttons.pay_keyboard(order.total, payment.confirmation_url)
 
 
 async def _dialogue_is_live(order: Order) -> bool:
@@ -197,11 +204,13 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
             return None
         if await _dialogue_is_live(order):
             return None
+        button = await keyboards.shows_link_button(order.peer_id)
         sent = await client_messages.send(
             peer_id=order.peer_id,
             ref=client_messages.order_ref(order.id),
             event_type=templates.REMINDER_2,
-            text=templates.reminder_2(order, payment.confirmation_url, deadline),
+            text=templates.reminder_2(order, payment.confirmation_url, deadline, button=button),
+            keyboard=_pay_keyboard(order, payment) if button else None,
         )
         await orders_repository.set_state(order.id, reminder_2_sent_at=now)
         return templates.REMINDER_2 if sent else None
@@ -211,11 +220,13 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
             return None
         if await _dialogue_is_live(order):
             return None
+        button = await keyboards.shows_link_button(order.peer_id)
         sent = await client_messages.send(
             peer_id=order.peer_id,
             ref=client_messages.order_ref(order.id),
             event_type=templates.REMINDER_1,
-            text=templates.reminder_1(order, payment.confirmation_url),
+            text=templates.reminder_1(order, payment.confirmation_url, button=button),
+            keyboard=_pay_keyboard(order, payment) if button else None,
         )
         await orders_repository.set_state(order.id, reminder_1_sent_at=now)
         return templates.REMINDER_1 if sent else None

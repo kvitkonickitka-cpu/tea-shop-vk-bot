@@ -29,11 +29,11 @@ INSTANT = (
     "Получатель: Иванов Иван, +79001234567, ivanov@mail.ru\n"
     "Итого: 1621 ₽\n"
     "\n"
-    "Оплатить: https://yoomoney.ru/checkout/1\n"
-    "Ссылка действует 60 минут. После оплаты пришлём чек на ivanov@mail.ru и сразу передадим заказ в доставку.\n"
+    "Оплатить — кнопкой ниже 👇\n"
+    "Кнопка оплаты действует 60 минут. После оплаты пришлём чек на ivanov@mail.ru и сразу передадим заказ в доставку.\n"
     f"Условия покупки, доставки и возврата: {settings.conditions_url}\n"
     "К нему можно добавить Да Хун Пао — 1500 ₽, до бесплатной доставки как раз не хватает 1500 ₽.\n"
-    "Оплатите по ссылке — или напишите, что поменять."
+    "Оплатите кнопкой — или напишите, что поменять."
 )
 
 
@@ -113,7 +113,8 @@ async def test_add_button_reissues_the_link(clean, world):
     text, board = world["sent"][-1]
     assert world["payments"] == [1, 2]
     assert "• Да Хун Пао × 1 — 1500 ₽" in text and "— бесплатно" in text and "Итого: 3000 ₽" in text
-    assert "Оплатить: https://yoomoney.ru/checkout/2" in text
+    assert "yoomoney" not in text
+    assert board["buttons"][0][0]["action"]["link"] == "https://yoomoney.ru/checkout/2"
     assert labels(board)[0] == ["Оплатить 3000 ₽"]
     async with clean() as session:
         rows = (await session.execute(select(OrderPayment).order_by(OrderPayment.attempt))).scalars().all()
@@ -169,7 +170,20 @@ async def test_reminders_follow_the_common_rules(clean, world, monkeypatch):
             created_at=datetime.now(timezone.utc) - timedelta(minutes=25)))
         await session.commit()
     assert await watch._remind(order, pending, later) == "payment_reminder_1"
-    assert "ждёт оплаты" in world["sent"][-1][0]
+    text, board = world["sent"][-1]
+    assert "ждёт оплаты" in text and "Оплатить — кнопкой ниже 👇" in text and "yoomoney" not in text
+    assert board["buttons"][0][0]["action"] == {
+        "type": "open_link", "label": "Оплатить 1621 ₽", "link": "https://yoomoney.ru/checkout/1"}
+
+
+async def test_link_stays_in_text_without_buttons(clean, world):
+    await past_order(clean)
+    world["script"] = [tool_use("propose_order", items=WANT)]
+    await say("хочу ещё те гуань инь", 1, info={"inline_keyboard": False, "button_actions": []})
+    text, board = world["sent"][-1]
+    assert board is None
+    assert "Оплатить: https://yoomoney.ru/checkout/1" in text and "Ссылка действует 60 минут" in text
+    assert text.endswith("Оплатите по ссылке — или напишите, что поменять.")
 
 
 async def test_flag_off_keeps_the_offer(clean, world, monkeypatch):
