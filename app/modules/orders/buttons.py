@@ -257,6 +257,13 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
         logger.info("peer_id=%s: пункт %s кнопкой не выбрался: %s", peer_id, chosen["n"], result.tool_result[:120])
         return TO_MODEL
 
+    # Получатель из заказа витрины уже показан клиенту — просим только почту.
+    candidate = fresh.details.get("storefront_recipient")
+    ask = (
+        templates.storefront_ask_email_only(candidate["name"], candidate["phone"])
+        if candidate and not fresh.details.get("recipient_name") else ""
+    )
+
     async def chosen_reply() -> Press:
         return Press(reply=templates.point_chosen(
             address=chosen["address"],
@@ -264,6 +271,7 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
             total=fresh.items_total + (fresh.delivery_cost or 0),
             ask_recipient=True,
             eta=eta.phrase(fresh.details),
+            ask=ask,
         ))
 
     return await _invoice_or(peer_id, chosen_reply)

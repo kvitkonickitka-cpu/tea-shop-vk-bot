@@ -485,15 +485,72 @@ def button_stale() -> str:
     return "Эта кнопка уже неактуальна."
 
 
-def point_chosen(*, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "") -> str:
-    """Пункт выбран кнопкой, а данных получателя ещё нет."""
+def point_chosen(
+    *, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "", ask: str = ""
+) -> str:
+    """Пункт выбран кнопкой, а данных получателя ещё нет. `ask` — своя просьба вместо общей."""
     cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
     lines = [f"Записала пункт: {address}. Доставка — {cost}, итого {amount(total)} ₽."]
     if eta:
         lines.append(f"Срок: {eta}.")
     if ask_recipient:
-        lines.append(ASK_RECIPIENT)
+        lines.append(ask or ASK_RECIPIENT)
     return "\n".join(lines)
+
+
+STOREFRONT_ORDER = "storefront_order"
+
+
+def storefront_points(
+    *,
+    order_id,
+    items: list[dict],
+    items_total,
+    shown: list[dict],
+    per_point_prices: bool,
+    delivery_cost,
+    ask: str,
+    hint: str = "",
+) -> str:
+    """Заказ из витрины: сразу пункты рядом с адресом из заказа и просьба о данных."""
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    lines = [f"Заказ №{order_id} принят: {listed} — {amount(items_total)} ₽."]
+    head = "Ближайшие пункты выдачи Ozon — дешевле всего, заберёте сами"
+    if not per_point_prices and delivery_cost is not None:
+        head += f", доставка около {amount(delivery_cost)} ₽"
+    lines.append(head + ":")
+    for point in shown:
+        price = f" — {amount(point['price'])} ₽" if per_point_prices and point.get("price") is not None else ""
+        lines.append(f"{point['n']}) {point['address']}{price}")
+    lines.append("Быстрее, но дороже — пункт выдачи СДЭК или курьер: напишите, если нужен он.")
+    lines.append(ask)
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
+
+
+STOREFRONT_ASK_ALL = "Выберите пункт и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
+
+
+def storefront_ask_email(name: str, phone: str) -> str:
+    """Получатель есть в заказе витрины — показать для проверки и попросить почту."""
+    return (
+        f"Получатель из заказа: {name}, {phone}. Выберите пункт и пришлите почту для чека — "
+        "сразу пришлю счёт. Если получатель другой — напишите ФИО, телефон и почту."
+    )
+
+
+def storefront_ask_email_only(name: str, phone: str) -> str:
+    """Пункт выбран, получатель из заказа витрины — осталась почта."""
+    return f"Пришлите почту для чека — получатель {name}, {phone}, сразу пришлю счёт."
+
+
+def storefront_ask_last(name: str, phone: str, email: str) -> str:
+    """Постоянный клиент — прошлый получатель кнопкой."""
+    return (
+        f"Выберите пункт. Получатель как в прошлый раз — {name}, {phone}, {email}? "
+        "Нажмите «Да, на эти данные» или пришлите ФИО, телефон и почту — сразу пришлю счёт."
+    )
 
 
 def taken(*, name: str, price, upsell: str = "", upsell_price=None, gap=None) -> str:

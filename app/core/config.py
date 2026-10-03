@@ -215,6 +215,9 @@ class Settings(BaseSettings):
     # Кнопки «Взять <сорт>» под консультацией: код ставит их по названиям
     # товаров в ответе модели.
     take_buttons_enabled: bool = True
+    # Заказ из витрины: сразу пункты Ozon рядом с адресом из заказа, а не
+    # вопрос «в какой город везём?».
+    storefront_direct_points_enabled: bool = True
     # «Повторить заказ» одним нажатием: сразу счёт по прошлому заказу.
     repeat_one_tap_enabled: bool = True
 

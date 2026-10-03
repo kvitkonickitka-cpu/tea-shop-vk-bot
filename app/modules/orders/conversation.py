@@ -557,6 +557,14 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         if when:
             lines.append(f"Срок доставки (называй только так): {when}")
 
+    candidate = draft.details.get("storefront_recipient")
+    if candidate and not draft.details.get("recipient_name"):
+        lines.append(
+            f"Получатель из заказа витрины (показан клиенту для проверки): {candidate['name']}, "
+            f"{candidate['phone']}. Пришлёт только почту — вызови set_recipient с этими ФИО и "
+            "телефоном и его почтой; назовёт другого получателя — запиши его."
+        )
+
     # Показываем, что записано на самом деле. Без этого модель судит по
     # собственной прошлой реплике: написала клиенту «получатель записан», а
     # инструмент не вызвала — и узнаёт об этом только при подтверждении.
