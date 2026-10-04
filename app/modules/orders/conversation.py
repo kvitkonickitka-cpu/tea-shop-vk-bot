@@ -2794,9 +2794,12 @@ async def _handle_turn(
         # и улица» и данные получателя — а по логу не было видно почему.
         # Пишем, на чём остановился ход, и один раз просим ответ словами.
         logger.warning(
-            "Ход peer_id=%s: модель не ответила словами (stop_reason=%s, инструменты=%s, %.1fс)",
-            peer_id, getattr(response, "stop_reason", None), ",".join(sorted(called)) or "—",
-            time.monotonic() - turn_started,
+            "Ход peer_id=%s: модель не ответила словами (stop_reason=%s, вывод %s токенов, блоки %s, "
+            "инструменты=%s, %.1fс)",
+            peer_id, getattr(response, "stop_reason", None),
+            getattr(getattr(response, "usage", None), "output_tokens", "?"),
+            ",".join(block.type for block in getattr(response, "content", None) or []) or "—",
+            ",".join(sorted(called)) or "—", time.monotonic() - turn_started,
         )
         if time.monotonic() - turn_started < _TURN_BUDGET_SECONDS + 10:
             text = await _ask_for_words(messages, system_prompt, response, spent)
