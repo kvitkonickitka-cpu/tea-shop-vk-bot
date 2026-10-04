@@ -146,6 +146,14 @@ def daytime(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def no_storefront_wait(monkeypatch):
+    """Источник заказа «Товаров» без адреса в бою ждёт соседей — в тестах нет."""
+    from app.modules.orders import service as orders_service
+
+    monkeypatch.setattr(orders_service, "_NO_ADDRESS_WAIT_SECONDS", 0)
+
+
 # Часы, от которых считается дата получения: воскресенье, 4 октября 2026,
 # полдень по Москве. С ними «1 день сборки + 5 дней Ozon» — всегда
 # «≈ 10 октября», а не дата, плывущая вместе с настенным календарём.

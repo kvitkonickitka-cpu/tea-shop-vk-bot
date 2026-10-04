@@ -729,6 +729,8 @@ def geo_lost() -> str:
 
 
 STOREFRONT_ORDER = "storefront_order"
+# Расчёт доставки, когда адрес пришёл вторым источником после «в какой город?».
+STOREFRONT_ORDER_ADDRESS = "storefront_order_address"
 
 
 def storefront_points(
