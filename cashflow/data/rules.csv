@@ -36,7 +36,7 @@ priority,field,match_type,value,direction,amount_min,amount_max,article_id,activ
 100,counterparty_name,contains,яндекс,out,,,cfo_out_services,true,Yandex Cloud
 101,counterparty_name,contains,anthropic,out,,,cfo_out_services,true,Claude API
 102,purpose,contains,подписка,out,,,cfo_out_services,true,
-103,purpose,contains,YANDEX7372OBLAKO,out,,,cfo_out_services,true,Карточная оплата Yandex Cloud без имени получателя в выписке
+103,purpose,contains,YANDEX*7372*OBLAKO,out,,,cfo_out_services,true,Карточная оплата Yandex Cloud без имени получателя в выписке; звёздочки — часть мерчантского дескриптора банка
 104,purpose,contains,aeza,out,,,cfo_out_services,true,Хостинг Aeza — карточная оплата без имени получателя
 110,purpose,contains,возврат покупателю,out,,,cfo_out_refunds,true,
 111,purpose,contains,возврат денежных средств,out,,,cfo_out_refunds,true,

@@ -62,7 +62,7 @@ def test_yandex_cloud_card_payment_is_services_expense():
         operation_date=date(2026, 9, 25),
         counterparty_name=None,
         counterparty_inn=None,
-        purpose="Оплата в YANDEX7372OBLAKO",
+        purpose="Оплата в YANDEX*7372*OBLAKO Moskva RUS",
     )
     rows = classify_operation(op, rules, articles, {}, [])
     assert len(rows) == 1
@@ -93,7 +93,7 @@ def test_incoming_payment_with_same_text_is_not_guessed_as_revenue():
         operation_id="in-1",
         direction="in",
         amount=Decimal("975.58"),
-        purpose="Оплата в YANDEX7372OBLAKO",
+        purpose="Оплата в YANDEX*7372*OBLAKO Moskva RUS",
     )
     rows = classify_operation(op, rules, articles, {}, [])
     assert rows[0].article_id == "tech_unclassified"
