@@ -259,6 +259,7 @@ async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
         text = templates.delivered(
             order,
             receipt_email=details.get("recipient_email", "") if settlement.was_sent(order) else "",
+            ask_feedback=not settings.feedback_ask_enabled,
             **_brewing_for(order),
         )
         event_type = templates.DELIVERED

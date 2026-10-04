@@ -73,11 +73,15 @@ async def test_delivered_with_brewing_blocks_and_guide(clean, outbox, monkeypatc
     )
 
 
-async def test_no_brewing_keeps_the_old_line(clean, outbox, monkeypatch):
+@pytest.mark.parametrize("ask_enabled", [True, False])
+async def test_no_brewing_line_depends_on_rating_ask(clean, outbox, monkeypatch, ask_enabled):
     catalog(monkeypatch)
+    monkeypatch.setattr(settings, "feedback_ask_enabled", ask_enabled)
     order = await make_order(clean, items=[{"name": "Шу Пуэр", "quantity": 1, "price": 900}], delivered_at=None)
     await delivery_events.record(order.id, delivery_events.DELIVERED, source="тест")
-    assert outbox.client[-1].endswith("вручён — спасибо, что выбрали нас! 🍵\nБудет здорово, если напишете, как вам чай.")
+    # Об оценке через три дня спросят кнопками — просить отзыв здесь незачем.
+    tail = "" if ask_enabled else "\nБудет здорово, если напишете, как вам чай."
+    assert outbox.client[-1] == f"Заказ №{order.id} вручён — спасибо, что выбрали нас! 🍵{tail}"
 
 
 async def test_brewing_flag_off(clean, outbox, monkeypatch):

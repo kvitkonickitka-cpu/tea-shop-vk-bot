@@ -828,6 +828,44 @@ def manager_question(question: str, reason: str, link: str) -> str:
 _CONSENT = {"yes": "можно", "no": "нельзя", "unknown": "не спрашивали"}
 
 
+RATINGS = {"great": "Очень понравился", "ok": "Нормально", "no": "Не моё"}
+
+
+def feedback_ask(order, single_name: str = "") -> str:
+    """Оценка через несколько дней после вручения. Кнопки — `RATINGS`."""
+    about = single_name or f"чай из заказа №{order.id}"
+    return f"Здравствуйте! Как вам {about}? 🍵"
+
+
+def rated_great() -> str:
+    return (
+        "Спасибо, очень приятно! 🙏 Напишите пару слов о чае — с вашего "
+        "разрешения опубликуем отзыв в сообществе."
+    )
+
+
+def rated_ok() -> str:
+    return "Спасибо за честность! Что было бы лучше — крепче, мягче, другой вкус? Подберу."
+
+
+def rated_no() -> str:
+    return (
+        "Жаль, что не подошёл 😔 Расскажите, что было не так — вкус, крепость, "
+        "аромат? Подберу что-то ближе к вашему вкусу."
+    )
+
+
+def manager_rating(order_id, rating: str, link: str) -> str:
+    """Оценка кнопкой: «Очень понравился» и «Не моё» — карточкой менеджеру."""
+    mark = "⭐" if rating == "great" else "🤔"
+    return (
+        f"{mark} <b>Оценка заказа №{order_id}: «{RATINGS.get(rating, rating)}»</b>\n"
+        + ("Бот спросил, что не подошло, и продолжает разговор — это не вопрос к вам, "
+           "но загляните, если нужно.\n" if rating == "no" else "")
+        + link
+    )
+
+
 def manager_feedback(order_id, text: str, consent: str, link: str) -> str:
     """4.14. Отзыв клиента. `text` уже экранирован."""
     return (

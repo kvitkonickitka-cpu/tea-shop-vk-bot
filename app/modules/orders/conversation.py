@@ -370,6 +370,13 @@ TOOLS = [
                     "type": "string",
                     "description": "Почему бот не может ответить сам (например, каких данных не хватает)",
                 },
+                "complaint": {
+                    "type": "boolean",
+                    "description": (
+                        "true — клиент жалуется на полученный заказ: брак, запах, "
+                        "не тот товар, помятая упаковка. Обычный вопрос — не передавай"
+                    ),
+                },
             },
             "required": ["question", "reason"],
         },
@@ -1911,6 +1918,12 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
 
     question_raw = tool_input.get("question", "")
     reason_raw = tool_input.get("reason", "")
+    if tool_input.get("complaint") is True:
+        # Жалоба на вручённый заказ — в этом цикле повторных касаний нет.
+        try:
+            await feedback.mark_complaint(peer_id)
+        except Exception:
+            logger.exception("Не отметили жалобу у peer_id=%s", peer_id)
     question = html.escape(question_raw)
     reason = html.escape(reason_raw)
     dialog_link = vk_client.dialog_link(peer_id)
@@ -2325,7 +2338,7 @@ async def _handle_turn(
 
     delivered = await feedback.recent_delivered(peer_id)
     if delivered is not None:
-        system_prompt += f"\n\n{feedback.prompt_for(delivered)}"
+        system_prompt += f"\n\n{feedback.prompt_for(delivered, await feedback.rating_of(delivered.id))}"
 
     tools = _tools_for_stage(
         draft.stage if draft else None,

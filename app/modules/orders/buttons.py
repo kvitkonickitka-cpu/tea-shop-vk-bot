@@ -601,6 +601,34 @@ async def _on_last_recipient(peer_id: int, payload: dict) -> Press:
     return await _invoice_or(peer_id, written)
 
 
+async def _on_rate(peer_id: int, payload: dict) -> Press:
+    """Оценка кнопкой под «Как вам чай?». Перенажатие меняет оценку."""
+    from app.modules.dialog import vk_client
+    from app.modules.orders import feedback
+    from app.messages import manager as manager_messages
+
+    rating = payload.get("r")
+    order = await orders_repository.by_id(payload.get("o")) if isinstance(payload.get("o"), int) else None
+    if (
+        rating not in templates.RATINGS
+        or order is None
+        or order.peer_id != peer_id
+        or order.payment_status != orders_repository.PAID
+        or order.delivered_at is None
+    ):
+        return STALE
+    changed = await feedback.rate(peer_id, order.id, rating, "button")
+    if changed and rating in ("great", "no"):
+        # «Не моё» — не эскалация: бот продолжает разговор сам, менеджеру — для сведения.
+        await manager_messages.notify(
+            manager_messages.FEEDBACK,
+            templates.manager_rating(order.id, rating, vk_client.dialog_link(peer_id)),
+            order_id=order.id, peer_id=peer_id,
+        )
+    reply = {"great": templates.rated_great, "ok": templates.rated_ok, "no": templates.rated_no}[rating]()
+    return Press(reply=reply)
+
+
 async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
@@ -619,6 +647,7 @@ _HANDLERS = {
     "take": _on_take,
     "add_item": _on_add_item,
     "edit": _to_model,
+    "rate": _on_rate,
     "other": _to_model,
 }
 

@@ -209,6 +209,12 @@ class Settings(BaseSettings):
     brewing_in_delivered_enabled: bool = True
     brewing_guide_url: str = ""
 
+    # Оценка кнопками через несколько дней после вручения; срок годности —
+    # сколько дней после срока ещё спрашиваем.
+    feedback_ask_enabled: bool = True
+    feedback_ask_after_days: float = 3
+    feedback_ask_shelf_days: float = 7
+
     # Повторные касания после вручения (`orders/retention.py`) — общие правила.
     # Пауза между любыми двумя продающими касаниями одному клиенту.
     marketing_min_gap_days: float = 3

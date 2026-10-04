@@ -21,16 +21,18 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
+from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages import manager as manager_messages, templates
+from app.messages import keyboard as keyboards, manager as manager_messages, templates
 from app.modules.dialog import vk_client
 from app.modules.orders import repository as orders_repository
-from app.modules.orders.models import Order, OrderFeedback
+from app.modules.orders.models import Order, OrderFeedback, OrderRating
 
 logger = logging.getLogger(__name__)
 
 FEEDBACK_WINDOW = timedelta(days=14)
 CONSENTS = ("yes", "no", "unknown")
+RATINGS = tuple(templates.RATINGS)
 
 TOOL = {
     "name": "save_feedback",
@@ -53,6 +55,14 @@ TOOL = {
                 "description": (
                     "Можно ли опубликовать отзыв в сообществе: yes — клиент "
                     "разрешил, no — отказался, unknown — ещё не спрашивали"
+                ),
+            },
+            "rating": {
+                "type": "string",
+                "enum": list(RATINGS),
+                "description": (
+                    "Оценка по смыслу отзыва: great — очень понравился, ok — "
+                    "нормально, no — не его вкус. Не уверена — не передавай"
                 ),
             },
         },
@@ -94,12 +104,133 @@ async def recent_delivered(peer_id: int, now: datetime | None = None) -> Order |
         ).scalars().first()
 
 
-def prompt_for(order: Order) -> str:
+_RATED = {
+    "great": "Клиент оценил заказ кнопкой «Очень понравился» — попроси пару слов для отзыва.",
+    "ok": (
+        "Клиент оценил заказ кнопкой «Нормально». Его ответ — консультация: "
+        "подбери чай под то, что было бы лучше (крепче, мягче, другой вкус), "
+        "опираясь на его покупки."
+    ),
+    "no": (
+        "Клиент оценил заказ кнопкой «Не моё». Выясни, что не подошло, и предложи "
+        "другой сорт. Если он жалуется на качество (брак, запах, не тот товар) — "
+        "это жалоба: escalate_to_manager с complaint=true."
+    ),
+}
+
+
+def prompt_for(order: Order, rating: str | None = None) -> str:
     """Инструкция 1.9 и номер заказа, который модель передаст в инструмент."""
     return (
         _PROMPT.format(composition=templates.composition(order.items or []))
         + f" Номер этого заказа для save_feedback: {order.id}."
+        + (f" {_RATED[rating]}" if rating in _RATED else "")
     )
+
+
+async def rating_of(order_id: int) -> str | None:
+    try:
+        async with get_session_factory()() as session:
+            row = await session.get(OrderRating, order_id)
+    except Exception:
+        return None
+    return row.rating if row is not None else None
+
+
+async def rate(peer_id: int, order_id: int, rating: str, source: str, now: datetime | None = None) -> bool:
+    """Записать оценку заказа. True — она новая или изменилась."""
+    now = now or datetime.now(timezone.utc)
+    async with get_session_factory()() as session:
+        previous = await session.get(OrderRating, order_id)
+        before = previous.rating if previous is not None else None
+        statement = insert(OrderRating).values(
+            order_id=order_id, peer_id=peer_id, rating=rating, source=source,
+        ).on_conflict_do_update(
+            index_elements=[OrderRating.order_id],
+            set_={"rating": rating, "source": source, "updated_at": now},
+        )
+        await session.execute(statement)
+        await session.commit()
+    logger.info("Оценка заказа %s: %s (%s)", order_id, rating, source)
+    return before != rating
+
+
+async def mark_complaint(peer_id: int, now: datetime | None = None) -> int | None:
+    """Жалоба на недавно вручённый заказ — в этом цикле повторных касаний нет."""
+    order = await recent_delivered(peer_id, now)
+    if order is None:
+        return None
+    async with get_session_factory()() as session:
+        fresh = await session.get(Order, order.id)
+        details = dict(fresh.details or {})
+        details["complaint_at"] = (now or datetime.now(timezone.utc)).isoformat()
+        fresh.details = details
+        await session.commit()
+    logger.info("Заказ %s: жалоба клиента", order.id)
+    return order.id
+
+
+# --- оценка кнопками через несколько дней после вручения -------------------
+
+
+def rate_keyboard(order_id: int) -> dict | None:
+    return keyboards.inline([[
+        keyboards.text_button(
+            label, {"a": "rate", "o": order_id, "r": code, "t": templates.FEEDBACK_ASK},
+            "positive" if code == "great" else "secondary",
+        )
+        for code, label in templates.RATINGS.items()
+    ]])
+
+
+async def ask_candidates(now: datetime):
+    """Заказы, по которым пора спросить «Как вам чай?»."""
+    from app.modules.orders import retention
+
+    after = timedelta(days=settings.feedback_ask_after_days)
+    shelf = timedelta(days=settings.feedback_ask_shelf_days)
+    async with get_session_factory()() as session:
+        orders = (
+            await session.execute(
+                select(Order).where(
+                    Order.payment_status == orders_repository.PAID,
+                    Order.delivered_at <= now - after,
+                    Order.delivered_at >= now - after - shelf,
+                    Order.not_delivered_at.is_(None),
+                    Order.status.not_in(("refunded", orders_repository.CANCELED)),
+                )
+            )
+        ).scalars().all()
+        reviewed = set((await session.execute(
+            select(OrderFeedback.order_id).where(OrderFeedback.order_id.in_([o.id for o in orders]))
+        )).scalars().all()) if orders else set()
+        rated = set((await session.execute(
+            select(OrderRating.order_id).where(OrderRating.order_id.in_([o.id for o in orders]))
+        )).scalars().all()) if orders else set()
+
+    touches = []
+    for order in orders:
+        # Отзыв или оценка уже есть — спрашивать нечего.
+        if order.id in reviewed or order.id in rated:
+            continue
+        if await retention.already(order.id, templates.FEEDBACK_ASK):
+            continue
+        due = retention.aware(order.delivered_at) + after
+        touches.append(retention.Touch(
+            kind=templates.FEEDBACK_ASK, peer_id=order.peer_id, order=order,
+            due=due, expires=due + shelf, build=_ask_builder(order),
+        ))
+    return touches
+
+
+def _ask_builder(order: Order):
+    from app.modules.orders import retention, take
+
+    async def build():
+        names = {item.get("name") for item in order.items or [] if item.get("name")}
+        single = take.display_name(next(iter(names))) if len(names) == 1 else ""
+        return retention.Message(templates.feedback_ask(order, single), rate_keyboard(order.id))
+    return build
 
 
 async def save(peer_id: int, tool_input: dict, now: datetime | None = None) -> str:
@@ -137,6 +268,10 @@ async def save(peer_id: int, tool_input: dict, now: datetime | None = None) -> s
         )
         await session.execute(statement)
         await session.commit()
+
+    rating = tool_input.get("rating")
+    if rating in RATINGS:
+        await rate(peer_id, order.id, rating, "text", now)
 
     if before is None or before != consent:
         await manager_messages.notify(
