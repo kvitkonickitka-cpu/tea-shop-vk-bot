@@ -22,8 +22,8 @@ from app.modules.orders import (
     delivery_watch,
     draft_nudge,
     order_chat,
-    repeat_nudge,
     repository as orders_repository,
+    retention,
 )
 from app.modules.payment import service as payment_service, settlement
 from app.modules.payment import watch as payment_watch
@@ -79,6 +79,13 @@ async def _authorized(request: Request, body: str | None = None) -> bool:
         # Starlette тело кэширует, так что повторное чтение безопасно.
         body = (await request.body()).decode("utf-8", errors="replace")
     return bool(body) and expected in body
+
+
+async def _retention_summary() -> dict:
+    result = await retention.check()
+    decisions = result.pop("decisions", [])
+    result["отложено"] = sum(1 for d in decisions if d.outcome == "blocked")
+    return result
 
 
 async def _run_task(name: str, coro) -> dict:
@@ -142,7 +149,9 @@ async def _run_scheduled() -> dict:
     result["draft_nudges"] = await _run_task(
         "Брошенные черновики", draft_nudge.check_drafts()
     )
-    result["repeat_nudges"] = await _run_task("Повторить заказ", repeat_nudge.check())
+    # Повторные касания после вручения: оценка, «Повторить», второй шанс,
+    # реактивация — общим фильтром и по одному на клиента.
+    result["retention"] = await _run_task("Повторные касания", _retention_summary())
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.
@@ -268,6 +277,45 @@ _MANUAL_EVENTS = {
 # остальные команды заказа, объявленные после него.
 @router.post("/internal/orders/{order_id}/handed-over")
 @router.post("/internal/orders/{order_id}/at-pickup")
+@router.post("/internal/retention/check")
+async def retention_check(request: Request):
+    """Повторные касания для одного клиента — что ушло бы и почему нет.
+
+        scripts/api.sh 'retention/check?peer_id=123'                  что сейчас
+        scripts/api.sh 'retention/check?peer_id=123&days=21'          как через 21 день
+        scripts/api.sh 'retention/check?peer_id=123&days=21&send=1'   и отправить
+
+    `days` сдвигает «сейчас» вперёд: так цепочку оценка → «Повторить» →
+    второй шанс → реактивация можно пройти на своём аккаунте без ожидания.
+    Отправка со сдвигом пишет в журнал сдвинутое время — паузы между
+    касаниями считаются от него, как если бы дни и правда прошли.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from datetime import timedelta
+
+    params = request.query_params
+    try:
+        peer_id = int(params.get("peer_id", ""))
+    except ValueError:
+        return {"error": "нужен peer_id клиента"}
+    days = float(params.get("days") or 0)
+    send = params.get("send") in ("1", "true", "да")
+    now = datetime.now(timezone.utc) + timedelta(days=days)
+    result = await retention.check(now, peer_id=peer_id, dry=not send)
+    blocker = await retention.blocker(peer_id, now)
+    return {
+        "сейчас (МСК)": worktime.to_msk(now).strftime("%d.%m.%Y %H:%M"),
+        "общий фильтр": blocker or "пропускает",
+        "решения": [
+            f"{retention.NAMES[d.kind]} по заказу №{d.order_id}: {d.outcome}"
+            + (f" — {d.reason}" if d.reason else "")
+            for d in result.get("decisions", [])
+        ] or [result.get("skipped") or "созревших касаний нет"],
+        "отправлено": result.get("sent", 0),
+    }
+
+
 @router.post("/internal/orders/{order_id}/delivered")
 @router.post("/internal/orders/{order_id}/not-delivered")
 async def mark_delivery_event(order_id: int, request: Request):

@@ -199,6 +199,17 @@ class Settings(BaseSettings):
     # заказе, но не дольше потолка.
     repeat_nudge_days_per_pack: int = 21
     repeat_nudge_max_days: int = 60
+    # Срок годности «Повторить заказ?»: столько дней после срока ещё досылаем.
+    repeat_nudge_shelf_days: int = 7
+    repeat_nudge_enabled: bool = True
+
+    # Повторные касания после вручения (`orders/retention.py`) — общие правила.
+    # Пауза между любыми двумя продающими касаниями одному клиенту.
+    marketing_min_gap_days: float = 3
+    # Клиент писал недавно — разговор идёт, касание будет не к месту.
+    marketing_quiet_after_client_hours: float = 12
+    # Менеджер писал в диалог — его разговор, бот не встревает.
+    marketing_quiet_after_manager_hours: float = 48
 
     # Счёт без отдельного «Оформляем?»: как только заказ полный, код сам
     # выставляет счёт и присылает сводку со ссылкой. Подтверждение — оплата.

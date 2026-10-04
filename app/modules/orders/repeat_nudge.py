@@ -4,18 +4,15 @@
 не дольше `repeat_nudge_max_days`. Две пачки по 100 г пьются вдвое дольше
 одной, а через три месяца напоминание уже не про этот заказ.
 
-Пишем, только если всё сходится:
+Здесь только то, что касается самого «Повторить»: заказ оплачен, вручён,
+не возвращён и не отменён, и с тех пор у клиента нет нового оплаченного
+заказа — он и так покупает. Остальные правила (отписка, черновик, вопрос
+менеджеру, окно 10–21, пауза между касаниями) общие для всех повторных
+касаний и живут в `retention.blocker`.
 
-- заказ оплачен, вручён, не возвращён и не отменён;
-- с тех пор у клиента нет нового оплаченного заказа и нет черновика —
-  он и так покупает, подталкивать незачем;
-- вопрос у менеджера не открыт: разговор ведёт человек;
-- клиент не отписывался;
-- окно продающих сообщений — 10:00–21:00 по Москве.
-
-Один раз на заказ — журналом отправок. Если срок пришёлся на ночь или на
-отписку, которую потом отменили, догоняем не дольше `_LATE_LIMIT`: через
-месяц после срока «чай подходит к концу» уже неправда.
+Один раз на заказ — журналом отправок. Срок годности —
+`repeat_nudge_shelf_days`: через неделю после срока «чай подходит к концу»
+уже неправда.
 
 Сообщение попадает в историю диалога, так что «да» в ответ модель
 понимает как «повторить»: оформляет тот же состав через propose_order, а
@@ -31,14 +28,11 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages import client as client_messages, keyboard as keyboards, marketing, templates
-from app.modules.dialog import escalation_state
-from app.modules.orders import repository as orders_repository, state
+from app.messages import keyboard as keyboards, templates
+from app.modules.orders import repository as orders_repository, retention
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
-
-_LATE_LIMIT = timedelta(days=7)
 
 
 def delay_for(order: Order) -> timedelta:
@@ -71,62 +65,61 @@ def _keyboard(order_id: int) -> dict | None:
     """«Повторить» — сразу счёт; «Выбрать другое» — разговор с моделью."""
     if not settings.repeat_one_tap_enabled:
         return None
+    touch = templates.REPEAT_NUDGE
     return keyboards.inline([[
-        keyboards.text_button("Повторить", {"a": "repeat", "o": order_id}, "positive"),
-        keyboards.text_button("Выбрать другое", {"a": "other", "o": order_id}),
+        keyboards.text_button("Повторить", {"a": "repeat", "o": order_id, "t": touch}, "positive"),
+        keyboards.text_button("Выбрать другое", {"a": "other", "o": order_id, "t": touch}),
     ]])
 
 
-async def check(now: datetime | None = None) -> dict:
-    now = now or datetime.now(timezone.utc)
-    if not marketing.in_window(now):
-        return {"sent": 0, "skipped": "вне окна продающих сообщений"}
-    try:
-        session_factory = get_session_factory()
-    except RuntimeError:
-        return {"sent": 0, "skipped": "нет базы"}
+async def due_at(session, order: Order) -> datetime:
+    """Когда предлагать повторить."""
+    return _aware(order.delivered_at) + delay_for(order)
 
-    oldest = now - timedelta(days=settings.repeat_nudge_max_days) - _LATE_LIMIT
-    due = []
-    async with session_factory() as session:
-        orders = (
-            await session.execute(
-                select(Order).where(
-                    Order.payment_status == orders_repository.PAID,
-                    Order.delivered_at.is_not(None),
-                    Order.delivered_at > oldest,
-                    Order.not_delivered_at.is_(None),
-                    Order.status.not_in(("refunded", orders_repository.CANCELED)),
-                )
+
+async def delivered_orders(session, now: datetime, max_age: timedelta):
+    """Оплаченные, вручённые, не возвращённые заказы не старше `max_age`."""
+    return (
+        await session.execute(
+            select(Order).where(
+                Order.payment_status == orders_repository.PAID,
+                Order.delivered_at.is_not(None),
+                Order.delivered_at > now - max_age,
+                Order.not_delivered_at.is_(None),
+                Order.status.not_in(("refunded", orders_repository.CANCELED)),
             )
-        ).scalars().all()
-        for order in orders:
-            moment = _aware(order.delivered_at) + delay_for(order)
-            if not moment <= now <= moment + _LATE_LIMIT:
+        )
+    ).scalars().all()
+
+
+async def candidates(now: datetime) -> list[retention.Touch]:
+    shelf = timedelta(days=settings.repeat_nudge_shelf_days)
+    touches = []
+    async with get_session_factory()() as session:
+        for order in await delivered_orders(session, now, timedelta(days=settings.repeat_nudge_max_days) + shelf):
+            due = await due_at(session, order)
+            if not retention.ripe(due, due + shelf, now):
                 continue
             if await _bought_since(session, order):
                 continue
-            due.append(order)
+            if await retention.already(order.id, templates.REPEAT_NUDGE):
+                continue
+            touches.append(retention.Touch(
+                kind=templates.REPEAT_NUDGE, peer_id=order.peer_id, order=order,
+                due=due, expires=due + shelf, build=_builder(order, now),
+            ))
+    return touches
 
-    sent = 0
-    for order in due:
-        ref = client_messages.order_ref(order.id)
-        if await client_messages.already_sent(ref, templates.REPEAT_NUDGE):
-            continue
-        if await state.get_draft(order.peer_id) is not None:
-            continue
-        if await escalation_state.is_open(order.peer_id):
-            continue
-        if await marketing.is_opted_out(order.peer_id):
-            continue
+
+def _builder(order: Order, now: datetime):
+    async def build() -> retention.Message:
         weeks = max(1, round((now - _aware(order.delivered_at)).days / 7))
-        if await client_messages.send(
-            peer_id=order.peer_id,
-            ref=ref,
-            event_type=templates.REPEAT_NUDGE,
-            text=templates.repeat_nudge(order.items or [], weeks=weeks),
-            keyboard=_keyboard(order.id),
-        ):
-            sent += 1
-            logger.info("Заказ %s: предложили повторить", order.id)
-    return {"due": len(due), "sent": sent}
+        return retention.Message(
+            templates.repeat_nudge(order.items or [], weeks=weeks), _keyboard(order.id)
+        )
+    return build
+
+
+async def check(now: datetime | None = None) -> dict:
+    """Только «Повторить заказ?» — по общим правилам повторных касаний."""
+    return await retention.check(now, kinds={templates.REPEAT_NUDGE})

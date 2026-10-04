@@ -186,8 +186,13 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
 
     # Остальные счёта по этому заказу больше не наши: пометим закрытыми,
     # чтобы оплата по ним попала в ветку возврата, а не завела вторую
-    # посылку. Попытку отмены ЮKassa для pending обычно отклоняет.
+    # посылку.
     await _close_other_payments(order.id, payment.id)
+
+    # Заказ в течение недели после повторного касания — засчитываем касанию.
+    from app.modules.orders import retention
+
+    await retention.note_order(order.peer_id, order.id)
 
     logger.info(
         "Заказ %s оплачен%s, заводим отправление",

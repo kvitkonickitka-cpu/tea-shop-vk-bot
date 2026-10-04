@@ -359,6 +359,10 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     from app.messages import keyboard as keyboards
 
     await keyboards.remember_client(peer_id, client_info)
+    # Написал сам — сообщения до него доходят, отметку «недостижим» снимаем.
+    from app.messages import marketing
+
+    await marketing.mark_reachable(peer_id)
 
     try:
         get_session_factory()

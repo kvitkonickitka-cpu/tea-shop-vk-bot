@@ -80,7 +80,7 @@ async def _claim(ref: str, event_type: str, peer_id: int) -> bool:
     return claimed is not None
 
 
-async def _mark(ref: str, event_type: str, *, sent: bool, error: str = "") -> None:
+async def _mark(ref: str, event_type: str, *, sent: bool, error: str = "", at=None) -> None:
     try:
         session_factory = get_session_factory()
     except RuntimeError:
@@ -94,7 +94,7 @@ async def _mark(ref: str, event_type: str, *, sent: bool, error: str = "") -> No
             return
         row.attempts = (row.attempts or 0) + 1
         if sent:
-            row.sent_at = datetime.now(timezone.utc)
+            row.sent_at = at or datetime.now(timezone.utc)
             row.last_error = None
         else:
             row.last_error = error[:500]
@@ -109,11 +109,14 @@ async def send(
     text: str,
     on_failure=None,
     keyboard: dict | None = None,
+    at=None,
 ) -> bool:
     """Сказать клиенту один раз. True — сообщение ушло.
 
     `on_failure` вызывается с текстом ошибки, когда ВК отказал: так
     вызывающий сообщает менеджеру, что клиент новость не получил.
+    `at` — время отправки для журнала: повторные касания считают паузы от
+    него, и проверка сроков в тестах подменяет его вместе с «сейчас».
     """
     if not await _claim(ref, event_type, peer_id):
         logger.info("Про «%s» по %s клиенту уже писали", event_type, ref)
@@ -128,11 +131,17 @@ async def send(
     except Exception as error:
         logger.exception("Не отправили клиенту «%s» по %s", event_type, ref)
         await _mark(ref, event_type, sent=False, error=f"{type(error).__name__}: {error}")
+        if getattr(error, "code", None) in vk_client.UNREACHABLE_CODES:
+            # Клиент запретил сообщения: продающие касания ему больше не
+            # шлём, пока не напишет сам. Сообщения по заказам пробуем как раньше.
+            from app.messages import marketing
+
+            await marketing.mark_unreachable(peer_id)
         if on_failure is not None:
             await on_failure(f"{type(error).__name__}: {str(error)[:300]}")
         return False
 
-    await _mark(ref, event_type, sent=True)
+    await _mark(ref, event_type, sent=True, at=at)
 
     # В историю пишем только отправленное: иначе модель будет считать, что
     # клиент прочитал то, чего не получил.

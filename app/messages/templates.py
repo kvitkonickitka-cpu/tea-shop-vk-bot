@@ -43,6 +43,10 @@ DRAFT_NUDGE = "draft_nudge_sent"
 AT_PICKUP = "at_pickup_point"
 PICKUP_EXPIRING = "pickup_expiring"
 REPEAT_NUDGE = "repeat_nudge"
+# Повторные касания после вручения (кроме «Повторить» — оно выше).
+FEEDBACK_ASK = "feedback_ask"
+SECOND_TOUCH = "second_touch"
+REACTIVATION = "reactivation"
 
 
 def _amount_value(value):

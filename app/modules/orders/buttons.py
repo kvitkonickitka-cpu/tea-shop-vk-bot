@@ -191,7 +191,10 @@ async def handle(peer_id: int, message: dict) -> Press:
     if handler is None:
         return TO_MODEL
     order_id = payload.get("o") if isinstance(payload.get("o"), int) else None
-    await funnel.record(peer_id, f"button:{action}", order_id=order_id, version=payload.get("v"))
+    await funnel.record(
+        peer_id, f"button:{action}", order_id=order_id, version=payload.get("v"),
+        touch=payload.get("t") if isinstance(payload.get("t"), str) else None,
+    )
     # Под ответом на нажатие свои кнопки — набор «Взять» под прошлым
     # сообщением больше не последний.
     await take.remember_set(peer_id, None)

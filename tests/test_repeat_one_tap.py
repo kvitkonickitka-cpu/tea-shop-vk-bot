@@ -52,7 +52,7 @@ async def test_repeat_button_sends_invoice_with_current_prices(clean, world, mon
     assert board["buttons"][0][0]["action"]["label"] == "Оплатить 1721 ₽"
     async with clean() as session:
         events = (await session.execute(select(FunnelEvent.event).order_by(FunnelEvent.id))).scalars().all()
-    assert events == ["button:repeat", "invoice_repeat"]
+    assert events == ["touch:repeat_nudge", "button:repeat", "invoice_repeat"]
 
 
 async def test_missing_item_hands_over_to_model(clean, world, monkeypatch):

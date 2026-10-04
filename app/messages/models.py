@@ -90,6 +90,10 @@ class ClientPreference(Base):
     # Названия товаров на кнопках «Взять»/«Добавить» под последним
     # сообщением бота — чтобы не ставить тот же набор под каждой репликой.
     last_offer_buttons: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # ВК ответил, что сообщение клиенту не доставить (запретил сообщения
+    # сообщества). Продающих касаний такому клиенту нет, пока он сам не
+    # напишет снова — тогда отметка снимается.
+    unreachable_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FunnelEvent(Base):
