@@ -67,6 +67,8 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
         draft.delivery_method in ("ozon_pvz", "cdek_pvz", "cdek_courier")
         and not details.get("recipient_name")
         and not details.get("email_suggestion")
+        # Получатель из формы «Товаров» — другой человек: прошлого не предлагаем.
+        and not details.get("storefront_recipient")
     ):
         from app.modules.orders import repeat_delivery
 

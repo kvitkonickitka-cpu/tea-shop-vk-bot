@@ -102,7 +102,16 @@ async def prepare(
                 offer.problems.append("прошлый пункт выдачи неизвестен")
         except Exception as error:
             logger.info("Прошлый пункт %s недоступен: %s", delivery.point_id or delivery.method, type(error).__name__)
-            offer.problems.append(f"прошлый пункт «{delivery.place}» сейчас не принимает посылки")
+            if _is_timeout(error):
+                # 04.10.2026: Ozon не ответил за отведённое время, а клиент
+                # прочитал «пункт не принимает посылки» — и через минуту тот же
+                # пункт посчитался. Таймаут — не отказ пункта.
+                offer.problems.append(
+                    f"доставку в прошлый пункт «{delivery.place}» сейчас не посчитали — перевозчик "
+                    "не ответил вовремя; спроси, везти ли туда же (посчитаем ещё раз) или в другой пункт"
+                )
+            else:
+                offer.problems.append(f"прошлый пункт «{delivery.place}» сейчас не принимает посылки")
         offer.point_ok = offer.carrier_cost is not None
         offer.quoted_at = time.time()
     else:
@@ -119,6 +128,16 @@ async def prepare(
     else:
         offer.problems.append("прошлого получателя нет")
     return offer
+
+
+def _is_timeout(error: Exception) -> bool:
+    import asyncio
+
+    import httpx
+
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+        return True
+    return "timeout" in str(error).casefold()
 
 
 def client_delivery_cost(draft: OrderDraft, offer: Offer) -> float:

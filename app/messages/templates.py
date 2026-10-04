@@ -618,7 +618,11 @@ def delivery_options(*, base_name: str, base_price, base_when: str, fast_name: s
         line = f"{base_name} — {amount(base_price)} ₽{when}"
     if fast_name:
         fast = f", {fast_when}" if fast_when else ""
-        price = f"с доплатой {amount(fast_price)} ₽" if free else f"{amount(fast_price)} ₽"
+        if free:
+            # Разница в пределах «ничьей» — быстрый тоже бесплатный.
+            price = f"с доплатой {amount(fast_price)} ₽" if fast_price else "бесплатно"
+        else:
+            price = f"{amount(fast_price)} ₽"
         line += f". Нужно быстрее — {fast_name} {price}{fast}"
     return line
 
@@ -875,6 +879,18 @@ def storefront_faster_button(carrier: str) -> str:
 
 def storefront_cheaper_button(carrier: str) -> str:
     return f"Дешевле — {carrier}"
+
+
+def storefront_canceled(order_id) -> str:
+    """Клиент отменил заказ из «Товаров» до счёта."""
+    return (
+        f"Отменила заказ №{order_id} — оплачивать его не нужно. В разделе «Заказы» ВКонтакте "
+        "его закроет менеджер. Захотите заказать снова — напишите 🙂"
+    )
+
+
+def manager_storefront_canceled() -> str:
+    return "Клиент отменил заказ до оплаты. Отмените его в разделе «Заказы» сообщества ВК."
 
 
 def carrier_button(option: dict) -> str:

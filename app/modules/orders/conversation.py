@@ -1262,6 +1262,34 @@ _ASK_RECIPIENT = (
 )
 
 
+_SAY_IT = (
+    "(Служебное: ответь клиенту словами — что сделано по его сообщению и что нужно от него "
+    "дальше. Инструменты больше не вызывай.)"
+)
+
+
+async def _ask_for_words(messages: list[dict], system_prompt: str, response, spent) -> str | None:
+    """Ещё один запрос без инструментов, когда модель промолчала. None — снова молчание."""
+    history = list(messages)
+    content = [block for block in getattr(response, "content", None) or [] if block.type == "text"]
+    if content:
+        history.append({"role": "assistant", "content": content})
+    last = history[-1] if history else None
+    if last is not None and last.get("role") == "user":
+        # Два сообщения клиента подряд API склеивает, но надёжнее дописать
+        # служебную строку в то же сообщение.
+        body = last["content"] if isinstance(last["content"], list) else [{"type": "text", "text": last["content"]}]
+        history[-1] = {"role": "user", "content": [*body, {"type": "text", "text": _SAY_IT}]}
+    else:
+        history.append({"role": "user", "content": _SAY_IT})
+    try:
+        again = await spent.claude(claude_client.converse(history, system_prompt, []))
+    except Exception:
+        logger.exception("Повторный запрос ответа словами не прошёл")
+        return None
+    return claude_client.extract_text(again, default="").strip() or None
+
+
 def _single_on_street(narrowed: bool, total: int, found: list) -> bool:
     """На названной улице ровно один пункт — и правило включено."""
     return bool(settings.single_point_instant_enabled and narrowed and total == 1 and len(found) == 1)
@@ -2285,6 +2313,12 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
             "заказать снова — напишите 🙂"
         )
         return ToolExecution(reply, client_reply=reply)
+    if outcome.draft_dropped and outcome.vk_order_id:
+        # Заказ из «Товаров» живёт и в разделе «Заказы» сообщества: там его
+        # снимает менеджер — бот статусы заказов ВК не меняет.
+        await orders_service.tell_manager_canceled(outcome.vk_order_id, peer_id)
+        reply = templates.storefront_canceled(outcome.vk_order_id)
+        return ToolExecution(reply, client_reply=reply)
     if outcome.draft_dropped:
         reply = "Хорошо, заказ не оформляю. Если передумаете — напишите 🙂"
         return ToolExecution(reply, client_reply=reply)
@@ -2753,7 +2787,24 @@ async def _handle_turn(
         if last_round:
             break
 
-    text = claude_client.extract_text(response, default=_NO_TEXT_FALLBACK)
+    text = claude_client.extract_text(response, default="").strip() or None
+    if text is None:
+        # Модель вернула ответ без слов. 04.10.2026 клиент трижды за вечер
+        # прочитал «Не уверена, что правильно вас поняла» на обычные «город
+        # и улица» и данные получателя — а по логу не было видно почему.
+        # Пишем, на чём остановился ход, и один раз просим ответ словами.
+        logger.warning(
+            "Ход peer_id=%s: модель не ответила словами (stop_reason=%s, вывод %s токенов, блоки %s, "
+            "инструменты=%s, %.1fс)",
+            peer_id, getattr(response, "stop_reason", None),
+            getattr(getattr(response, "usage", None), "output_tokens", "?"),
+            ",".join(block.type for block in getattr(response, "content", None) or []) or "—",
+            ",".join(sorted(called)) or "—", time.monotonic() - turn_started,
+        )
+        if time.monotonic() - turn_started < _TURN_BUDGET_SECONDS + 10:
+            text = await _ask_for_words(messages, system_prompt, response, spent)
+    if text is None:
+        text = _NO_TEXT_FALLBACK
     reply = await _with_buttons(
         peer_id, plain_text(text),
         consult=text != _NO_TEXT_FALLBACK and not (called & _NO_TAKE_AFTER),

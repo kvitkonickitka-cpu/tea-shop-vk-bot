@@ -68,9 +68,10 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
     system_prompt, messages = guard("ответ без инструментов", system_prompt, [{"role": "user", "content": user_message}])
     response = await _client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=1024,
+        max_tokens=settings.anthropic_max_tokens,
         system=system_prompt,
         messages=messages,
+        **_effort(),
     )
     for block in response.content:
         if block.type == "text":
@@ -85,9 +86,12 @@ async def generate_dialog_report(transcript: str) -> str:
     system, messages = guard("мини-отчёт по диалогу", _DIALOG_REPORT_PROMPT, [{"role": "user", "content": transcript}])
     response = await _client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=400,
+        # Отчёт короткий, но размышление идёт в тот же лимит: при 400 его
+        # могло не хватить даже на одну фразу.
+        max_tokens=2000,
         system=system,
         messages=messages,
+        output_config={"effort": "low"},
     )
     for block in response.content:
         if block.type == "text":
@@ -102,13 +106,24 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict]):
     # одно действие.
     extra = {"tools": tools} if tools else {}
     system_prompt, messages = guard("ход диалога", system_prompt, messages)
-    return await _client.messages.create(
+    response = await _client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=1024,
+        max_tokens=settings.anthropic_max_tokens,
         system=system_prompt,
         messages=messages,
+        **_effort(),
         **extra,
     )
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        logger.warning("Claude: ход упёрся в max_tokens (%s, вывод %s токенов)",
+                       settings.anthropic_max_tokens, getattr(response.usage, "output_tokens", "?"))
+    return response
+
+
+def _effort() -> dict:
+    """Глубина размышления — параметром, если задана."""
+    effort = (settings.anthropic_effort or "").strip()
+    return {"output_config": {"effort": effort}} if effort else {}
 
 
 def extract_text(response, default: str | None = None) -> str:

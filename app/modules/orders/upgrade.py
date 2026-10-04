@@ -80,12 +80,31 @@ def _last_date(row: dict) -> date | None:
     return span[1] if span else None
 
 
+def _tie() -> float:
+    return max(0.0, float(settings.delivery_price_tie_rub))
+
+
+def _extra(cost: float, base_cost: float) -> float:
+    """Разница с дешёвым вариантом; в пределах «ничьей» — ноль.
+
+    Живой расчёт 04.10.2026: Ozon 119,63 ₽ и СДЭК 117 ₽ до Краснодара — и
+    клиенту выше порога выставилась «доплата 2,63 ₽». Разница в пару рублей
+    — это одна цена, а не повод для доплаты.
+    """
+    diff = round(float(cost) - float(base_cost), 2)
+    return 0.0 if diff <= _tie() else diff
+
+
 def cheapest(rows: list[dict]) -> dict | None:
-    """Самый дешёвый; при равной цене — Ozon, потом кто раньше привезёт."""
+    """Самый дешёвый; при равной цене (в пределах DELIVERY_PRICE_TIE_RUB) — Ozon.
+
+    Потом — кто раньше привезёт.
+    """
     if not rows:
         return None
-    return min(rows, key=lambda r: (round(r["cost"], 2), r["carrier"] != "ozon",
-                                    _last_date(r) or date.max))
+    low = min(round(r["cost"], 2) for r in rows)
+    near = [r for r in rows if round(r["cost"], 2) - low <= _tie()]
+    return min(near, key=lambda r: (r["carrier"] != "ozon", round(r["cost"], 2), _last_date(r) or date.max))
 
 
 def faster(rows: list[dict]) -> dict | None:
@@ -120,12 +139,12 @@ def surcharge(details: dict, method: str | None, real_cost: float) -> float | No
     base = cheapest(rows)
     if method == "cdek_courier":
         # Курьер дороже любого пункта: доплата — от самого дешёвого пункта.
-        return max(0.0, round(float(real_cost) - base["cost"], 2))
+        return _extra(real_cost, base["cost"])
     if len(rows) < 2:
         return None
     if base["carrier"] == mine:
         return 0.0
-    return max(0.0, round(float(real_cost) - base["cost"], 2))
+    return _extra(real_cost, base["cost"])
 
 
 def is_free() -> bool:
@@ -143,7 +162,7 @@ def client_price(row: dict, base: dict | None, free: bool) -> float:
         return row["cost"]
     if base is None or row is base or row["carrier"] == base["carrier"]:
         return 0.0
-    return max(0.0, round(row["cost"] - base["cost"], 2))
+    return _extra(row["cost"], base["cost"])
 
 
 async def quote_city(draft, city: str, street: str = "", only: set[str] | None = None) -> list[dict]:
@@ -254,16 +273,22 @@ def options_note(draft) -> str:
         fast_name=fast["name"] if fast else "", fast_price=client_price(fast, base, free) if fast else 0,
         fast_when=eta.receive(fast["eta"]) if fast else "", free=free,
     )
-    if mine == base["carrier"]:
+    own = own_quote(draft)
+    gap = round(own["cost"] - base["cost"], 2) if own else 0
+    if mine == base["carrier"] or gap <= _tie():
+        other = fast if fast and fast["carrier"] != mine else None
         return (
             f"Варианты доставки до города — назови клиенту этой фразой, дешёвый первым: «{line}». "
-            + (f"Выберет {fast['name']} — вызови set_delivery_method с method={fast['method']}. " if fast else "")
+            + (f"Выберет {other['name']} — вызови set_delivery_method с method={other['method']}. " if other else "")
         )
-    gap = round(own_quote(draft)["cost"] - base["cost"], 2) if own_quote(draft) else 0
+    # Дешевле другой перевозчик, а посчитан этот — чаще всего потому, что
+    # модель по привычке начала с Ozon. 04.10.2026 клиент выше порога читал
+    # «доплата за Ozon», хотя СДЭК был и бесплатным, и быстрее.
     return (
-        f"Клиент выбрал {_NAMES[mine]}, а дешевле {base['name']} — на {templates.amount(gap)} ₽ "
-        f"({eta.receive(base['eta']) or 'срок не известен'}). Скажи об этом одной фразой, решает клиент; "
-        f"захочет {base['name']} — вызови set_delivery_method с method={base['method']}. "
+        f"Дешевле {base['name']} — на {templates.amount(gap)} ₽: «{line}». Если клиент сам не просил "
+        f"{_NAMES[mine]}, назови первым {base['name']} этой фразой и сразу вызови set_delivery_method "
+        f"с method={base['method']} и тем же городом и улицей. Если просил именно {_NAMES[mine]} — "
+        f"скажи одной фразой, что {base['name']} дешевле на {templates.amount(gap)} ₽, решает клиент. "
     )
 
 
@@ -277,4 +302,5 @@ def upgraded_by(draft) -> float | None:
     if base["carrier"] == mine and draft.delivery_method != "cdek_courier":
         return None
     real = draft.details.get("carrier_delivery_cost", draft.delivery_cost) or 0
-    return max(0.0, round(float(real) - base["cost"], 2))
+    extra = _extra(real, base["cost"])
+    return extra if extra or draft.delivery_method == "cdek_courier" else None

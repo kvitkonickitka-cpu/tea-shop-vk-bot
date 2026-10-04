@@ -29,8 +29,41 @@ def test_cheapest_first_and_ozon_wins_a_tie():
     tie = row("cdek", 117, CDEK_2_3)
     assert upgrade.cheapest([tie, ozon_]) is ozon_
     # Дешевле СДЭК — он и первый: порядок по цене, а не по перевозчику.
-    cheap_cdek = row("cdek", 99, CDEK_2_3)
+    cheap_cdek = row("cdek", 80, CDEK_2_3)
     assert upgrade.cheapest([ozon_, cheap_cdek]) is cheap_cdek
+    # Разница в пределах «ничьей» (30 ₽) — одна цена: Ozon первым.
+    almost = row("cdek", 99, CDEK_2_3)
+    assert upgrade.cheapest([ozon_, almost]) is ozon_
+
+
+async def test_a_few_rubles_are_not_a_surcharge(clean, ozon, cdek, monkeypatch):  # noqa: F811
+    """04.10.2026: «доплата 2,63 ₽ к бесплатной доставке» — ничья, а не доплата."""
+    monkeypatch.setattr(settings, "free_delivery_threshold", "3000")
+
+    async def close(draft, method, address, delivery_point=None):
+        return cdek_client.Tariff(136, "Посылка склад-склад", 90.0, 2, 3, 4), 111.0
+
+    monkeypatch.setattr(conversation, "_cdek_delivery", close)
+    await draft_for(3000)
+    result = await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Красная"})
+    draft = await state.get_draft(PEER)
+    assert draft.delivery_cost == 0 and upgrade.SURCHARGE not in draft.details
+    assert "«Доставка Ozon — бесплатно, получите ≈ 10 октября. Нужно быстрее — СДЭК бесплатно" in result.tool_result
+    await conversation._execute_set_delivery_method(PEER, {"method": "cdek_pvz", "address": "Краснодар"})
+    assert (await state.get_draft(PEER)).delivery_cost == 0
+
+
+async def test_cheaper_other_carrier_is_offered_first(clean, ozon, monkeypatch):  # noqa: F811
+    async def cheap(draft, method, address, delivery_point=None):
+        return cdek_client.Tariff(136, "Посылка склад-склад", 40.0, 2, 3, 4), 60.0
+
+    monkeypatch.setattr(conversation, "_cdek_delivery", cheap)
+    await draft_for(1500)
+    result = await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Красная"})
+    assert "Дешевле СДЭК — на 53 ₽" in result.tool_result
+    assert "назови первым СДЭК этой фразой и сразу вызови set_delivery_method с method=cdek_pvz" in result.tool_result
 
 
 def test_faster_only_when_a_day_earlier():
@@ -117,7 +150,6 @@ async def test_above_threshold_cheapest_free_faster_with_surcharge(clean, ozon, 
     assert draft.delivery_cost == 132 and draft.details[upgrade.SURCHARGE] == 132
     assert draft.details["carrier_delivery_cost"] == 245
     assert "«с доплатой 132 ₽»" in result.tool_result
-    assert "дешевле Ozon — на 132 ₽" in result.tool_result
     # В чеке строка доставки — ровно доплата, сумма чека = сумма платежа.
     rows = yookassa_client.receipt_items(draft.items, draft.delivery_cost, draft.delivery_label)
     assert sum(float(r["amount"]["value"]) * r["quantity"] for r in rows) == 3000 + 132
