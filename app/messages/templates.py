@@ -188,6 +188,7 @@ def invoice_summary(
     link: str,
     eta: str = "",
     button: bool = False,
+    surcharge: bool = False,
 ) -> str:
     """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
 
@@ -199,12 +200,20 @@ def invoice_summary(
     почта полностью — опечатку в ней надо увидеть до оплаты, чек уйдёт туда.
     """
     head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
-    lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta)]
+    lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge)]
     lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button)
     return "\n".join(lines)
 
 
-def _order_block(items, delivery_method, delivery_label, delivery_cost, eta) -> list[str]:
+def _delivery_cost_text(delivery_cost, surcharge: bool = False) -> str:
+    if not delivery_cost:
+        return "бесплатно"
+    # Доплата за перевозчика быстрее бесплатного — так и называем: иначе
+    # клиент выше порога читает «245 ₽» как «порог не сработал».
+    return f"доплата {amount(delivery_cost)} ₽" if surcharge else f"{amount(delivery_cost)} ₽"
+
+
+def _order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge=False) -> list[str]:
     """Состав, доставка и срок — первый абзац сводки со ссылкой."""
     lines = []
     for item in items:
@@ -213,7 +222,7 @@ def _order_block(items, delivery_method, delivery_label, delivery_cost, eta) -> 
             f"• {item.get('name', 'товар')} × {quantity} — "
             f"{amount(float(item.get('price') or 0) * quantity)} ₽"
         )
-    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    cost = _delivery_cost_text(delivery_cost, surcharge)
     lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
     if eta:
         lines.append(f"Срок: {eta}")
@@ -579,11 +588,31 @@ def button_stale() -> str:
     return "Эта кнопка уже неактуальна."
 
 
+def delivery_options(*, base_name: str, base_price, base_when: str, fast_name: str = "", fast_price=0,
+                     fast_when: str = "", free: bool = False) -> str:
+    """Самая дешёвая доставка и, если есть, быстрая — одной фразой.
+
+    «Ozon — 117 ₽, получите ≈ 10 октября. Нужно быстрее — СДЭК 245 ₽, получите ≈ 8 октября»
+    Выше порога дешёвая бесплатна, а за быструю — доплата.
+    """
+    when = f", {base_when}" if base_when else ""
+    if free:
+        line = f"Доставка {base_name} — бесплатно{when}"
+    else:
+        line = f"{base_name} — {amount(base_price)} ₽{when}"
+    if fast_name:
+        fast = f", {fast_when}" if fast_when else ""
+        price = f"с доплатой {amount(fast_price)} ₽" if free else f"{amount(fast_price)} ₽"
+        line += f". Нужно быстрее — {fast_name} {price}{fast}"
+    return line
+
+
 def point_chosen(
-    *, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "", ask: str = ""
+    *, address: str, delivery_cost, total, ask_recipient: bool, eta: str = "", ask: str = "",
+    surcharge: bool = False,
 ) -> str:
     """Пункт выбран кнопкой, а данных получателя ещё нет. `ask` — своя просьба вместо общей."""
-    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    cost = _delivery_cost_text(delivery_cost, surcharge)
     lines = [f"Записала пункт: {address}. Доставка — {cost}, итого {amount(total)} ₽."]
     if eta:
         lines.append(f"Срок: {eta}.")
@@ -823,7 +852,7 @@ def returning_offer(
             f"• {item.get('name', 'товар')} × {quantity} — "
             f"{amount(float(item.get('price') or 0) * quantity)} ₽"
         )
-    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    cost = _delivery_cost_text(delivery_cost)
     lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
     if eta:
         lines.append(f"Срок: {eta}")

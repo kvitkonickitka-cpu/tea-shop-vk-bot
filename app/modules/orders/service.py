@@ -412,39 +412,31 @@ async def start_order(
 
 
 async def _quote_both(draft: OrderDraft, city: str, street: str) -> list[dict]:
-    """Ozon и СДЭК до города — параллельно; кто не посчитал, того не предлагаем."""
+    """Ozon и СДЭК до города — параллельно; кто не посчитал, того не предлагаем.
+
+    Порядок — по цене, не по перевозчику: дешёвый первым, при равной цене
+    Ozon. Выше порога бесплатен дешёвый, за второго — доплата
+    (app/modules/orders/upgrade.py).
+    """
     from app.core.config import free_delivery_threshold
-    from app.modules.delivery import ozon_quote
-    from app.modules.orders import conversation, eta
+    from app.modules.orders import eta, upgrade
 
-    async def ozon() -> dict | None:
-        if not ozon_quote.is_ready():
-            return None
-        picked = await conversation._ozon_points(draft, city, street)
-        if not picked.points:
-            return None
-        quote = await conversation._ozon_price(draft, int(picked.points[0].id))
-        return {"method": "ozon_pvz", "carrier": "Ozon", "cost": quote.total,
-                "eta": {"carrier": "ozon", "min": quote.days, "max": quote.days, "working": False}}
-
-    async def cdek() -> dict | None:
-        tariff, total = await conversation._cdek_delivery(draft, "cdek_pvz", city)
-        return {"method": "cdek_pvz", "carrier": "СДЭК", "cost": total,
-                "eta": {"carrier": "cdek", "min": tariff.period_min, "max": tariff.period_max,
-                        "working": True}}
-
-    async def safe(job, name):
-        try:
-            return await asyncio.wait_for(job(), timeout=20)
-        except Exception as error:
-            logger.warning("Витрина: %s до города не посчитан — %s", name, type(error).__name__)
-            return None
-
-    found = [o for o in await asyncio.gather(safe(ozon, "Ozon"), safe(cdek, "СДЭК")) if o]
-    free = bool(free_delivery_threshold()) and draft.items_total >= free_delivery_threshold()
-    for option in found:
-        option["client_cost"] = 0 if free else round(option["cost"], 2)
-        option["eta_phrase"] = eta.receive(option["eta"])
+    rows = await upgrade.quote_city(draft, city, street)
+    threshold = free_delivery_threshold()
+    free = bool(threshold) and draft.items_total >= threshold
+    if upgrade.is_enabled():
+        base = upgrade.cheapest(rows)
+        rows.sort(key=lambda row: row is not base)
+    else:
+        base = None
+    found = []
+    for row in rows:
+        if upgrade.is_enabled():
+            client_cost = upgrade.client_price(row, base, free)
+        else:
+            client_cost = 0 if free else row["cost"]
+        found.append({"method": row["method"], "carrier": row["name"], "cost": row["cost"], "eta": row["eta"],
+                      "client_cost": client_cost, "eta_phrase": eta.receive(row["eta"]), "quote": row})
     return found
 
 
@@ -453,7 +445,10 @@ async def _offer_carriers(peer_id: int, order_id: int, items: list[dict], items_
     from app.messages import keyboard as keyboards
     from app.modules.orders import buttons
 
+    from app.modules.orders import upgrade
+
     draft = await state.get_draft(peer_id)
+    upgrade.remember(draft.details, city, [option["quote"] for option in options])
     draft.details["storefront_quotes"] = [
         {key: option[key] for key in ("method", "carrier", "client_cost", "eta_phrase")} for option in options
     ]

@@ -37,6 +37,7 @@ from app.modules.orders import service as orders_service
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
+from app.modules.orders import upgrade
 from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service
 from app.modules.payment import yookassa_client
@@ -490,12 +491,26 @@ def _apply_free_delivery(draft: OrderDraft) -> str:
     carrier_cost = draft.details.get("carrier_delivery_cost", draft.delivery_cost)
     if draft.items_total >= threshold:
         draft.details["carrier_delivery_cost"] = carrier_cost
+        # Порог покрывает самый дешёвый вариант; за перевозчика дороже
+        # клиент доплачивает разницу (app/modules/orders/upgrade.py).
+        extra = upgrade.surcharge(draft.details, draft.delivery_method, carrier_cost)
+        if extra:
+            draft.details[upgrade.SURCHARGE] = extra
+            draft.delivery_cost = extra
+            base = upgrade.cheapest(upgrade.quotes_for(draft.details))
+            return (
+                f"Сумма товаров от {templates.amount(threshold)} ₽: самая дешёвая доставка "
+                f"({base['name']}) для клиента бесплатная, за выбранную клиент доплачивает "
+                f"{templates.amount(extra)} ₽. Скажи именно так: «с доплатой {templates.amount(extra)} ₽».\n"
+            )
+        draft.details.pop(upgrade.SURCHARGE, None)
         draft.delivery_cost = 0
         return (
             f"Доставка для клиента бесплатная: сумма товаров от "
             f"{templates.amount(threshold)} ₽. Скажи об этом клиенту.\n"
         )
     # Сумма опустилась ниже порога (клиент убрал позицию) — снова платная.
+    draft.details.pop(upgrade.SURCHARGE, None)
     if "carrier_delivery_cost" in draft.details:
         draft.delivery_cost = draft.details.pop("carrier_delivery_cost")
     return ""
@@ -884,6 +899,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             "и предложи пункт выдачи Ozon или СДЭК."
         )
 
+    # Настоящая цена прошлого перевозчика к новому расчёту отношения не
+    # имеет: раньше её снимал только Ozon, и СДЭК после Ozon выше порога
+    # записывал себе цену Ozon.
+    draft.details.pop("carrier_delivery_cost", None)
     # Список пунктов, который увидит клиент, — пока пункт не выбран.
     shown: list[dict] = []
     per_point_prices = False
@@ -1064,7 +1083,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.details.pop("point_asked", None)
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
+    try:
+        await upgrade.compare(draft, city, method)
+    except Exception:
+        logger.warning("Не сравнили перевозчиков для peer_id=%s", peer_id, exc_info=True)
     free_note = _apply_free_delivery(draft)
+    free_note += upgrade.options_note(draft)
     total = draft.items_total + draft.delivery_cost
     # Когда посчитана цена и какой итог клиент от нас услышал: перед счётом
     # старая цена пересчитывается, а изменившийся итог без вопроса не
@@ -1077,6 +1101,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                         cost=float(draft.delivery_cost or 0))
     if draft.details.get("ozon_point_id") or draft.details.get("delivery_point") or method == "cdek_courier":
         await funnel.record(peer_id, "point_chosen", order_id=order_ref, method=method)
+    extra = upgrade.upgraded_by(draft)
+    if extra is not None:
+        # Клиент выбрал не самый дешёвый вариант: сколько он стоит сверх него
+        # и сколько из этого платит клиент (выше порога — доплата).
+        await funnel.record(peer_id, "delivery_upgrade", order_id=order_ref, method=method, extra=extra,
+                            surcharge=float(draft.details.get(upgrade.SURCHARGE) or 0))
 
     # Состав заказа перечисляем прямо здесь. Без него модель писала клиенту
     # «Товары: 800 руб.» — сумму, по которой не проверить, то ли он заказывает.
@@ -1496,6 +1526,8 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
     if quoted_at is None or time.time() - float(quoted_at) > settings.delivery_quote_ttl_minutes * 60:
         try:
             await _requote(draft)
+            # Доплата считается от самого дешёвого — его цена тоже могла уйти.
+            await upgrade.refresh(draft)
         except Exception:
             # Пересчёт не удался — остаётся цена, которую клиент уже видел.
             logger.warning("Не пересчитали доставку перед счётом для peer_id=%s", peer_id, exc_info=True)
@@ -1927,6 +1959,7 @@ async def _confirm_with_payment(
         link=payment.confirmation_url,
         eta=eta.phrase(draft.details),
         button=await keyboards.shows_link_button(peer_id),
+        surcharge=bool(draft.details.get(upgrade.SURCHARGE)),
     )
     return ToolExecution(reply, client_reply=reply)
 

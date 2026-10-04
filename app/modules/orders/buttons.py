@@ -288,6 +288,7 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
             ask_recipient=True,
             eta=eta.phrase(fresh.details),
             ask=ask,
+            surcharge=bool(fresh.details.get("delivery_surcharge")),
         ), keyboard=keyboard)
 
     return await _invoice_or(peer_id, chosen_reply)
