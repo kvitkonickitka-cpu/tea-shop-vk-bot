@@ -59,7 +59,7 @@ async def test_storefront_order_becomes_a_draft(clean, channels, monkeypatch):
     draft = await state.get_draft(USER)
     assert draft is not None and draft.stage == "awaiting_delivery"
     # Название из ВК узнано в каталоге — в заказ идёт каталожное: по нему GTIN и чек.
-    assert draft.items == [{"name": "Те Гуань Инь (тест)", "quantity": 2, "price": 800.0}]
+    assert draft.items == [{"name": "Те Гуань Инь", "quantity": 2, "price": 800.0}]
     assert draft.items_total == 1600.0
     assert draft.details["vk_order_id"] == 41
     assert "Ставропольская" in draft.details["vk_order_address"]

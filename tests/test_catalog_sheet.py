@@ -130,13 +130,13 @@ async def test_google_down_changes_nothing(clean, sheet_url, monkeypatch, manage
     result = await sheet.refresh()
     assert "failed" in result and manager == []
     # Таблица ни разу не читалась — бот продаёт по catalog.json.
-    assert catalog_service.load_items()[0]["name"] == "Те Гуань Инь (тест)"
+    assert catalog_service.load_items()[0]["name"] == "Те Гуань Инь"
 
 
 async def test_without_url_the_image_catalog_is_used(monkeypatch):
     monkeypatch.setattr(settings, "catalog_sheet_csv_url", "")
     assert "skipped" in await sheet.refresh()
-    assert catalog_service.load_items()[0]["name"] == "Те Гуань Инь (тест)"
+    assert catalog_service.load_items()[0]["name"] == "Те Гуань Инь"
 
 
 async def test_other_container_sees_the_new_sheet_within_seconds(clean, sheet_url, monkeypatch, manager):
@@ -160,3 +160,16 @@ async def test_other_container_sees_the_new_sheet_within_seconds(clean, sheet_ur
     sheet._memory_loaded_at -= 10
     await sheet.ensure_fresh()
     assert [i["name"] for i in catalog_service.load_items()][-1] == "Шу Пуэр 100 г"
+
+
+def test_image_catalog_has_no_test_names_or_test_prices():
+    """Запасной каталог в образе — копия таблицы, а не тестовая заглушка.
+
+    Им бот продаёт, пока не прочитал таблицу (холодный старт без базы): с
+    «Те Гуань Инь (тест)» за 100 ₽ клиент получил бы счёт на 100 ₽.
+    """
+    import json
+
+    items = json.loads(catalog_service.CATALOG_PATH.read_text(encoding="utf-8"))
+    assert items and all("тест" not in item["name"].casefold() for item in items)
+    assert all(item["price"] >= 500 for item in items)
