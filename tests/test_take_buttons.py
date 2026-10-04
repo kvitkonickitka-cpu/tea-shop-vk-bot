@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 
 import pytest
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.messages import templates
+from app.messages.models import FunnelEvent
 from app.modules.catalog import service as catalog_service
 from app.modules.orders import state, take
 from tests.test_auto_invoice import said, tool_use
@@ -184,3 +186,38 @@ async def test_flag_off(clean, shop, monkeypatch):
     shop["script"] = [said(ADVICE)]
     await say("посоветуйте улун", 1)
     assert shop["sent"][-1][1] is None
+
+
+async def test_take_path_leaves_the_whole_funnel(clean, shop):
+    """Аналитика, A2: от совета до счёта — каждое событие со своим источником."""
+    shop["script"] = [said(ADVICE)]
+    await say("посоветуйте улун", 1)
+    take_button = shop["sent"][-1][1]["buttons"][0][0]["action"]
+    await say(take_button["label"], 2, json.loads(take_button["payload"]))
+    shop["script"] = [tool_use("set_delivery_method", method="ozon_pvz", address="Краснодар",
+                               pickup_point="Ставропольская"),
+                      said("Пункты: 1) Ставропольская, 230 — 121 ₽ … Выберите пункт.")]
+    await say("Краснодар, Ставропольская", 3)
+    shop["script"] = [tool_use("set_delivery_method", method="ozon_pvz", address="Краснодар", pickup_point="1"),
+                      tool_use("set_recipient", name="Иванов Иван", phone="89001234567", email="ivanov@mail.ru")]
+    await say("1, Иванов Иван, 89001234567, ivanov@mail.ru", 4)
+
+    async with clean() as session:
+        rows = (await session.execute(select(FunnelEvent).order_by(FunnelEvent.id))).scalars().all()
+    assert [(row.event, row.source) for row in rows] == [
+        ("dialog_start", "text"),
+        ("take_shown", "code"),
+        ("button:take", "button"),
+        ("draft_created", "button"),
+        ("upsell_offered", "code"),
+        ("delivery_quoted", "text"),
+        ("delivery_quoted", "text"),
+        ("point_chosen", "text"),
+        ("recipient_set", "text"),
+        ("invoice_auto", "text"),
+    ]
+    data = {row.event: row.data for row in rows}
+    assert data["draft_created"] == {"origin": "take"}
+    assert data["upsell_offered"] == {"item": "Да Хун Пао"}
+    assert data["delivery_quoted"]["method"] == "ozon_pvz"
+    assert data["invoice_auto"]["attempt"] == 1

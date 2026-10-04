@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from app.messages import client as client_messages, templates
+from app.messages import funnel, client as client_messages, templates
 from app.modules.dialog import vk_client
 from app.modules.marking import packing
 from app.modules.orders import (
@@ -98,6 +98,7 @@ async def _on_canceled(payment: yookassa_client.Payment) -> dict:
     order = await orders_repository.by_payment(payment.id)
     if order is None:
         return {"платёж": payment.id, "действий": "нет, заказа не нашли"}
+    await orders_repository.update_attempt(payment)
 
     decision = payment_service.decide_on_cancel(
         payment.cancellation_party, payment.cancellation_reason
@@ -143,6 +144,9 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
     if known is None:
         logger.info("Платёж %s: заказа с таким платежом у нас нет", payment.id)
         return {"платёж": payment.id, "действий": "нет, заказа не нашли"}
+
+    # Статус попытки — как у ЮKassa, со способом оплаты и суммой к зачислению.
+    await orders_repository.update_attempt(payment)
 
     # Был ли этот счёт уже закрыт с нашей стороны — нужно менеджеру: заказ
     # он видел закрытым, а деньги пришли.
@@ -193,6 +197,15 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
     from app.modules.orders import retention
 
     await retention.note_order(order.peer_id, order.id)
+    await funnel.record(
+        order.peer_id, "payment_succeeded", order_id=order.id, source_=funnel.YOOKASSA,
+        attempt=attempt_row.attempt if attempt_row is not None else None,
+        amount=payment.amount, income=payment.income_amount, method=payment.payment_method or None,
+        closed_invoice=was_closed or None,
+    )
+    if payment.test:
+        # Оплата в тестовом магазине ЮKassa — заказ тестовый, в аналитику не идёт.
+        await orders_repository.mark_test(order.id)
 
     logger.info(
         "Заказ %s оплачен%s, заводим отправление",
@@ -212,6 +225,11 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         order_key=(order.details or {}).get("order_key", ""),
         order_id=order.id,
     )
+    if registered.cdek_uuid or registered.ozon_posting:
+        await funnel.record(
+            order.peer_id, "shipment_created", order_id=order.id, source_=funnel.CODE,
+            carrier="cdek" if registered.cdek_uuid else "ozon",
+        )
 
     fields = {}
     if registered.cdek_uuid:
@@ -403,6 +421,8 @@ async def _on_refund(refund_id: str) -> dict:
         return {"возврат": refund.id, "действий": "нет, уже отмечен"}
 
     await orders_repository.set_state(order.id, status=STATUS_REFUNDED)
+    await funnel.record(order.peer_id, "refunded", order_id=order.id, source_=funnel.YOOKASSA,
+                        amount=float(refund.amount) if refund.amount else None)
     card = f"↩️ <b>Возврат {templates.amount(refund.amount)} ₽</b>\n" + order_chat.card(order)
     if order.delivered_at is None:
         # Посылка не вручена — пачки не проданы и вернутся на полку (или не

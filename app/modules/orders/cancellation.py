@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 
 from app.core.database import get_session_factory
-from app.messages import templates
+from app.messages import funnel, templates
 from app.modules.orders import order_chat, repository as orders_repository, state
 from app.modules.orders.models import Order
 from app.modules.payment import service as payment_service
@@ -118,6 +118,7 @@ async def cancel_for_client(peer_id: int) -> Outcome:
 
     for order in canceled:
         outcome.canceled.append(order.id)
+        await funnel.record(order.peer_id, "canceled_by_client", order_id=order.id)
         logger.info("Заказ %s отменён по просьбе клиента", order.id)
         await _close_invoices(order)
         await order_chat.send(order, templates.manager_order_canceled(order))

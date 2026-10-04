@@ -114,6 +114,11 @@ _MISSING_COLUMNS = (
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS unreachable_at TIMESTAMPTZ",
     # Аналитика: тестовые заказы не попадают в представления для DataLens.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS source VARCHAR",
+    # Попытки оплаты: способ и сколько получит магазин — из уведомлений ЮKassa.
+    "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR",
+    "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS income_amount NUMERIC(10, 2)",
+    "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
     # Мониторинг: какие сбои уже ушли в Ops подробностью.
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
 )

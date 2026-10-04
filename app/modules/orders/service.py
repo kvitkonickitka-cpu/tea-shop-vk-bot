@@ -215,6 +215,10 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
     draft.details["vk_order_id"] = order_id
 
     await state.set_draft(user_id, draft)
+    from app.messages import funnel
+
+    await funnel.record(user_id, "draft_created", source_=funnel.STOREFRONT, origin="storefront",
+                        vk_order_id=order_id)
 
     if address and await _direct_points(user_id, order_id, order, items, items_total, address):
         listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)

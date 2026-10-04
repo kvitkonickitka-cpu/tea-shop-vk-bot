@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 
 from app.core.config import settings
+from app.messages import funnel
 from app.modules.catalog import service as catalog_service
 from app.modules.orders import offers, repeat_delivery, repository as orders_repository, state
 from app.modules.orders.repeat_delivery import LastRecipient
@@ -117,10 +118,12 @@ async def repeat_order(peer_id: int, source_order_id: int):
             note += " " + repeat_delivery.recipient_suggestion(recipient)
         draft.details["repeat_note"] = note
         await state.set_draft(peer_id, draft)
+        await funnel.record(peer_id, "draft_created", origin="repeat", repeat_of=order.id)
         return ToolExecution(note)
 
     offers.apply(draft, offer)
     await state.set_draft(peer_id, draft)
+    await funnel.record(peer_id, "draft_created", origin="repeat", repeat_of=order.id)
     invoiced = await conversation._auto_invoice(peer_id, source="invoice_repeat")
     if invoiced is None:
         return ToolExecution(

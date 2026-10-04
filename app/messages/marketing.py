@@ -201,6 +201,9 @@ async def opt_out(peer_id: int) -> None:
         await session.execute(statement)
         await session.commit()
 
+    from app.messages import funnel
+
+    await funnel.record(peer_id, "opted_out", at=now)
     # Отписка в течение двух дней после касания — засчитываем касанию.
     from app.modules.orders import retention
 

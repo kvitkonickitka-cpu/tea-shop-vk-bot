@@ -16,6 +16,9 @@ from app.modules.orders.models import Order, OrderPayment
 from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service, webhook, yookassa_client
 
+# Нажатия, счета и касания: остальные события воронки этим тестам не важны.
+OWN_EVENTS = FunnelEvent.event.regexp_match("^(button|touch|invoice_(auto|confirmed|repeat|returning)$)")
+
 PEER = 9950
 CATALOG = [
     {"name": "Те Гуань Инь (тест)", "price": 1500, "in_stock": True, "recommended": []},
@@ -88,7 +91,7 @@ async def test_recipient_completes_order_and_invoice_goes_at_once(clean, world):
     async with clean() as session:
         order = (await session.execute(select(Order))).scalar_one()
         attempt = (await session.execute(select(OrderPayment))).scalar_one()
-        events = (await session.execute(select(FunnelEvent.event))).scalars().all()
+        events = (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS))).scalars().all()
     assert reply == (
         f"Заказ №{order.id} — проверьте, всё ли верно:\n"
         "• Те Гуань Инь (тест) × 1 — 1500 ₽\n"

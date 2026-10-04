@@ -14,7 +14,7 @@ from app.modules.catalog import service as catalog_service
 from app.modules.orders import repeat_nudge, repository as orders_repository, state
 from app.modules.orders.models import Order
 from app.modules.orders.state import OrderDraft
-from tests.test_auto_invoice import said, tool_use
+from tests.test_auto_invoice import OWN_EVENTS, said, tool_use
 from tests.test_returning_client import POINT, past_order
 from tests.test_vk_buttons import FULL, PEER, say, world  # noqa: F401
 
@@ -51,7 +51,7 @@ async def test_repeat_button_sends_invoice_with_current_prices(clean, world, mon
     assert "Получатель: Иванов Иван, +79001234567, ivanov@mail.ru" in text and "Итого: 1721 ₽" in text
     assert board["buttons"][0][0]["action"]["label"] == "Оплатить 1721 ₽"
     async with clean() as session:
-        events = (await session.execute(select(FunnelEvent.event).order_by(FunnelEvent.id))).scalars().all()
+        events = (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS).order_by(FunnelEvent.id))).scalars().all()
     assert events == ["touch:repeat_nudge", "button:repeat", "invoice_repeat"]
 
 

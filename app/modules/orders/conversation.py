@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import html
 import json
 import logging
@@ -507,6 +508,11 @@ def _first_sentence(text: str, limit: int = 160) -> str:
     return text[:limit]
 
 
+# Откуда пришёл черновик, если его создаёт не реплика клиента: «Взять»,
+# «Повторить». Ставит вызывающий на время вызова propose_order.
+_draft_origin: contextvars.ContextVar[str | None] = contextvars.ContextVar("draft_origin", default=None)
+
+
 def _offer_upsell(draft: OrderDraft, catalog: list[dict]) -> str:
     """Подсказка модели: что предложить дополнительно и сколько до порога.
 
@@ -702,8 +708,19 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
             + (f", pickup_point=«{point}»" if point else "")
             + " — клиенту переспрашивать не нужно."
         )
+    was_draft = live is not None or await state.get_draft(peer_id) is not None
     upsell_line = _offer_upsell(draft, catalog)
     await state.set_draft(peer_id, draft)
+    if not was_draft:
+        # Откуда черновик: «беру» словами, «Взять», «Повторить», витрина —
+        # источник ставит тот, кто вызвал (кнопка, повтор), иначе — текст.
+        origin = _draft_origin.get()
+        if origin is None:
+            # Постоянный клиент — отдельный канал: у него свой короткий путь.
+            origin = "returning" if await repeat_delivery.last_for(peer_id) is not None else funnel.current_source()
+        await funnel.record(peer_id, "draft_created", origin=origin)
+    if draft.details.get("upsell_item"):
+        await funnel.record(peer_id, "upsell_offered", source_=funnel.CODE, item=draft.details["upsell_item"])
 
     lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} ₽" for i in resolved]
     result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} ₽"
@@ -1035,6 +1052,11 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     draft.details["quoted_at"] = time.time()
     draft.details["seen_total"] = total
     await state.set_draft(peer_id, draft)
+    order_ref = draft.details.get("order_id")
+    await funnel.record(peer_id, "delivery_quoted", order_id=order_ref, method=method,
+                        cost=float(draft.delivery_cost or 0))
+    if draft.details.get("ozon_point_id") or draft.details.get("delivery_point") or method == "cdek_courier":
+        await funnel.record(peer_id, "point_chosen", order_id=order_ref, method=method)
 
     # Состав заказа перечисляем прямо здесь. Без него модель писала клиенту
     # «Товары: 800 руб.» — сумму, по которой не проверить, то ли он заказывает.
@@ -1260,6 +1282,7 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
     if email:
         draft.details["recipient_email"] = email
     await state.set_draft(peer_id, draft)
+    await funnel.record(peer_id, "recipient_set", order_id=draft.details.get("order_id"))
 
     written = f"Получатель записан: {name}, {phone}"
     written += f", {email}." if email else "."
@@ -1919,6 +1942,7 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
 
     question_raw = tool_input.get("question", "")
     reason_raw = tool_input.get("reason", "")
+    await funnel.record(peer_id, "escalation_opened", complaint=True if tool_input.get("complaint") is True else None)
     if tool_input.get("complaint") is True:
         # Жалоба на вручённый заказ — в этом цикле повторных касаний нет.
         try:
@@ -1998,6 +2022,9 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
         return (
             f"Не нашли в наличии: {', '.join(unresolved)}. Уточни у клиента название."
         )
+    upsell = draft.details.get("upsell_item")
+    if upsell and any(item.startswith(f"{upsell} ×") for item in added):
+        await funnel.record(peer_id, "upsell_accepted", item=upsell)
 
     draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
     if draft.details.get("offer"):

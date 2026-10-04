@@ -67,6 +67,10 @@ class Payment:
     # знает от нас, а отмену магазином объясняет менеджер сам.
     cancellation_party: str = ""
     cancellation_reason: str = ""
+    # Для аналитики: способ оплаты (bank_card, sbp, yoo_money…) и сколько
+    # получит магазин за вычетом комиссии — ЮKassa отдаёт их в самом платеже.
+    payment_method: str = ""
+    income_amount: float | None = None
 
 
 def is_configured() -> bool:
@@ -232,6 +236,12 @@ def _to_payment(data: dict) -> Payment:
         amount=float((data.get("amount") or {}).get("value") or 0),
         cancellation_party=str(cancellation.get("party") or ""),
         cancellation_reason=str(cancellation.get("reason") or ""),
+        payment_method=str((data.get("payment_method") or {}).get("type") or ""),
+        income_amount=(
+            float(data["income_amount"]["value"])
+            if isinstance(data.get("income_amount"), dict) and data["income_amount"].get("value")
+            else None
+        ),
     )
 
 

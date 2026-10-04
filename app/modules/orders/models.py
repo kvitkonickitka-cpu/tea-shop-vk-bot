@@ -118,6 +118,11 @@ class OrderPayment(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     amount: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    # Обновляются по уведомлениям ЮKassa: раньше статус оставался тем, с каким
+    # счёт создан (pending), и оплаченная попытка выглядела неоплаченной.
+    payment_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    income_amount: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     # Заполняется, когда счёт закрыт с нашей стороны: истёк срок или банк
     # отказал. По ЮKassa он может при этом оставаться оплачиваемым.
     closed_at: Mapped[Optional[datetime]] = mapped_column(

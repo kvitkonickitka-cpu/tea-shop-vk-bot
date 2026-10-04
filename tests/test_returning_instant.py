@@ -15,7 +15,7 @@ from app.modules.dialog.models import ConversationMessage
 from app.modules.orders import conversation, repository as orders_repository, state
 from app.modules.orders.models import Order, OrderPayment
 from app.modules.payment import watch, yookassa_client
-from tests.test_auto_invoice import said, tool_use
+from tests.test_auto_invoice import OWN_EVENTS, said, tool_use
 from tests.test_returning_client import POINT, past_order
 from tests.test_vk_buttons import PEER, say, world  # noqa: F401
 
@@ -43,7 +43,7 @@ def labels(board):
 
 async def events(db):
     async with db() as session:
-        return (await session.execute(select(FunnelEvent.event).order_by(FunnelEvent.id))).scalars().all()
+        return (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS).order_by(FunnelEvent.id))).scalars().all()
 
 
 async def test_link_comes_in_the_first_message(clean, world):

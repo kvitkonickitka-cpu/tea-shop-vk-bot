@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
@@ -6,6 +7,8 @@ from sqlalchemy.dialects.postgresql import insert
 from app.core.database import get_session_factory
 from app.modules.orders.models import Order, OrderPayment
 from app.modules.orders.state import OrderDraft
+
+logger = logging.getLogger(__name__)
 
 
 def _details_of(draft: OrderDraft) -> dict:
@@ -251,6 +254,30 @@ async def close_payment(payment_id: str, *, refund_id: str | None = None) -> Non
         if refund_id:
             row.refund_id = refund_id
         await session.commit()
+
+
+async def mark_test(order_id: int) -> None:
+    async with get_session_factory()() as session:
+        await session.execute(update(Order).where(Order.id == order_id).values(is_test=True))
+        await session.commit()
+
+
+async def update_attempt(payment) -> None:
+    """Статус попытки, способ оплаты и сумма к зачислению — как сказала ЮKassa."""
+    try:
+        async with get_session_factory()() as session:
+            row = await session.get(OrderPayment, payment.id)
+            if row is None:
+                return
+            row.status = payment.status
+            if getattr(payment, "payment_method", ""):
+                row.payment_method = payment.payment_method
+            if getattr(payment, "income_amount", None) is not None:
+                row.income_amount = payment.income_amount
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+    except Exception:
+        logger.exception("Не обновили попытку оплаты %s", payment.id)
 
 
 # Статус платежа у ЮKassa, означающий «деньги у нас».

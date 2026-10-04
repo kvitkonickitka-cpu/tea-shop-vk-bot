@@ -152,6 +152,10 @@ async def rate(peer_id: int, order_id: int, rating: str, source: str, now: datet
         await session.execute(statement)
         await session.commit()
     logger.info("Оценка заказа %s: %s (%s)", order_id, rating, source)
+    if before != rating:
+        from app.messages import funnel
+
+        await funnel.record(peer_id, "rated", order_id=order_id, source_=source, value=rating)
     return before != rating
 
 
@@ -287,6 +291,10 @@ async def save(peer_id: int, tool_input: dict, now: datetime | None = None) -> s
             peer_id=peer_id,
         )
     logger.info("Отзыв по заказу %s записан (публикация: %s)", order.id, consent)
+    if before is None:
+        from app.messages import funnel
+
+        await funnel.record(peer_id, "review_saved", order_id=order.id, consent=consent)
 
     if consent == "unknown":
         return (

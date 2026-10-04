@@ -179,8 +179,13 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
             peer_id, "assistant", manager_text, author=dialog_history.AUTHOR_MANAGER
         )
 
+    was_open = await escalation_state.is_open(peer_id)
     await escalation_state.mark_resolved(peer_id)
     await escalation_log.resolve_latest(peer_id, admin_author_id)
+    if was_open:
+        from app.messages import funnel
+
+        await funnel.record(peer_id, "escalation_closed", source_=funnel.MANAGER)
 
 
 async def send_press_reply(peer_id: int, label: str, reply: str, keyboard: dict | None, *, to_model: bool) -> None:
