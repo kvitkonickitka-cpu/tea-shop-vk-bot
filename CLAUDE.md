@@ -485,6 +485,8 @@ GTIN товара — поле `gtin` в `catalog.json`; коды — табли
 отвечает модель — дружелюбно, без инструмента, — а код тихо ставит
 `marketing_opt_out`; вернётся клиент сам — бот отвечает как обычно.
 
+**Доставка v2** — флаги в переменных репозитория (`false` и передеплой), workflow их передаёт: `DELIVERY_DATE_ENABLED`, `DELIVERY_UPGRADE_PRICING_ENABLED`, `STOREFRONT_DIRECT_OZON_ENABLED`, `STOREFRONT_RESPECT_VK_DELIVERY` (по умолчанию `false`), `GEO_LOCATION_ENABLED`, `SINGLE_POINT_INSTANT_ENABLED`, `STOREFRONT_EARLY_NUDGE_ENABLED`. Числа (`SHIP_CUTOFF_HOUR`, `SHIP_DAYS`, радиус и срок хранения геопозиции, час до напоминания) — значения по умолчанию в `config.py`.
+
 **Выключено настройкой:** `RUSSIAN_POST_ENABLED=false` — Почту России бот
 не предлагает и не принимает.
 
