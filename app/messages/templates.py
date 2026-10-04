@@ -618,7 +618,11 @@ def delivery_options(*, base_name: str, base_price, base_when: str, fast_name: s
         line = f"{base_name} — {amount(base_price)} ₽{when}"
     if fast_name:
         fast = f", {fast_when}" if fast_when else ""
-        price = f"с доплатой {amount(fast_price)} ₽" if free else f"{amount(fast_price)} ₽"
+        if free:
+            # Разница в пределах «ничьей» — быстрый тоже бесплатный.
+            price = f"с доплатой {amount(fast_price)} ₽" if fast_price else "бесплатно"
+        else:
+            price = f"{amount(fast_price)} ₽"
         line += f". Нужно быстрее — {fast_name} {price}{fast}"
     return line
 
