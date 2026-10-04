@@ -232,6 +232,9 @@ class Settings(BaseSettings):
     reactivation_shelf_days: float = 30
     reactivation_repeat_days: float = 180
 
+    # «Покупки клиента» в промпте модели — для подбора по прошлым заказам.
+    purchase_history_in_prompt_enabled: bool = True
+
     # Повторные касания после вручения (`orders/retention.py`) — общие правила.
     # Пауза между любыми двумя продающими касаниями одному клиенту.
     marketing_min_gap_days: float = 3

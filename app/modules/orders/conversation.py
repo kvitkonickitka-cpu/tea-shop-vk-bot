@@ -28,6 +28,7 @@ from app.modules.orders import eta
 from app.modules.orders import feedback
 from app.modules.orders import order_chat
 from app.modules.orders import points
+from app.modules.orders import purchases
 from app.modules.orders import repeat_delivery
 from app.modules.orders import repeat_order as repeat_one_tap
 from app.modules.orders import shipping
@@ -2277,6 +2278,10 @@ async def _handle_turn(
     system_prompt = _BASE_SYSTEM_PROMPT
     if catalog_context:
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
+    # Что клиент брал и как оценил — тем же способом, что ассортимент.
+    bought = await purchases.context(peer_id)
+    if bought:
+        system_prompt += f"\n\n{bought}"
     system_prompt += f"\n\n{order_flow_prompt()}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
     live = None
