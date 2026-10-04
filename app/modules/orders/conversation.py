@@ -1044,94 +1044,114 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             draft.delivery_label = f"Ozon, пункт выдачи: {chosen['address']}"
             points.forget(draft.details)
         else:
-            try:
-                if near:
-                    pairs = await ozon_quote.points_near(
-                        near[0], near[1], radius_km=settings.geo_search_radius_km,
-                        weight_grams=_draft_weight_grams(draft), declared_value=draft.items_total,
-                    )
-                    distances = {row.id: round(meters) for row, meters in pairs}
-                    rows = [row for row, _ in pairs]
-                    picked = ozon_quote.Picked(rows, len(rows), len(rows), True)
-                    # Город — по ближайшему пункту: клиент его мог и не называть,
-                    # а выбор «1» дальше сверяется со списком этого города.
-                    parsed = address_parser.city_and_street(rows[0].address) if rows else None
-                    if parsed:
-                        city = parsed[0]
-                else:
-                    picked = await _ozon_points(draft, city, hint)
-            except Exception:
-                logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
-                picked = ozon_quote.Picked([], 0, 0, False)
-
-            candidates = list(picked.points)[: points.MAX_SHOWN]
-            narrowed = bool(hint) and picked.hint_matched
-            # Без улицы в большом городе — просим адрес пункта; в маленьком
-            # пункты города и есть полный список, его и показываем.
-            ask_point = bool(candidates) and not narrowed and not near and picked.total > points.MAX_SHOWN
-            if hint and not picked.hint_matched:
-                # Адрес с карты Ozon может не найтись у нас: копия каталога
-                # неполная. Тупик «не нашёлся» хуже, чем пункты города.
-                logger.info("Пункт Ozon «%s» в городе %s не нашёлся", hint, city)
-                if candidates:
-                    not_found_note = (
-                        f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом клиенту. "
-                        + ("" if ask_point else "Предложи выбрать из тех, что есть, или назвать адрес иначе. ")
-                    )
-                hint = ""
-
-            if not candidates and near:
-                return ToolExecution(GEO_NOTHING_NEAR)
-            if not candidates:
-                if picked.found:
-                    return ToolExecution(
-                        f"Пункты Ozon в городе {city} есть, но доставку нашим методом "
-                        "они не принимают. Предложи клиенту пункт выдачи СДЭК."
-                    )
-                asked = f"«{hint}» " if hint else ""
-                return ToolExecution(
-                    f"Пункт выдачи Ozon {asked}в городе {city} не нашёлся. Уточни у "
-                    "клиента адрес пункта или предложи доставку СДЭКом."
-                )
-
-            quote = None
-            if _single_on_street(narrowed, picked.total, candidates):
-                # На названной улице ровно один пункт — он и есть выбор
-                # клиента: записываем, счёт придёт, как только есть получатель.
-                only = candidates[0]
-                try:
-                    quote = await _ozon_price(draft, int(only.id))
-                except Exception as error:
-                    logger.warning("Не посчитали единственный пункт Ozon %s для peer_id=%s — %s",
-                                   only.id, peer_id, error)
-                if quote is not None:
-                    draft.details["ozon_point_id"] = int(only.id)
-                    draft.details["ozon_point_address"] = only.address
-                    draft.delivery_label = f"Ozon, пункт выдачи: {only.address}"
-                    points.forget(draft.details)
-                    single_point = (hint, only.address)
-            if single_point is None:
-                # Без списка цена нужна одна — «около», по первому пункту города.
-                priced, quote = await _price_ozon_points(
-                    draft, candidates[:1] if ask_point else candidates, peer_id
-                )
-                if quote is None:
-                    return ToolExecution(
-                        "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
-                        "а если он хочет именно Ozon — вызови escalate_to_manager."
-                    )
-                if ask_point:
-                    points.forget(draft.details)
-                else:
-                    per_point_prices = all(row.get("price") is not None for row in priced)
-                    for row in priced:
-                        if row["id"] in distances:
-                            row["distance"] = distances[row["id"]]
-                    shown = points.remember(draft.details, method, city, priced)
-                # Пункт не фиксируем, даже если он один в городе: выбирает клиент.
+            # Тот же город, та же улица и тот же состав — тот же список. Поиск
+            # заново спрашивает Ozon о доступности и цене каждого пункта, и
+            # пункт, по которому Ozon в эту секунду не ответил, выпадает: на
+            # Тверской за восемь минут клиент увидел три разных списка, и «1»
+            # перестал значить выбранный пункт (05.10.2026).
+            query = points.query_key(hint, _draft_weight_grams(draft), draft.items_total)
+            kept = [] if near else points.kept(draft.details, method, city, query)
+            if kept:
+                shown = kept
+                quote = points.kept_quote(draft.details)
+                per_point_prices = all(row.get("price") is not None for row in kept)
+                # Между вызовами мог быть другой способ (курьер СДЭК) — подпись своя.
                 draft.details.pop("ozon_point_id", None)
                 draft.details.pop("ozon_point_address", None)
                 draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
+            else:
+                try:
+                    if near:
+                        pairs = await ozon_quote.points_near(
+                            near[0], near[1], radius_km=settings.geo_search_radius_km,
+                            weight_grams=_draft_weight_grams(draft), declared_value=draft.items_total,
+                        )
+                        distances = {row.id: round(meters) for row, meters in pairs}
+                        rows = [row for row, _ in pairs]
+                        picked = ozon_quote.Picked(rows, len(rows), len(rows), True)
+                        # Город — по ближайшему пункту: клиент его мог и не называть,
+                        # а выбор «1» дальше сверяется со списком этого города.
+                        parsed = address_parser.city_and_street(rows[0].address) if rows else None
+                        if parsed:
+                            city = parsed[0]
+                    else:
+                        picked = await _ozon_points(draft, city, hint)
+                except Exception:
+                    logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
+                    picked = ozon_quote.Picked([], 0, 0, False)
+
+                candidates = list(picked.points)[: points.MAX_SHOWN]
+                narrowed = bool(hint) and picked.hint_matched
+                # Без улицы в большом городе — просим адрес пункта; в маленьком
+                # пункты города и есть полный список, его и показываем.
+                ask_point = bool(candidates) and not narrowed and not near and picked.total > points.MAX_SHOWN
+                if hint and not picked.hint_matched:
+                    # Адрес с карты Ozon может не найтись у нас: копия каталога
+                    # неполная. Тупик «не нашёлся» хуже, чем пункты города.
+                    logger.info("Пункт Ozon «%s» в городе %s не нашёлся", hint, city)
+                    if candidates:
+                        not_found_note = (
+                            f"Пункт «{hint}» в нашем списке не нашёлся — скажи об этом клиенту. "
+                            + ("" if ask_point else "Предложи выбрать из тех, что есть, или назвать адрес иначе. ")
+                        )
+                    hint = ""
+
+                if not candidates and near:
+                    return ToolExecution(GEO_NOTHING_NEAR)
+                if not candidates:
+                    if picked.found:
+                        return ToolExecution(
+                            f"Пункты Ozon в городе {city} есть, но доставку нашим методом "
+                            "они не принимают. Предложи клиенту пункт выдачи СДЭК."
+                        )
+                    asked = f"«{hint}» " if hint else ""
+                    return ToolExecution(
+                        f"Пункт выдачи Ozon {asked}в городе {city} не нашёлся. Уточни у "
+                        "клиента адрес пункта или предложи доставку СДЭКом."
+                    )
+
+                quote = None
+                if _single_on_street(narrowed, picked.total, candidates):
+                    # На названной улице ровно один пункт — он и есть выбор
+                    # клиента: записываем, счёт придёт, как только есть получатель.
+                    only = candidates[0]
+                    try:
+                        quote = await _ozon_price(draft, int(only.id))
+                    except Exception as error:
+                        logger.warning("Не посчитали единственный пункт Ozon %s для peer_id=%s — %s",
+                                       only.id, peer_id, error)
+                    if quote is not None:
+                        draft.details["ozon_point_id"] = int(only.id)
+                        draft.details["ozon_point_address"] = only.address
+                        draft.delivery_label = f"Ozon, пункт выдачи: {only.address}"
+                        points.forget(draft.details)
+                        single_point = (hint, only.address)
+                if single_point is None:
+                    # Без списка цена нужна одна — «около», по первому пункту города.
+                    priced, quote = await _price_ozon_points(
+                        draft, candidates[:1] if ask_point else candidates, peer_id
+                    )
+                    if quote is None:
+                        return ToolExecution(
+                            "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
+                            "а если он хочет именно Ozon — вызови escalate_to_manager."
+                        )
+                    if ask_point:
+                        points.forget(draft.details)
+                    else:
+                        per_point_prices = all(row.get("price") is not None for row in priced)
+                        for row in priced:
+                            if row["id"] in distances:
+                                row["distance"] = distances[row["id"]]
+                        shown = points.remember(draft.details, method, city, priced,
+                                                query=None if near else query, quote=quote)
+                        # Есть ли в городе пункты сверх показанных: «это не весь список»
+                        # при двух пунктах из двух — неправда.
+                        draft.details["shown_more"] = picked.total > len(shown)
+                    # Пункт не фиксируем, даже если он один в городе: выбирает клиент.
+                    draft.details.pop("ozon_point_id", None)
+                    draft.details.pop("ozon_point_address", None)
+                    draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
 
         draft.details["address"] = city
         # Тот же урок, что и с СДЭКом: страховку Ozon выставляет отдельной
@@ -1231,13 +1251,17 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         )
     if ask_point:
         return ToolExecution(
-            head + "Назови клиенту состав заказа и эти суммы (доставку — «около»). " + not_found_note
+            head + "Назови клиенту состав заказа и эти суммы (доставку — «около»). "
+            + _price_first(draft, method, has_options=bool(upgrade.options_note(draft))) + not_found_note
             + _ask_point_instruction(method, city, recipient_ask, await _geo_ok(peer_id, method))
         )
     if shown:
         return ToolExecution(
             head + "Назови клиенту состав заказа и эти суммы. " + not_found_note
-            + _points_instruction(method, city, shown, per_point_prices, recipient_ask)
+            + _points_instruction(method, city, shown, per_point_prices, recipient_ask,
+                                  free=_threshold_gap(draft.items_total) is None
+                                  and free_delivery_threshold() is not None,
+                                  more=draft.details.get("shown_more", True))
         )
 
     return ToolExecution(head + "Назови клиенту состав заказа и эти суммы. " + recipient_ask)
@@ -1268,10 +1292,14 @@ _SAY_IT = (
 )
 
 
-async def _ask_for_words(messages: list[dict], system_prompt: str, response, spent) -> str | None:
-    """Ещё один запрос без инструментов, когда модель промолчала. None — снова молчание."""
+async def _ask_for_words(messages: list[dict], system_prompt: str, response, spent, tools) -> str | None:
+    """Ещё один запрос без вызова инструментов, когда модель промолчала. None — снова молчание."""
     history = list(messages)
-    content = [block for block in getattr(response, "content", None) or [] if block.type == "text"]
+    # Текстовый блок из одних пробелов API назад не принимает.
+    content = [
+        block for block in getattr(response, "content", None) or []
+        if block.type == "text" and (block.text or "").strip()
+    ]
     if content:
         history.append({"role": "assistant", "content": content})
     last = history[-1] if history else None
@@ -1283,7 +1311,7 @@ async def _ask_for_words(messages: list[dict], system_prompt: str, response, spe
     else:
         history.append({"role": "user", "content": _SAY_IT})
     try:
-        again = await spent.claude(claude_client.converse(history, system_prompt, []))
+        again = await spent.claude(claude_client.converse(history, system_prompt, tools, words_only=True))
     except Exception:
         logger.exception("Повторный запрос ответа словами не прошёл")
         return None
@@ -1304,6 +1332,22 @@ async def _geo_ok(peer_id: int, method: str) -> bool:
     from app.modules.orders import geo
 
     return await geo.offer_for(peer_id, method)
+
+
+def _price_first(draft: OrderDraft, method: str, *, has_options: bool) -> str:
+    """Цена и дата — обязательно, до просьбы об адресе пункта.
+
+    Когда город приходил вместе с товаром, модель в том же ходу оформляла и
+    черновик, и доставку — и цену с датой из ответа выпускала: клиент читал
+    только «напишите улицу пункта» (05.10.2026).
+    """
+    if has_options:
+        return "ОБЯЗАТЕЛЬНО начни с вариантов доставки фразой выше — с ценой и датой, до просьбы об адресе. "
+    carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
+    cost = "бесплатно" if not draft.delivery_cost else f"около {templates.amount(draft.delivery_cost)} ₽"
+    when = eta.receive(draft.details.get(eta.KEY))
+    line = f"Доставка {carrier} — {cost}" + (f", {when}" if when else "") + "."
+    return f"ОБЯЗАТЕЛЬНО скажи цену и дату до просьбы об адресе, этими словами: «{line}» "
 
 
 def _ask_point_instruction(method: str, city: str, recipient_ask: str, geo: bool = False) -> str:
@@ -1330,28 +1374,36 @@ def _ask_point_instruction(method: str, city: str, recipient_ask: str, geo: bool
 
 
 def _points_instruction(
-    method: str, city: str, shown: list[dict], per_point_prices: bool, recipient_ask: str
+    method: str, city: str, shown: list[dict], per_point_prices: bool, recipient_ask: str,
+    *, free: bool = False, more: bool = True,
 ) -> str:
     carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
-    lines = [f"Пункты выдачи {carrier} в городе {city}: {points.listing(shown)}."]
+    # Выше порога доставка бесплатная (или с одной доплатой за перевозчика) —
+    # цена перевозчика у каждого пункта противоречила бы этому: «Доставка
+    # бесплатная», а в списке «— 129 ₽» у каждого адреса (05.10.2026).
+    lines = [f"Пункты выдачи {carrier} в городе {city}: {points.listing(shown, prices=not free)}."]
     if len(shown) == 1:
         lines.append(
             "Нашёлся один пункт — не считай его выбранным: покажи его и спроси, подходит ли."
         )
     else:
         lines.append(f"Перечисли их клиенту с номерами 1–{len(shown)}.")
-    if per_point_prices:
+    if free:
+        lines.append("Цены у пунктов не называй: стоимость доставки для клиента уже сказана выше и от пункта не зависит.")
+    elif per_point_prices:
         lines.append("Цена у каждого пункта своя — называй её рядом с адресом.")
     else:
         lines.append(
             "Цена посчитана по одному из пунктов — называй её предварительной («около»): "
             "после выбора пункта она пересчитается."
         )
-    if method == "ozon_pvz":
+    if method == "ozon_pvz" and more:
         lines.append(
             "Скажи, что это не весь список: все пункты города — на карте "
             f"{OZON_POINTS_MAP_URL}."
         )
+    elif method == "ozon_pvz":
+        lines.append("Других пунктов под этот запрос нет — не говори, что список неполный.")
     else:
         lines.append(f"Все пункты — на карте {CDEK_OFFICES_MAP_URL}.")
     lines.append("ВАЖНО: пункт ещё НЕ выбран, не говори клиенту, что он выбран.")
@@ -2457,11 +2509,11 @@ _ASKED_NOT_TO_WRITE = (
 )
 
 
-async def _with_buttons(peer_id: int, reply: str, *, consult: bool = False) -> str:
+async def _with_buttons(peer_id: int, reply: str, *, consult: bool = False, with_points: bool = True) -> str:
     """Кнопки под ответом хода — по тому, чем ход закончился."""
     from app.modules.orders import buttons
 
-    return await buttons.prepare(peer_id, reply, consult=consult)
+    return await buttons.prepare(peer_id, reply, consult=consult, with_points=with_points)
 
 
 # После этих инструментов «Взять» под ответом неуместно: вопрос передан
@@ -2782,7 +2834,7 @@ async def _handle_turn(
             )
 
         response = await spent.claude(
-            claude_client.converse(messages, system_prompt, [] if last_round else tools)
+            claude_client.converse(messages, system_prompt, tools, words_only=last_round)
         )
         if last_round:
             break
@@ -2802,13 +2854,19 @@ async def _handle_turn(
             ",".join(sorted(called)) or "—", time.monotonic() - turn_started,
         )
         if time.monotonic() - turn_started < _TURN_BUDGET_SECONDS + 10:
-            text = await _ask_for_words(messages, system_prompt, response, spent)
+            text = await _ask_for_words(messages, system_prompt, response, spent, tools)
     if text is None:
         text = _NO_TEXT_FALLBACK
-    reply = await _with_buttons(
-        peer_id, plain_text(text),
-        consult=text != _NO_TEXT_FALLBACK and not (called & _NO_TAKE_AFTER),
-    )
+    if stop_note:
+        # «Не пишите мне» — ответ без кнопок: ни пунктов, ни «Взять».
+        reply = plain_text(text)
+    else:
+        reply = await _with_buttons(
+            peer_id, plain_text(text),
+            consult=text != _NO_TEXT_FALLBACK and not (called & _NO_TAKE_AFTER),
+            # Кнопки пунктов — только под ответом, где список показан в этом ходу.
+            with_points="set_delivery_method" in called,
+        )
     # Незнакомая метка — исключение: ход не отвечает, клиент получает
     # «техническую заминку» (dialog/service.py), а не текст с дырой.
     restored = await privacy.detokenize(peer_id, reply)

@@ -126,7 +126,10 @@ async def repeat_order(peer_id: int, source_order_id: int):
     draft.details["origin"] = "repeat"
     await state.set_draft(peer_id, draft)
     await funnel.record(peer_id, "draft_created", origin="repeat", repeat_of=order.id)
-    invoiced = await conversation._auto_invoice(peer_id, source="invoice_repeat")
+    # Сводка со ссылкой и [Изменить]: счёт выставлен на прошлый пункт и
+    # получателя без вопроса, и поменять их клиенту должно быть так же просто,
+    # как у «как в прошлый раз» (05.10.2026 кнопка была одна — «Оплатить»).
+    invoiced = await conversation._auto_invoice(peer_id, source="invoice_repeat", style="returning")
     if invoiced is None:
         return ToolExecution(
             f"Повтор заказа №{order.id}: черновик со всем составом, доставкой и получателем "

@@ -599,9 +599,12 @@ EMAIL_HINT = "Или напишите почту заново."
 ASK_RECIPIENT = "Пришлите одним сообщением ФИО, телефон и почту — сразу пришлю счёт."
 
 
-def button_stale() -> str:
-    """Нажата старая кнопка: заказ с тех пор изменился."""
-    return "Эта кнопка уже неактуальна."
+STALE_LIVE_INVOICE = "Актуальная ссылка на оплату — в последнем сообщении со счётом."
+
+
+def button_stale(next_step: str = "") -> str:
+    """Нажата старая кнопка: заказ с тех пор изменился. `next_step` — что нужно дальше."""
+    return f"Эта кнопка уже неактуальна. {next_step}".strip()
 
 
 def delivery_options(*, base_name: str, base_price, base_when: str, fast_name: str = "", fast_price=0,

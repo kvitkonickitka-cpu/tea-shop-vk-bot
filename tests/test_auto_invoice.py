@@ -49,7 +49,7 @@ def world(monkeypatch):
             test=False, amount=draft.items_total + (draft.delivery_cost or 0),
         )
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         box["model"].append({"prompt": system_prompt, "tools": [t["name"] for t in tools]})
         return box["script"].pop(0)
 

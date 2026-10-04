@@ -75,9 +75,9 @@ async def test_unavailable_point_is_explained(clean, world, monkeypatch):
     prompts = []
     real = conversation.claude_client.converse
 
-    async def spy(messages, system_prompt, tools):
+    async def spy(messages, system_prompt, tools, **kwargs):
         prompts.append(system_prompt)
-        return await real(messages, system_prompt, tools)
+        return await real(messages, system_prompt, tools, **kwargs)
 
     monkeypatch.setattr(conversation, "_ozon_price", refuse)
     monkeypatch.setattr(conversation.claude_client, "converse", spy)
@@ -93,7 +93,10 @@ async def test_text_yes_uses_the_tool(clean, world):
     order = await the_order(clean)
     world["script"] = [tool_use("repeat_order", order_id=order.id)]
     await say("да, давайте так же", 1)
-    assert world["payments"] == [1] and f"Заказ №" in world["sent"][-1][0]
+    text, board = world["sent"][-1]
+    assert world["payments"] == [1] and text.startswith("Как в прошлый раз")
+    # Счёт на прошлый пункт и получателя — поменять одной кнопкой.
+    assert [b["action"]["label"] for b in board["buttons"][1]][0] == "Изменить"
 
 
 async def test_choose_other_goes_to_model(clean, world):
@@ -108,7 +111,7 @@ async def test_repeat_is_stale_when_another_order_is_in_progress(clean, world):
     await state.set_draft(PEER, OrderDraft(items=[{"name": "Да Хун Пао", "quantity": 1, "price": 1500}],
                                            items_total=1500, stage="awaiting_delivery"))
     await say("Повторить", 5, json.loads(buttons["Повторить"]["payload"]))
-    assert "Эта кнопка уже неактуальна." in [t for t, _ in world["sent"]]
+    assert any(t.startswith("Эта кнопка уже неактуальна.") for t, _ in world["sent"])
     assert world["payments"] == []
 
 

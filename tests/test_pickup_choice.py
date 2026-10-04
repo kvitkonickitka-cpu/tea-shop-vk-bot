@@ -193,7 +193,7 @@ async def test_point_and_recipient_in_one_message_end_with_invoice(clean, ozon, 
 
     rounds = []
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         rounds.append(1)
         return NS(stop_reason="tool_use", content=[
             NS(type="tool_use", id="t1", name="set_delivery_method",
