@@ -94,6 +94,9 @@ class ClientPreference(Base):
     # сообщества). Продающих касаний такому клиенту нет, пока он сам не
     # напишет снова — тогда отметка снимается.
     unreachable_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Тестовый аккаунт в режиме «новый клиент» (`/новый`): заказы раньше
+    # этой отметки бот не учитывает (app/modules/dialog/test_mode.py).
+    fresh_since: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FunnelEvent(Base):

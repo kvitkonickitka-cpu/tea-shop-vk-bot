@@ -88,6 +88,9 @@ async def recent_delivered(peer_id: int, now: datetime | None = None) -> Order |
         session_factory = get_session_factory()
     except RuntimeError:
         return None
+    from app.modules.dialog import test_mode
+
+    since = await test_mode.fresh_since(peer_id)
     async with session_factory() as session:
         return (
             await session.execute(
@@ -96,6 +99,7 @@ async def recent_delivered(peer_id: int, now: datetime | None = None) -> Order |
                     Order.peer_id == peer_id,
                     Order.payment_status == orders_repository.PAID,
                     Order.delivered_at > now - FEEDBACK_WINDOW,
+                    test_mode.since_clause(Order.created_at, since),
                     Order.status.not_in(("refunded", orders_repository.CANCELED)),
                 )
                 .order_by(Order.delivered_at.desc())

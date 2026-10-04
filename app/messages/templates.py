@@ -895,6 +895,18 @@ def manager_storefront_canceled() -> str:
     return "Клиент отменил заказ до оплаты. Отмените его в разделе «Заказы» сообщества ВК."
 
 
+TEST_REGULAR = "🧪 Тестовый режим: снова постоянный клиент — бот учитывает все ваши заказы."
+
+
+def test_reset(*, fresh: bool, canceled: str = "") -> str:
+    """Ответ тестовому аккаунту на /новый и /сброс."""
+    lines = ["🧪 Тестовый режим: " + ("вы новый клиент — прошлые заказы бот не учитывает."
+                                     if fresh else "начинаем с чистого листа.")]
+    lines.append("Черновик и переписка для бота очищены" + (f", отменены неоплаченные заказы {canceled}." if canceled else "."))
+    lines.append("Вернуть обычный режим — /постоянный.")
+    return "\n".join(lines)
+
+
 def carrier_button(option: dict) -> str:
     cost = "бесплатно" if not option["client_cost"] else f"{amount(option['client_cost'])} ₽"
     return f"{option['carrier']} — {cost}"

@@ -30,27 +30,45 @@ logger = logging.getLogger(__name__)
 
 _test_ids: set[int] | None = None
 _test_ids_raw: str | None = None
+# Записи TEST_VK_IDS, которые не перевелись в ID. Раньше неудача
+# запоминалась до перезапуска контейнера, и аккаунт молча переставал быть
+# тестовым: в отчётах «Диалог завершён» не было 🧪. Теперь — повтор не чаще
+# раза в 10 минут и счётчик в /health.
+_unresolved: list[str] = []
+_retry_at: float = 0.0
 
 
 async def test_peer_ids() -> set[int]:
     """VK ID тестовых аккаунтов. Короткие имена и ссылки переводятся один раз."""
     global _test_ids, _test_ids_raw
     raw = settings.test_vk_ids or ""
-    if _test_ids is not None and _test_ids_raw == raw:
+    global _unresolved, _retry_at
+    import time
+
+    if _test_ids is not None and _test_ids_raw == raw and (not _unresolved or time.monotonic() < _retry_at):
         return _test_ids
     from app.modules.dialog import vk_client
 
     found: set[int] = set()
+    missed: list[str] = []
     for part in raw.replace(";", ",").split(","):
         if not part.strip():
             continue
         resolved = await vk_client.resolve_user_id(part.strip())
         if resolved is None:
-            logger.error("TEST_VK_IDS: «%s» не удалось перевести в VK ID", part.strip())
+            logger.error("TEST_VK_IDS: «%s» не удалось перевести в VK ID — укажите числовой id", part.strip())
+            missed.append(part.strip())
             continue
         found.add(resolved)
-    _test_ids, _test_ids_raw = found, raw
+    _test_ids, _test_ids_raw, _unresolved = found, raw, missed
+    _retry_at = time.monotonic() + 600
     return found
+
+
+async def test_ids_status() -> dict:
+    """Для /health: сколько тестовых аккаунтов узнано и сколько записей не перевелось."""
+    ids = await test_peer_ids()
+    return {"узнано": len(ids), "не переведено": len(_unresolved)}
 
 
 def test_order_filter(test_ids: set[int]):

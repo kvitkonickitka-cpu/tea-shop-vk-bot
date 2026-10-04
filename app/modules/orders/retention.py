@@ -118,6 +118,10 @@ async def already(order_id: int, kind: str) -> bool:
 
 async def blocker(peer_id: int, now: datetime) -> str | None:
     """Почему клиенту сейчас нельзя продающее касание. None — можно."""
+    from app.modules.dialog import test_mode
+
+    if await test_mode.fresh_since(peer_id) is not None:
+        return "тестовый аккаунт в режиме «новый клиент» (/новый)"
     if await marketing.is_opted_out(peer_id):
         return "клиент отписан («стоп»)"
     session_factory = get_session_factory()

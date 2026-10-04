@@ -102,8 +102,12 @@ async def _successful_orders(peer_id: int) -> list[Order]:
 
     from app.modules.analytics import service as analytics
 
+    from app.modules.dialog import test_mode
+
     try:
         test_ids = await analytics.test_peer_ids()
+        # Тестовый аккаунт в режиме «новый клиент» — прошлых заказов нет.
+        since = await test_mode.fresh_since(peer_id)
         async with session_factory() as session:
             return list(
                 (
@@ -116,6 +120,7 @@ async def _successful_orders(peer_id: int) -> list[Order]:
                             Order.payment_status == orders_repository.PAID,
                             Order.status.not_in(("refunded", orders_repository.CANCELED)),
                             Order.not_delivered_at.is_(None),
+                            test_mode.since_clause(Order.created_at, since),
                         )
                         .order_by(Order.created_at.desc())
                         .limit(5)
