@@ -74,7 +74,47 @@ async def collect(now: datetime | None = None) -> dict:
     return {
         "now": now, "stats": stats, "pulses": int(pulses or 0), "expected": expected,
         "dialogs": int(dialogs or 0), "tasks": tasks, "disk": disk,
+        "retention": await _retention(now),
     }
+
+
+async def _retention(now: datetime) -> dict | None:
+    """Повторные касания за сутки и за 30 дней. Сбой — без блока, а не без отчёта."""
+    from app.modules.orders import retention
+
+    try:
+        return {
+            "day": await retention.stats(now - _DAY),
+            "month": await retention.stats(now - timedelta(days=30)),
+            "share": await retention.repeat_share(now),
+        }
+    except Exception:
+        logger.exception("Не собрали цифры повторных касаний для отчёта")
+        return None
+
+
+def _retention_lines(data: dict | None) -> list[str]:
+    from app.modules.orders import retention
+
+    if data is None:
+        return []
+    lines = ["", "<b>Повторные касания</b> · сутки / 30 дней",
+             "отправлено · нажатий · заказов за 7 дн · отписок за 2 дн"]
+    for kind in retention.KINDS:
+        day, month = data["day"][kind], data["month"][kind]
+        lines.append(
+            f"{html.escape(retention.NAMES[kind])}: "
+            + " · ".join(f"{day[f]}/{month[f]}" for f in ("sent", "pressed", "orders", "optouts"))
+        )
+    cohort, repeated = data["share"]
+    if cohort:
+        lines.append(
+            f"Повторная покупка в течение 60 дней после первой: {_num(100 * repeated / cohort, 0)} % "
+            f"({repeated} из {cohort})"
+        )
+    else:
+        lines.append("Повторная покупка за 60 дней: пока не из кого считать — первым покупкам меньше 60 дней")
+    return lines
 
 
 async def _task_times() -> dict[str, datetime]:
@@ -119,6 +159,8 @@ def render(data: dict) -> str:
     else:
         lines.append("<b>Ответ клиенту</b>: ответов не было")
     lines.append(f"<b>Диалогов</b>: {data['dialogs']}")
+
+    lines += _retention_lines(data.get("retention"))
 
     lines += ["", "<b>Ошибки сервисов</b>"]
     errors = stats["errors"]

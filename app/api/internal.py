@@ -316,6 +316,21 @@ async def retention_check(request: Request):
     }
 
 
+@router.post("/internal/retention/delivery-stats")
+async def retention_delivery_stats(request: Request):
+    """Как часто доходит «вручено» — от него зависит вся цепочка касаний.
+
+        scripts/api.sh retention/delivery-stats
+
+    По Ozon и СДЭКу: сколько оплаченных заказов отправлено, сколько вручено и
+    не вручено, сколько едут дольше 14 дней без «вручено» и сколько так и
+    не переданы перевозчику.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    return await retention.delivery_stats()
+
+
 @router.post("/internal/orders/{order_id}/delivered")
 @router.post("/internal/orders/{order_id}/not-delivered")
 async def mark_delivery_event(order_id: int, request: Request):

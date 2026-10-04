@@ -315,3 +315,87 @@ async def note_opt_out(peer_id: int, now: datetime | None = None) -> None:
             )
     except Exception:
         logger.exception("Не засчитали отписку касанию для peer_id=%s", peer_id)
+
+
+# --- цифры для ежедневного отчёта -------------------------------------------
+
+
+async def stats(since: datetime) -> dict[str, dict[str, int]]:
+    """По каждому касанию: отправлено, нажатий, заказов за 7 дней, отписок за 2 дня."""
+    async with get_session_factory()() as session:
+        rows = (
+            await session.execute(
+                select(FunnelEvent.event, FunnelEvent.data).where(
+                    FunnelEvent.created_at > since,
+                    (FunnelEvent.event.like("touch%")) | (FunnelEvent.event.like("button:%")),
+                )
+            )
+        ).all()
+    result = {kind: {"sent": 0, "pressed": 0, "orders": 0, "optouts": 0} for kind in KINDS}
+    for event, data in rows:
+        data = data or {}
+        if event.startswith("touch:"):
+            kind, field = event.split(":", 1)[1], "sent"
+        elif event == "touch_order":
+            kind, field = data.get("touch"), "orders"
+        elif event == "touch_optout":
+            kind, field = data.get("touch"), "optouts"
+        elif event.startswith("button:") and data.get("touch"):
+            kind, field = data["touch"], "pressed"
+        else:
+            continue
+        if kind in result:
+            result[kind][field] += 1
+    return result
+
+
+async def repeat_share(now: datetime | None = None) -> tuple[int, int]:
+    """Клиенты, чья первая покупка была 60+ дней назад, и сколько из них купили снова за 60 дней."""
+    from sqlalchemy import text
+
+    now = now or datetime.now(timezone.utc)
+    async with get_session_factory()() as session:
+        cohort, repeated = (
+            await session.execute(
+                text(
+                    "with firsts as ("
+                    "  select peer_id, min(created_at) as first from orders"
+                    "  where payment_status = :paid and status <> :canceled group by peer_id)"
+                    " select count(*), count(*) filter (where exists ("
+                    "  select 1 from orders o where o.peer_id = f.peer_id"
+                    "  and o.payment_status = :paid and o.status <> :canceled"
+                    "  and o.created_at > f.first and o.created_at <= f.first + interval '60 days'))"
+                    " from firsts f where f.first <= :edge"
+                ),
+                {"paid": orders_repository.PAID, "canceled": orders_repository.CANCELED,
+                 "edge": now - timedelta(days=60)},
+            )
+        ).one()
+    return int(cohort or 0), int(repeated or 0)
+
+
+async def delivery_stats() -> dict:
+    """Как часто приходит «вручено»: по Ozon и СДЭКу, среди оплаченных и отправленных."""
+    from sqlalchemy import text
+
+    async with get_session_factory()() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "select case when ozon_posting is not null then 'Ozon'"
+                    "  when cdek_uuid is not null then 'СДЭК' else 'без отправления' end as carrier,"
+                    " count(*) as shipped,"
+                    " count(*) filter (where delivered_at is not null) as delivered,"
+                    " count(*) filter (where not_delivered_at is not null) as not_delivered,"
+                    " count(*) filter (where delivered_at is null and not_delivered_at is null"
+                    "   and handed_over_at is not null and handed_over_at < now() - interval '14 days')"
+                    "   as stuck_14d,"
+                    " count(*) filter (where delivered_at is null and not_delivered_at is null"
+                    "   and handed_over_at is null) as never_handed_over"
+                    " from orders where payment_status = :paid and status not in ('refunded', :canceled)"
+                    " group by 1 order by 1"
+                ),
+                {"paid": orders_repository.PAID, "canceled": orders_repository.CANCELED},
+            )
+        ).mappings().all()
+    return {row["carrier"]: dict(row) for row in rows}

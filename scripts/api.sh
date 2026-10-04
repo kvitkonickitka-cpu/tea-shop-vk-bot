@@ -20,6 +20,7 @@
 #   scripts/api.sh 'ozon/posting?number=0123-0001-1&cancel=1'
 #   scripts/api.sh yookassa/me            чей магазин, способы оплаты, фискализация
 #   scripts/api.sh 'retention/check?peer_id=123&days=21'   повторные касания клиента через N дней (&send=1 — отправить)
+#   scripts/api.sh retention/delivery-stats   как часто доходит «вручено» по Ozon и СДЭКу
 
 set -eu
 
