@@ -235,8 +235,22 @@ async def _respond(batch: Batch, budget_seconds: float) -> None:
 
     # Нажатия кнопок — кодом, по порядку, до хода модели. Что код решить не
     # может («Нет», «Изменить», старая кнопка), уходит модели текстом.
+    from app.modules.orders import geo
+
     texts: list[InboundMessage] = []
     for row in batch.rows:
+        if geo.is_geo(row.message):
+            # Геопозицию разбирает код: ближайшие пункты, модель видит только метку.
+            answer = await geo.handle(batch.peer_id, row.message)
+            if answer is not None:
+                reply, keyboard, note = answer
+                await service.send_press_reply(batch.peer_id, note, reply, keyboard, to_model=False)
+                await geo.note_shown(batch.peer_id, keyboard, "geo")
+                continue
+            label = (row.message.get("geo") or {}).get("label") or "GEO"
+            row.message = {**row.message, "text": geo.HISTORY_NOTE.format(label=label), "payload": None}
+            texts.append(row)
+            continue
         if not is_button(row.message):
             texts.append(row)
             continue
@@ -384,6 +398,12 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     # сообщение пришло без него, чтобы уникальность не склеила разные.
     event_id = event_id or f"msg:{peer_id}:{message.get('conversation_message_id') or message.get('id') or time.time_ns()}"
     await _note_dialog_start(peer_id, event_id, message)
+    # Геопозиция — меткой ещё до записи в базу: координаты открытым текстом
+    # не должны лежать ни в inbound_messages, ни где-то ещё.
+    from app.modules.orders import geo
+
+    if geo.coordinates_of(message) is not None:
+        message = await geo.hide(peer_id, message)
     await _store(event_id, message)
     if is_enabled() and not is_button(message):
         await _wait_for_quiet(peer_id)

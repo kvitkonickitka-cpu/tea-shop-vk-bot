@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from app.messages import funnel, keyboard as keyboards, templates
 from app.core.config import settings
+from app.modules.orders import geo
 from app.modules.orders import eta, points, repository as orders_repository, state, take
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,16 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
                 "Да, на эти данные", {"a": "last_recipient", "v": version}, "positive"
             )]
 
+    # Кнопка геопозиции — там, где бот спрашивает, где забрать: до выбора
+    # доставки и в большом городе, пока пункт не назван.
+    geo_row = []
+    wants_geo = (not draft.delivery_method and draft.stage == "awaiting_delivery") or (
+        details.get("point_asked") and not shown and not fixed
+        and draft.delivery_method in ("ozon_pvz", "cdek_pvz")
+    )
+    if wants_geo and await geo.offer_for(peer_id, draft.delivery_method):
+        geo_row = [geo.button(version)]
+
     if shown and not fixed and draft.delivery_method:
         rows = [
             [keyboards.text_button(
@@ -86,7 +97,7 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
         return keyboards.inline(rows + [recipient_row]), templates.POINTS_HINT
 
     if recipient_row:
-        return keyboards.inline([recipient_row]), ""
+        return keyboards.inline([geo_row, recipient_row]), ""
 
     if details.get("email_suggestion") and details.get("pending_recipient"):
         return keyboards.inline([[
@@ -106,7 +117,9 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
         await state.set_draft(peer_id, draft)
         return keyboards.inline([[keyboards.text_button(
             f"Добавить {item}", {"a": "add", "v": draft.details.get("version")}, "positive"
-        )]]), ""
+        )], geo_row]), ""
+    if geo_row:
+        return keyboards.inline([geo_row]), ""
     return None, ""
 
 
@@ -163,6 +176,8 @@ async def prepare(peer_id: int, reply: str, *, consult: bool = False) -> str:
         logger.exception("Не собрали кнопки для peer_id=%s", peer_id)
         return reply
     await take.remember_set(peer_id, names if markup is not None else None)
+    if markup is not None:
+        await geo.note_shown(peer_id, keyboard, "dialog")
     if markup is not None and names:
         await funnel.record(peer_id, "take_shown", source_=funnel.CODE, items=names)
     if markup is None:
@@ -288,6 +303,7 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
             ask_recipient=True,
             eta=eta.phrase(fresh.details),
             ask=ask,
+            surcharge=bool(fresh.details.get("delivery_surcharge")),
         ), keyboard=keyboard)
 
     return await _invoice_or(peer_id, chosen_reply)
@@ -528,20 +544,26 @@ async def _on_take(peer_id: int, payload: dict) -> Press:
         return TO_MODEL
     item = draft.details.get("upsell_item")
     upsell = catalog_service.find_item(item) if item else None
-    keyboard = None
+    rows = []
     if upsell is not None and upsell.get("in_stock", True) and item not in {r["name"] for r in draft.items}:
         draft.details["upsell_button_sent"] = True
         await state.set_draft(peer_id, draft)
         draft = await state.get_draft(peer_id)
-        keyboard = keyboards.inline([[keyboards.text_button(
+        rows.append([keyboards.text_button(
             f"Добавить {item}", {"a": "add", "v": draft.details.get("version")}, "positive"
-        )]])
+        )])
     else:
         upsell = None
+    with_geo = await geo.offer_for(peer_id)
+    if with_geo:
+        rows.append([geo.button(draft.details.get("version"))])
+    keyboard = keyboards.inline(rows) if rows else None
+    if with_geo:
+        await geo.note_shown(peer_id, keyboard, "take")
     return Press(reply=templates.taken(
         name=take.display_name(match["name"]), price=match["price"],
         upsell=item if upsell else "", upsell_price=upsell["price"] if upsell else None,
-        gap=conversation._threshold_gap(draft.items_total) if upsell else None,
+        gap=conversation._threshold_gap(draft.items_total) if upsell else None, geo=with_geo,
     ), keyboard=keyboard)
 
 

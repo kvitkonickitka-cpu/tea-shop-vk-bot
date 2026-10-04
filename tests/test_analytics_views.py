@@ -200,3 +200,38 @@ async def test_dims_cover_every_event_the_bot_writes():
             written.add(match.group(1))
     written -= {"touch", "button"}  # f-строки button:{…} и touch:{…} — общими кодами
     assert written - codes == set()
+
+
+async def test_orders_expected_date_and_surcharge(clean, shop):
+    upgraded = await order(clean, REAL, created_at=T0 + timedelta(days=40), delivery_method="cdek_pvz",
+                           items_total=3000, delivery_cost=128, total=3128,
+                           details={"carrier_delivery_cost": 245, "delivery_surcharge": 128,
+                                    "expected_from": "2026-11-12", "expected_by": "2026-11-13"})
+    result = {row["order_id"]: row for row in await rows(clean, "v_orders", "order_id")}
+    row = result[upgraded.id]
+    assert str(row["expected_delivery_date"]) == "2026-11-13" and float(row["delivery_surcharge"]) == 128
+    assert not row["free_delivery"]
+    first = result[shop["first"].id]
+    assert first["expected_delivery_date"] is None and float(first["delivery_surcharge"]) == 0
+
+
+async def test_invoice_stores_the_expected_date(clean, monkeypatch):
+    from app.modules.orders import conversation, eta, state
+    from app.modules.orders.state import OrderDraft
+
+    captured = {}
+
+    async def create_payment(draft, order_key, attempt=1):
+        captured.update(draft.details)
+        raise RuntimeError("стоп после снимка")
+
+    monkeypatch.setattr(conversation.payment_service, "create_payment", create_payment)
+    draft = OrderDraft(items=[{"name": "Те Гуань Инь", "quantity": 1, "price": 1500}], items_total=1500,
+                       delivery_method="ozon_pvz", delivery_cost=121, stage="confirmed", details={})
+    eta.remember(draft.details, carrier="ozon", days_min=5, days_max=5, working=False)
+    await state.set_draft(REAL, draft)
+    try:
+        await conversation._confirm_with_payment(REAL, draft)
+    except Exception:
+        pass
+    assert (captured.get("expected_from"), captured.get("expected_by")) == ("2026-10-10", "2026-10-10")

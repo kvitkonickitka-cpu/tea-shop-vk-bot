@@ -30,6 +30,7 @@ from app.privacy import crypto, detect, vault
 logger = logging.getLogger(__name__)
 
 RECIPIENT = "recipient"
+GEO_WORD = "геопозиция"
 COURIER_ADDRESS = "courier_address"
 REDACTED = "[REDACTED]"
 
@@ -236,6 +237,12 @@ async def detokenize(peer_id: int, text: str) -> str:
         label = match.group(0)[1:-1]
         if label in values:
             continue
+        if label.startswith("GEO_"):
+            # Координаты не нужны ни человеку, ни инструменту: модель могла
+            # повторить метку — подставляем слово, а не точку на карте. И
+            # метка живёт сутки: после удаления она не должна ронять ход.
+            values[label] = GEO_WORD
+            continue
         value = await vault.value_of(key, label)
         if value is None:
             logger.error("Метка [%s] не принадлежит клиенту peer_id=%s — ответ не отправляем", label, peer_id)
@@ -269,6 +276,46 @@ def scrub(text: str) -> tuple[str, int]:
         count += 1
         return REDACTED
 
+    def hide_coordinates(match: re.Match) -> str:
+        nonlocal count
+        lat, lon = float(match.group(1)), float(match.group(2))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return match.group(0)
+        count += 1
+        return REDACTED
+
     text = detect.EMAIL.sub(hide, text)
     text = detect.PHONE.sub(hide, text)
+    # Геопозиция в запрос попадать не должна вовсе (вместо неё [GEO_n]);
+    # пара координат здесь — значит, метка что-то пропустила.
+    text = detect.COORDINATES.sub(hide_coordinates, text)
     return text, count
+
+
+async def geo_label(peer_id: int, latitude: float, longitude: float) -> str | None:
+    """Геопозиция клиента — меткой [GEO_n]; координаты только в хранилище, зашифрованы.
+
+    None — метки не завести (нет ключа): тогда координаты нигде не сохраняем.
+    """
+    if not can_restore():
+        return None
+    return await vault.label_for(client_key(peer_id), "GEO", f"{latitude:.6f},{longitude:.6f}")
+
+
+async def geo_value(peer_id: int, label: str) -> tuple[float, float] | None:
+    """Координаты по метке — для поиска пунктов. Метка истекла — None."""
+    if not can_restore():
+        return None
+    raw = await vault.value_of(client_key(peer_id), label)
+    if not raw:
+        return None
+    try:
+        lat, lon = (float(part) for part in raw.split(","))
+    except ValueError:
+        return None
+    return lat, lon
+
+
+async def forget_old_geo() -> int:
+    """Тик расписания: геопозиции старше GEO_RETENTION_HOURS — удалить."""
+    return await vault.forget_kind_older_than("GEO", settings.geo_retention_hours)

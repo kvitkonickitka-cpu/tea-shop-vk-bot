@@ -13,7 +13,7 @@ from pathlib import Path
 from app import privacy
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
-from app.modules.delivery import cdek_client, ozon_client, ozon_quote
+from app.modules.delivery import cdek_client, ozon_catalog, ozon_client, ozon_quote
 from app.messages import client as client_messages, funnel, manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
@@ -24,6 +24,7 @@ from app.modules.dialog import (
     history as dialog_history,
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
+from app.modules.orders import address as address_parser
 from app.modules.orders import cancellation
 from app.modules.orders import contacts
 from app.modules.orders import eta
@@ -37,6 +38,7 @@ from app.modules.orders import service as orders_service
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
+from app.modules.orders import upgrade
 from app.modules.orders.state import OrderDraft
 from app.modules.payment import service as payment_service
 from app.modules.payment import yookassa_client
@@ -490,12 +492,26 @@ def _apply_free_delivery(draft: OrderDraft) -> str:
     carrier_cost = draft.details.get("carrier_delivery_cost", draft.delivery_cost)
     if draft.items_total >= threshold:
         draft.details["carrier_delivery_cost"] = carrier_cost
+        # Порог покрывает самый дешёвый вариант; за перевозчика дороже
+        # клиент доплачивает разницу (app/modules/orders/upgrade.py).
+        extra = upgrade.surcharge(draft.details, draft.delivery_method, carrier_cost)
+        if extra:
+            draft.details[upgrade.SURCHARGE] = extra
+            draft.delivery_cost = extra
+            base = upgrade.cheapest(upgrade.quotes_for(draft.details))
+            return (
+                f"Сумма товаров от {templates.amount(threshold)} ₽: самая дешёвая доставка "
+                f"({base['name']}) для клиента бесплатная, за выбранную клиент доплачивает "
+                f"{templates.amount(extra)} ₽. Скажи именно так: «с доплатой {templates.amount(extra)} ₽».\n"
+            )
+        draft.details.pop(upgrade.SURCHARGE, None)
         draft.delivery_cost = 0
         return (
             f"Доставка для клиента бесплатная: сумма товаров от "
             f"{templates.amount(threshold)} ₽. Скажи об этом клиенту.\n"
         )
     # Сумма опустилась ниже порога (клиент убрал позицию) — снова платная.
+    draft.details.pop(upgrade.SURCHARGE, None)
     if "carrier_delivery_cost" in draft.details:
         draft.delivery_cost = draft.details.pop("carrier_delivery_cost")
     return ""
@@ -636,8 +652,8 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     if draft.details.get("point_asked") and not shown and not fixed_point:
         lines.append(
             f"Пункт выдачи не выбран: клиента попросили назвать улицу и дом пункта, "
-            f"прислать адрес с карты или скриншот. Его ответ (адрес со скриншота — "
-            f"тоже) передай в pickup_point set_delivery_method с городом "
+            f"адрес с карты или отправить геопозицию. Его ответ-адрес передай в "
+            f"pickup_point set_delivery_method с городом "
             f"«{draft.details.get('address', '')}»."
         )
     if shown and not offer and not fixed_point:
@@ -785,14 +801,19 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         last.remember(draft.details)
         await state.set_draft(peer_id, draft)
         return result + "\n" + repeat_delivery.suggestion(last)
+    from app.modules.orders import geo
+
+    with_geo = await geo.offer_for(peer_id)
     result += (
         "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
         "Ozon — он заметно дешевле, клиент забирает посылку сам. Если нужно "
         "быстрее, предложи пункт выдачи СДЭК: дороже, но идёт в полтора-два "
         "раза меньше. Курьер СДЭК до двери — тоже можно. "
         f"{_OTHER_METHODS_HINT}"
-        f"Спроси сразу город и улицу — «{templates.ASK_WHERE}» (вместе со ссылкой "
-        "на карту) — в том же сообщении, что и предложение дополнить заказ: по "
+        f"Спроси сразу город и улицу — «{templates.ask_where(with_geo)}»"
+        + (" (кнопку геопозиции поставит код; геопозицию разберёт тоже код)" if with_geo
+           else " (вместе со ссылкой на карту)")
+        + " — в том же сообщении, что и предложение дополнить заказ: по "
         "улице первыми покажутся ближайшие пункты. Назвал только город — "
         "работай с ним, улицу не переспрашивай."
     )
@@ -884,11 +905,21 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             "и предложи пункт выдачи Ozon или СДЭК."
         )
 
+    # Настоящая цена прошлого перевозчика к новому расчёту отношения не
+    # имеет: раньше её снимал только Ozon, и СДЭК после Ozon выше порога
+    # записывал себе цену Ozon.
+    draft.details.pop("carrier_delivery_cost", None)
     # Список пунктов, который увидит клиент, — пока пункт не выбран.
     shown: list[dict] = []
     per_point_prices = False
     not_found_note = ""
     city = ""
+    # Геопозиция клиента — только из кода (app/modules/orders/geo.py), не от
+    # модели: ближайшие пункты в радиусе вместо поиска по улице.
+    near = tool_input.get("_near")
+    distances: dict = {}
+    # Ровно один пункт на названной улице: (улица, адрес пункта).
+    single_point: tuple[str, str] | None = None
     # Город большой, а улица не названа (или не нашлась): список не
     # показываем, просим адрес пункта. Четыре случайных пункта из сотни —
     # не выбор: клиент всё равно идёт на карту, а потом пишет адрес.
@@ -924,7 +955,27 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.details["tariff_code"] = tariff.code
         draft.details["address"] = address
 
-        if method == "cdek_pvz" and chosen:
+        if method == "cdek_pvz" and near and not chosen:
+            draft.details.pop("delivery_point", None)
+            try:
+                city_list = await cdek_client.city_points(address)
+            except Exception:
+                logger.exception("Не нашли пункты выдачи СДЭК для peer_id=%s", peer_id)
+                city_list = []
+            measured = sorted(
+                ((point, ozon_catalog.distance_m(near[0], near[1], point.latitude, point.longitude))
+                 for point in city_list if point.latitude is not None and point.longitude is not None),
+                key=lambda pair: pair[1],
+            )
+            measured = [pair for pair in measured if pair[1] <= settings.geo_search_radius_km * 1000]
+            if not measured:
+                return ToolExecution(GEO_NOTHING_NEAR)
+            shown = points.remember(
+                draft.details, method, address,
+                [{"id": point.code, "address": point.describe(), "distance": round(meters)}
+                 for point, meters in measured[: points.MAX_SHOWN]],
+            )
+        elif method == "cdek_pvz" and chosen:
             draft.details["delivery_point"] = chosen["id"]
             label = f"{label}: {chosen['address']}"
             points.forget(draft.details)
@@ -943,7 +994,13 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                     f"Пунктов выдачи СДЭК в городе {address} не нашлось. Предложи "
                     f"курьера СДЭК или пункт выдачи Ozon, карта пунктов СДЭК: {CDEK_OFFICES_MAP_URL}"
                 )
-            if not found and len(city_list) > points.MAX_SHOWN:
+            if _single_on_street(True, len(found), found):
+                # На названной улице ровно один пункт — он и есть выбор.
+                draft.details["delivery_point"] = found[0].code
+                label = f"{label}: {found[0].describe()}"
+                points.forget(draft.details)
+                single_point = (hint, found[0].describe())
+            elif not found and len(city_list) > points.MAX_SHOWN:
                 ask_point = True
                 points.forget(draft.details)
             else:
@@ -988,7 +1045,21 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             points.forget(draft.details)
         else:
             try:
-                picked = await _ozon_points(draft, city, hint)
+                if near:
+                    pairs = await ozon_quote.points_near(
+                        near[0], near[1], radius_km=settings.geo_search_radius_km,
+                        weight_grams=_draft_weight_grams(draft), declared_value=draft.items_total,
+                    )
+                    distances = {row.id: round(meters) for row, meters in pairs}
+                    rows = [row for row, _ in pairs]
+                    picked = ozon_quote.Picked(rows, len(rows), len(rows), True)
+                    # Город — по ближайшему пункту: клиент его мог и не называть,
+                    # а выбор «1» дальше сверяется со списком этого города.
+                    parsed = address_parser.city_and_street(rows[0].address) if rows else None
+                    if parsed:
+                        city = parsed[0]
+                else:
+                    picked = await _ozon_points(draft, city, hint)
             except Exception:
                 logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
                 picked = ozon_quote.Picked([], 0, 0, False)
@@ -997,7 +1068,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             narrowed = bool(hint) and picked.hint_matched
             # Без улицы в большом городе — просим адрес пункта; в маленьком
             # пункты города и есть полный список, его и показываем.
-            ask_point = bool(candidates) and not narrowed and picked.total > points.MAX_SHOWN
+            ask_point = bool(candidates) and not narrowed and not near and picked.total > points.MAX_SHOWN
             if hint and not picked.hint_matched:
                 # Адрес с карты Ozon может не найтись у нас: копия каталога
                 # неполная. Тупик «не нашёлся» хуже, чем пункты города.
@@ -1009,6 +1080,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                     )
                 hint = ""
 
+            if not candidates and near:
+                return ToolExecution(GEO_NOTHING_NEAR)
             if not candidates:
                 if picked.found:
                     return ToolExecution(
@@ -1021,24 +1094,44 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                     "клиента адрес пункта или предложи доставку СДЭКом."
                 )
 
-            # Без списка цена нужна одна — «около», по первому пункту города.
-            priced, quote = await _price_ozon_points(
-                draft, candidates[:1] if ask_point else candidates, peer_id
-            )
-            if quote is None:
-                return ToolExecution(
-                    "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
-                    "а если он хочет именно Ozon — вызови escalate_to_manager."
+            quote = None
+            if _single_on_street(narrowed, picked.total, candidates):
+                # На названной улице ровно один пункт — он и есть выбор
+                # клиента: записываем, счёт придёт, как только есть получатель.
+                only = candidates[0]
+                try:
+                    quote = await _ozon_price(draft, int(only.id))
+                except Exception as error:
+                    logger.warning("Не посчитали единственный пункт Ozon %s для peer_id=%s — %s",
+                                   only.id, peer_id, error)
+                if quote is not None:
+                    draft.details["ozon_point_id"] = int(only.id)
+                    draft.details["ozon_point_address"] = only.address
+                    draft.delivery_label = f"Ozon, пункт выдачи: {only.address}"
+                    points.forget(draft.details)
+                    single_point = (hint, only.address)
+            if single_point is None:
+                # Без списка цена нужна одна — «около», по первому пункту города.
+                priced, quote = await _price_ozon_points(
+                    draft, candidates[:1] if ask_point else candidates, peer_id
                 )
-            if ask_point:
-                points.forget(draft.details)
-            else:
-                per_point_prices = all(row.get("price") is not None for row in priced)
-                shown = points.remember(draft.details, method, city, priced)
-            # Пункт не фиксируем, даже если он один: выбирает клиент.
-            draft.details.pop("ozon_point_id", None)
-            draft.details.pop("ozon_point_address", None)
-            draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
+                if quote is None:
+                    return ToolExecution(
+                        "Расчёт Ozon сейчас недоступен. Предложи клиенту доставку СДЭКом, "
+                        "а если он хочет именно Ozon — вызови escalate_to_manager."
+                    )
+                if ask_point:
+                    points.forget(draft.details)
+                else:
+                    per_point_prices = all(row.get("price") is not None for row in priced)
+                    for row in priced:
+                        if row["id"] in distances:
+                            row["distance"] = distances[row["id"]]
+                    shown = points.remember(draft.details, method, city, priced)
+                # Пункт не фиксируем, даже если он один в городе: выбирает клиент.
+                draft.details.pop("ozon_point_id", None)
+                draft.details.pop("ozon_point_address", None)
+                draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
 
         draft.details["address"] = city
         # Тот же урок, что и с СДЭКом: страховку Ozon выставляет отдельной
@@ -1062,9 +1155,19 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.details["point_asked"] = True
     else:
         draft.details.pop("point_asked", None)
+    if single_point is not None:
+        # Пункт записан без вопроса: в сводке — «Если пункт не тот — напишите».
+        draft.details["single_point"] = True
+    else:
+        draft.details.pop("single_point", None)
     draft.delivery_method = method
     draft.stage = "awaiting_confirmation"
+    try:
+        await upgrade.compare(draft, city, method)
+    except Exception:
+        logger.warning("Не сравнили перевозчиков для peer_id=%s", peer_id, exc_info=True)
     free_note = _apply_free_delivery(draft)
+    free_note += upgrade.options_note(draft)
     total = draft.items_total + draft.delivery_cost
     # Когда посчитана цена и какой итог клиент от нас услышал: перед счётом
     # старая цена пересчитывается, а изменившийся итог без вопроса не
@@ -1077,6 +1180,12 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                         cost=float(draft.delivery_cost or 0))
     if draft.details.get("ozon_point_id") or draft.details.get("delivery_point") or method == "cdek_courier":
         await funnel.record(peer_id, "point_chosen", order_id=order_ref, method=method)
+    extra = upgrade.upgraded_by(draft)
+    if extra is not None:
+        # Клиент выбрал не самый дешёвый вариант: сколько он стоит сверх него
+        # и сколько из этого платит клиент (выше порога — доплата).
+        await funnel.record(peer_id, "delivery_upgrade", order_id=order_ref, method=method, extra=extra,
+                            surcharge=float(draft.details.get(upgrade.SURCHARGE) or 0))
 
     # Состав заказа перечисляем прямо здесь. Без него модель писала клиенту
     # «Товары: 800 руб.» — сумму, по которой не проверить, то ли он заказывает.
@@ -1100,10 +1209,30 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     head += free_note
 
     recipient_ask = await _recipient_ask(peer_id, draft, method)
+    if single_point is not None:
+        if draft.details.get("recipient_name") and draft.details.get("recipient_email"):
+            return ToolExecution(
+                head + f"На улице «{single_point[0]}» ровно один пункт — он записан: {single_point[1]}. "
+                "Получатель уже есть — счёт со ссылкой код пришлёт сам."
+            )
+        text = templates.single_point(
+            street=single_point[0], carrier="Ozon" if method == "ozon_pvz" else "СДЭК",
+            address=single_point[1], delivery_cost=draft.delivery_cost,
+            surcharge=bool(draft.details.get(upgrade.SURCHARGE)), when=eta.receive(draft.details.get(eta.KEY)),
+            email_only=bool(draft.details.get("storefront_recipient")),
+        )
+        return ToolExecution(
+            head + f"На улице «{single_point[0]}» ровно один пункт — он записан: {single_point[1]}. "
+            "Если клиент в этом же сообщении прислал почту (или ФИО, телефон и почту) — сразу вызови "
+            "set_recipient, счёт придёт сам. Иначе ответь клиенту дословно, одним сообщением: "
+            f"«{text}». Его ответ с данными — согласие с пунктом."
+            + ("" if recipient_ask == _ASK_RECIPIENT else
+               " Постоянному клиенту вместо просьбы о данных предложи прошлого получателя. " + recipient_ask)
+        )
     if ask_point:
         return ToolExecution(
             head + "Назови клиенту состав заказа и эти суммы (доставку — «около»). " + not_found_note
-            + _ask_point_instruction(method, city, recipient_ask)
+            + _ask_point_instruction(method, city, recipient_ask, await _geo_ok(peer_id, method))
         )
     if shown:
         return ToolExecution(
@@ -1133,12 +1262,28 @@ _ASK_RECIPIENT = (
 )
 
 
-def _ask_point_instruction(method: str, city: str, recipient_ask: str) -> str:
+def _single_on_street(narrowed: bool, total: int, found: list) -> bool:
+    """На названной улице ровно один пункт — и правило включено."""
+    return bool(settings.single_point_instant_enabled and narrowed and total == 1 and len(found) == 1)
+
+
+# Ответ инструмента, когда по геопозиции в радиусе ничего нет: его видит
+# только код геопозиции, клиенту отвечает он сам.
+GEO_NOTHING_NEAR = "GEO_NOTHING_NEAR"
+
+
+async def _geo_ok(peer_id: int, method: str) -> bool:
+    from app.modules.orders import geo
+
+    return await geo.offer_for(peer_id, method)
+
+
+def _ask_point_instruction(method: str, city: str, recipient_ask: str, geo: bool = False) -> str:
     carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
     lines = [
         f"Пункт выдачи ещё НЕ выбран. Пунктов {carrier} в городе {city} много — список "
         "не перечисляй и адреса не придумывай. Попроси этими словами, ссылку не "
-        f"обрамляй знаками препинания:\n{templates.ask_point_address(carrier)}\n"
+        f"обрамляй знаками препинания:\n{templates.ask_point_address(carrier, geo)}\n"
     ]
     if recipient_ask == _ASK_RECIPIENT:
         lines.append(
@@ -1148,9 +1293,10 @@ def _ask_point_instruction(method: str, city: str, recipient_ask: str) -> str:
     else:
         lines.append(recipient_ask)
     lines.append(
-        "Когда клиент назовёт улицу и дом, пришлёт адрес с карты или скриншот (адрес "
-        "прочитай с картинки) — вызови set_delivery_method с тем же городом и этим "
-        "адресом в pickup_point: инструмент покажет пункты рядом с номерами."
+        "Когда клиент назовёт улицу и дом или пришлёт адрес с карты — вызови "
+        "set_delivery_method с тем же городом и этим адресом в pickup_point: инструмент "
+        "покажет пункты рядом с номерами. Скриншоты не проси. Геопозицию клиента "
+        "разбирает код: ты увидишь [GEO_n] и уже отправленный список пунктов."
     )
     return " ".join(lines)
 
@@ -1496,6 +1642,8 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
     if quoted_at is None or time.time() - float(quoted_at) > settings.delivery_quote_ttl_minutes * 60:
         try:
             await _requote(draft)
+            # Доплата считается от самого дешёвого — его цена тоже могла уйти.
+            await upgrade.refresh(draft)
         except Exception:
             # Пересчёт не удался — остаётся цена, которую клиент уже видел.
             logger.warning("Не пересчитали доставку перед счётом для peer_id=%s", peer_id, exc_info=True)
@@ -1529,7 +1677,13 @@ async def _auto_invoice(
     if note is not None:
         return ToolExecution(note)
     draft.stage = "confirmed"
-    return await _confirm_with_payment(peer_id, draft, source=source, style=style)
+    single = bool(draft.details.get("single_point"))
+    result = await _confirm_with_payment(peer_id, draft, source=source, style=style)
+    if single and result is not None and result.client_reply is not None:
+        # Счёт без вопроса «этот пункт подходит?»: на улице он был один.
+        await funnel.record(peer_id, "invoice_single_point", source_=funnel.CODE,
+                            order_id=draft.details.get("order_id"))
+    return result
 
 
 def _offer_message(draft: OrderDraft, offer) -> str:
@@ -1815,6 +1969,14 @@ async def _confirm_with_payment(
     ключ идемпотентности, и повторная попытка (очередь принесла событие
     дважды) обязана вернуть тот же счёт, а не выставить второй.
     """
+    # Ожидаемая дата получения на момент счёта — для аналитики: сравнить с
+    # фактическим вручением. Считается заново при каждой попытке.
+    span = eta.dates(draft.details.get(eta.KEY))
+    if span:
+        draft.details["expected_from"], draft.details["expected_by"] = span[0].isoformat(), span[1].isoformat()
+    else:
+        draft.details.pop("expected_from", None)
+        draft.details.pop("expected_by", None)
     order_key = draft.details.get("order_key")
     if not order_key:
         order_key = f"vk{peer_id}-{int(time.time())}"
@@ -1927,6 +2089,8 @@ async def _confirm_with_payment(
         link=payment.confirmation_url,
         eta=eta.phrase(draft.details),
         button=await keyboards.shows_link_button(peer_id),
+        surcharge=bool(draft.details.get(upgrade.SURCHARGE)),
+        point_note=bool(draft.details.get("single_point")),
     )
     return ToolExecution(reply, client_reply=reply)
 

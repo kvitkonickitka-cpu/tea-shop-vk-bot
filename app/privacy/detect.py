@@ -26,7 +26,12 @@ from app.modules.orders.contacts import normalize_phone
 
 logger = logging.getLogger(__name__)
 
-LABEL = re.compile(r"\[(NAME|PHONE|EMAIL|ADDR)_(\d+)\]")
+LABEL = re.compile(r"\[(NAME|PHONE|EMAIL|ADDR|GEO)_(\d+)\]")
+# Пара координат: широта и долгота десятичными дробями с четырьмя и больше
+# знаками — так их пишут карты и ВК. Цены и веса столько знаков не имеют.
+COORDINATES = re.compile(
+    r"(?<![\d.])(-?\d{1,2}\.\d{4,})\s*[,;]?\s*(-?\d{1,3}\.\d{4,})(?![\d.])"
+)
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 # Российские номера в любом привычном виде: +7, 8 или 7 впереди, скобки,
 # пробелы, дефисы, точки. Без кода страны — только мобильные, на 9: иначе

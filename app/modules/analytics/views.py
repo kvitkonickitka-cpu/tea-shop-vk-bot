@@ -135,6 +135,11 @@ EVENTS = [
     ("touch", "Повторное касание отправлено", None, "Касания"),
     ("touch_order", "Заказ после касания (7 дней)", None, "Касания"),
     ("touch_optout", "Отписка после касания (2 дня)", None, "Касания"),
+    ("delivery_upgrade", "Выбрана доставка быстрее и дороже", None, "Заказ"),
+    ("storefront_vk_delivery", "Способ доставки, выбранный в «Товарах»", None, "Заказ"),
+    ("geo_button_shown", "Показана кнопка геопозиции", None, "Заказ"),
+    ("geo_sent", "Геопозиция отправлена", None, "Заказ"),
+    ("invoice_single_point", "Счёт сразу: на улице один пункт", None, "Счёт"),
 ]
 
 CHANNELS = {
@@ -328,6 +333,15 @@ V_ORDERS = View(
         Column("has_review", "f.order_id is not null", "Клиент оставил отзыв о заказе."),
         Column("ref", "c.ref", "Метка рекламной кампании клиента (ref из ссылки при первом контакте). Пусто — органика."),
         Column("ref_source", "c.ref_source", "Источник метки кампании (ref_source). Пусто — органика."),
+        Column(
+            "expected_delivery_date", "(o.details->>'expected_by')::date",
+            "Ожидаемая дата получения, названная клиенту на момент счёта (поздняя граница). Пусто — "
+            "перевозчик не отдал срок или заказ старше 04.10.2026. Сравнивать с delivered_date_msk.",
+        ),
+        Column(
+            "delivery_surcharge", "coalesce((o.details->>'delivery_surcharge')::numeric, 0)::numeric(10,2)",
+            "Доплата клиента за перевозчика быстрее бесплатного (выше порога), руб. 0 — без доплаты.",
+        ),
     ),
     body=(
         "from orders o\n"

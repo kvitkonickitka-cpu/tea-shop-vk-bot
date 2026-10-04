@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from app.core.config import settings
 from app.messages import keyboard as keyboards, manager as manager_messages, templates
 from app.modules.delivery import cdek_client
 from app.modules.dialog import history as dialog_history, service as dialog_service
@@ -64,13 +65,15 @@ def test_both_notices_are_parsed():
     assert orders_service.parse_notice("Заказ №12 — проверьте, всё ли верно") is None
 
 
-async def test_order_from_the_admin_notice_offers_two_carriers_once(clean, shop):
+async def test_order_from_the_admin_notice_offers_two_carriers_once(clean, shop, monkeypatch):
+    # Прежний путь — две кнопки перевозчиков: при выключенном флаге задачи 3.
+    monkeypatch.setattr(settings, "storefront_direct_ozon_enabled", False)
     await keyboards.remember_client(PEER, FULL)
     await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
     text, board = shop["sent"][-1]
     assert text.startswith("Заказ №820826 принят: Дянь Хун // 100 грамм × 1 — 1500 ₽.\n\nДоставка в Краснодар:\n")
-    assert "• Ozon, пункт выдачи — 121 ₽, ≈ 7 дней" in text
-    assert "• СДЭК, пункт выдачи — 245 ₽, ≈ 3–4 рабочих дня" in text
+    assert "• Ozon, пункт выдачи — 121 ₽, получите ≈ 11 октября" in text
+    assert "• СДЭК, пункт выдачи — 245 ₽, получите ≈ 7–8 октября" in text
     assert "пришлите почту для чека" in text and text.endswith("Выберите доставку кнопкой ниже 👇")
     assert labels(board) == ["Ozon — 121 ₽", "СДЭК — 245 ₽"]
     # Модель видит заказ в истории — без телефона и почты.
@@ -85,7 +88,8 @@ async def test_order_from_the_admin_notice_offers_two_carriers_once(clean, shop)
     assert any("№820826" in card for card in shop["manager"])
 
 
-async def test_choosing_a_carrier_asks_point_and_email(clean, shop):
+async def test_choosing_a_carrier_asks_point_and_email(clean, shop, monkeypatch):
+    monkeypatch.setattr(settings, "storefront_direct_ozon_enabled", False)
     await keyboards.remember_client(PEER, FULL)
     await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
     ozon = shop["sent"][-1][1]["buttons"][0][0]["action"]

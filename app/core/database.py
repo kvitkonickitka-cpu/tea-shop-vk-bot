@@ -70,6 +70,8 @@ _MISSING_COLUMNS = (
     # Номер прохода выгрузки: по нему видно пункты, которые Ozon перестал
     # отдавать, — сам он об их исчезновении не сообщает.
     "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS seen_pass INTEGER",
+    "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION",
+    "ALTER TABLE ozon_delivery_points ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION",
     "ALTER TABLE ozon_sync_state ADD COLUMN IF NOT EXISTS pass_number INTEGER DEFAULT 1",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR",

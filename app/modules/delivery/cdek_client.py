@@ -201,6 +201,8 @@ class DeliveryPoint:
     code: str
     address: str
     work_time: str
+    latitude: float | None = None
+    longitude: float | None = None
 
     def describe(self) -> str:
         hours = f" ({self.work_time})" if self.work_time else ""
@@ -275,11 +277,20 @@ async def city_points(city: str) -> list[DeliveryPoint]:
             or (p.get("location") or {}).get("address")
             or "",
             work_time=p.get("work_time") or "",
+            latitude=_coordinate((p.get("location") or {}).get("latitude")),
+            longitude=_coordinate((p.get("location") or {}).get("longitude")),
         )
         for p in response.json()
     ]
     _points_cache[city.lower()] = (time.time(), points)
     return points
+
+
+def _coordinate(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def match_points(points: list[DeliveryPoint], hint: str, limit: int = 3) -> list[DeliveryPoint]:

@@ -171,3 +171,50 @@ async def test_set_draft_stamps_start(clean):
     draft.delivery_method = "cdek_pvz"
     await state.set_draft(PEER, draft)
     assert (await state.get_draft(PEER)).details["started_at"] == first
+
+
+# --- задача 6: витринный заказ — через час, а не через три ------------------------
+
+
+async def storefront_draft(db, bot_said_minutes_ago):
+    await make_draft(db, started_hours_ago=2, bot_said_hours_ago=bot_said_minutes_ago / 60,
+                     origin="storefront", vk_order_id=820826)
+    draft = await state.get_draft(PEER)
+    draft.delivery_method = "ozon_pvz"
+    draft.delivery_label = "Ozon, пункт выдачи (какой — клиент ещё не выбрал)"
+    draft.delivery_cost = 121
+    draft.stage = "awaiting_confirmation"
+    draft.details["point_asked"] = True
+    await state.set_draft(PEER, draft)
+
+
+async def test_storefront_draft_is_nudged_after_an_hour_with_a_place_question(clean, sent):
+    await storefront_draft(clean, bot_said_minutes_ago=50)
+    assert (await draft_nudge.check_drafts(NOW))["sent"] == 0
+    assert (await draft_nudge.check_drafts(NOW + timedelta(minutes=15)))["sent"] == 1
+    assert sent[-1][1] == (
+        "Заказ ждёт вас: Те Гуань Инь 100 г × 2. Осталось выбрать пункт выдачи Ozon: напишите улицу, "
+        "где удобно забрать, — покажу ближайшие пункты, и сразу пришлю ссылку на оплату.\n"
+        "Передумали — просто не отвечайте, больше напоминать не буду 🙂"
+    )
+    # Одно на черновик, как и у остальных.
+    assert (await draft_nudge.check_drafts(NOW + timedelta(hours=3)))["sent"] == 0
+
+
+async def test_regular_draft_still_waits_three_hours(clean, sent):
+    await make_draft(clean, bot_said_hours_ago=70 / 60)
+    assert (await draft_nudge.check_drafts(NOW))["sent"] == 0
+
+
+async def test_storefront_evening_hour_moves_to_morning(clean, sent):
+    await storefront_draft(clean, bot_said_minutes_ago=30)
+    late = NOW.replace(hour=21, minute=10)
+    assert (await draft_nudge.check_drafts(late))["sent"] == 0
+    morning = (NOW + timedelta(days=1)).replace(hour=10, minute=0)
+    assert (await draft_nudge.check_drafts(morning))["sent"] == 1
+
+
+async def test_storefront_flag_off_waits_three_hours(clean, sent, monkeypatch):
+    monkeypatch.setattr(settings, "storefront_early_nudge_enabled", False)
+    await storefront_draft(clean, bot_said_minutes_ago=70)
+    assert (await draft_nudge.check_drafts(NOW))["sent"] == 0
