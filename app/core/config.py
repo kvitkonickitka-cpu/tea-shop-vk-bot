@@ -219,6 +219,12 @@ class Settings(BaseSettings):
     feedback_ask_after_days: float = 3
     feedback_ask_shelf_days: float = 7
 
+    # Второй шанс: другой сорт через столько дней после проигнорированного
+    # «Повторить» (или в срок «Повторить», если заказ оценён «Не моё»).
+    second_touch_enabled: bool = True
+    second_touch_after_days: float = 14
+    second_touch_shelf_days: float = 10
+
     # Повторные касания после вручения (`orders/retention.py`) — общие правила.
     # Пауза между любыми двумя продающими касаниями одному клиенту.
     marketing_min_gap_days: float = 3

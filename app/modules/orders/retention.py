@@ -99,10 +99,6 @@ def ripe(due: datetime, expires: datetime, now: datetime) -> bool:
     return due <= now <= expires
 
 
-def stop_line() -> str:
-    return "Если не хотите таких сообщений — напишите «стоп»."
-
-
 async def sent_at(peer_id: int, kinds=KINDS) -> datetime | None:
     """Когда клиенту в последний раз ушло продающее касание."""
     async with get_session_factory()() as session:
@@ -203,11 +199,12 @@ async def blocker(peer_id: int, now: datetime) -> str | None:
 
 
 async def _candidates(now: datetime, kinds) -> list[Touch]:
-    from app.modules.orders import feedback, repeat_nudge
+    from app.modules.orders import feedback, repeat_nudge, second_touch
 
     providers = {
         templates.FEEDBACK_ASK: (settings.feedback_ask_enabled, feedback.ask_candidates),
         templates.REPEAT_NUDGE: (settings.repeat_nudge_enabled, repeat_nudge.candidates),
+        templates.SECOND_TOUCH: (settings.second_touch_enabled, second_touch.candidates),
     }
     found: list[Touch] = []
     for kind in KINDS:

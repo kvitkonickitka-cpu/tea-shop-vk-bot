@@ -500,6 +500,26 @@ def repeat_nudge(items, *, weeks: int) -> str:
     )
 
 
+STOP_LINE = "Если не хотите таких сообщений — напишите «стоп»."
+
+
+def _offer(offer: str, price, description: str) -> str:
+    return f"{offer} ({amount(price)} ₽)" + (f" — {description}" if description else "")
+
+
+def second_touch(*, offer: str, price, description: str = "", source: str = "", rating=None) -> str:
+    """Второй шанс: другой сорт. Не «повторить», а «попробовать»."""
+    if rating == "great" and source:
+        head = f"Здравствуйте! Вам понравился {source} — попробуйте {_offer(offer, price, description)}."
+    elif rating == "no":
+        head = f"Здравствуйте! Подобрала вам другой чай — {_offer(offer, price, description)}."
+    elif source:
+        head = f"Здравствуйте! К {source} у нас советуют {_offer(offer, price, description)}."
+    else:
+        head = f"Здравствуйте! Хотите попробовать {_offer(offer, price, description)}?"
+    return f"{head}\nЕсли захотите — нажмите «Взять» или просто напишите.\n{STOP_LINE}"
+
+
 def marketing_stopped() -> str:
     """3.23. Ответ на «стоп»."""
     return (
