@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app import privacy
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
@@ -199,7 +200,7 @@ TOOLS = [
                     "type": "string",
                     "description": (
                         "Только если клиент в этом же сообщении назвал получателя или "
-                        "его данные («на маму», «получит Иванов»). Его слова как есть. "
+                        "его данные («на маму», «получит сестра»). Его слова как есть. "
                         "Не назвал — не передавай."
                     ),
                 },
@@ -2197,6 +2198,24 @@ _ATTACHMENT_PROMPT = (
 )
 
 
+# Метки вместо персональных данных (app/privacy). Модель не знает значений,
+# и это нормально: код подставит их сам — в ответ клиенту и в инструменты.
+_PII_PROMPT = (
+    "Персональные данные клиента в переписке заменены метками: [NAME_1] — ФИО, "
+    "[PHONE_1] — телефон, [EMAIL_1] — почта, [ADDR_1] — адрес. Это нормально, "
+    "данные на месте: код подставит настоящие значения в твой ответ клиенту и "
+    "в аргументы инструментов. Поэтому:\n"
+    "- используй метки как есть — и в ответах, и в аргументах инструментов: "
+    "на «1, [NAME_1], [PHONE_1], [EMAIL_1]» вызывай set_recipient с "
+    "name=[NAME_1], phone=[PHONE_1], email=[EMAIL_1];\n"
+    "- не угадывай значения и не проси клиента повторить данные, если метка уже "
+    "есть: она и есть эти данные;\n"
+    "- в сводках и подтверждениях пиши метку («Получатель: [NAME_1], [PHONE_1]») — "
+    "клиент увидит настоящие ФИО и телефон;\n"
+    "- не придумывай новых меток и не меняй номер в метке."
+)
+
+
 # ВК не показывает разметку: «**Те Гуань Инь**» клиент видит со
 # звёздочками (27.09.2026). Модель пишет её по привычке, даже когда просят не
 # писать, поэтому снимаем её и в коде. Одиночную звёздочку не трогаем — она
@@ -2307,12 +2326,17 @@ async def _handle_turn(
     draft = await state.get_draft(peer_id)
 
     system_prompt = _BASE_SYSTEM_PROMPT
+    if privacy.is_enabled():
+        system_prompt += f"\n\n{_PII_PROMPT}"
     if catalog_context:
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
-    # Что клиент брал и как оценил — тем же способом, что ассортимент.
+    # Дальше — то, что про этого клиента: перед отправкой его личное станет метками.
+    personal_from = len(system_prompt)
+    # Что клиент брал и как оценил — тем же способом, что ассортимент. Начало
+    # отзыва — слова клиента, в нём ищем и имена.
     bought = await purchases.context(peer_id)
     if bought:
-        system_prompt += f"\n\n{bought}"
+        system_prompt += f"\n\n{await privacy.tokenize(peer_id, bought)}"
     system_prompt += f"\n\n{order_flow_prompt()}"
     system_prompt += f"\n\n{_describe_draft(draft)}"
     live = None
@@ -2392,6 +2416,15 @@ async def _handle_turn(
     images = list(attached.images) if attached else []
 
     history = await dialog_history.get_history(peer_id)
+    # Метки вместо персональных данных — после склейки, до истории и модели.
+    # Этап подсказывает, чего ждём: ФИО получателя или адрес для курьера.
+    last_bot = next(
+        (m["content"] for m in reversed(history) if m["role"] == "assistant" and isinstance(m["content"], str)), ""
+    )
+    spoken = await privacy.tokenize(peer_id, spoken, stage=privacy.stages(draft, last_bot))
+    system_prompt = system_prompt[:personal_from] + await privacy.tokenize(
+        peer_id, system_prompt[personal_from:], names=False
+    )
     if images:
         # Снимок идёт перед текстом: так модель сначала смотрит, а потом
         # читает вопрос о том, что увидела.
@@ -2414,10 +2447,16 @@ async def _handle_turn(
         tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
         messages.append({"role": "assistant", "content": response.content})
 
-        executions = [
-            (block, await spent.tool(_execute_tool(peer_id, block.name, block.input)))
-            for block in tool_use_blocks
-        ]
+        # Модель пишет метки — инструменту нужны значения: подставляем до
+        # проверок почты и телефона и до записи в черновик. Результат обратно
+        # модели — снова с метками.
+        executions = []
+        for block in tool_use_blocks:
+            execution = await spent.tool(
+                _execute_tool(peer_id, block.name, await privacy.detokenize_data(peer_id, block.input))
+            )
+            execution.tool_result = await privacy.tokenize(peer_id, execution.tool_result, names=False)
+            executions.append((block, execution))
         for block, execution in executions:
             # Без этой строки по логам не понять, почему бот ответил так, а
             # не иначе: видно только время хода. Данные клиента сюда не
@@ -2462,7 +2501,7 @@ async def _handle_turn(
         if executions and executions[-1][1].client_reply is not None:
             reply = await _with_buttons(peer_id, plain_text(executions[-1][1].client_reply))
             await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
-            return reply
+            return await privacy.detokenize(peer_id, reply)
 
         messages.append({
             "role": "user",
@@ -2510,5 +2549,8 @@ async def _handle_turn(
         peer_id, plain_text(text),
         consult=text != _NO_TEXT_FALLBACK and not (called & _NO_TAKE_AFTER),
     )
+    # Незнакомая метка — исключение: ход не отвечает, клиент получает
+    # «техническую заминку» (dialog/service.py), а не текст с дырой.
+    restored = await privacy.detokenize(peer_id, reply)
     await dialog_history.append_exchange(peer_id, _for_history(spoken, images), reply)
-    return reply
+    return restored

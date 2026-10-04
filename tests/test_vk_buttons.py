@@ -9,6 +9,7 @@ from types import SimpleNamespace as NS
 import pytest
 from sqlalchemy import select
 
+from app import privacy
 from app.core.config import settings
 from app.messages import keyboard as keyboards, templates
 from app.messages.models import FunnelEvent
@@ -136,7 +137,10 @@ async def test_point_button_with_known_recipient_sends_invoice(clean, world):
         events = (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS).order_by(FunnelEvent.id))).scalars().all()
     assert events == ["button:pt", "invoice_auto"]
     history = await dialog_history.get_history(PEER)
-    assert history[-2]["content"] == "2. Ставропольская улица, 159" and history[-1]["content"] == text
+    assert history[-2]["content"] == "2. Ставропольская улица, 159"
+    # В историю — с метками (её читает модель), клиенту — со значениями.
+    assert "Получатель: [NAME_1], [PHONE_1], [EMAIL_1]" in history[-1]["content"]
+    assert await privacy.detokenize(PEER, history[-1]["content"]) == text
 
 
 async def test_point_button_without_recipient_asks_for_data(clean, world):

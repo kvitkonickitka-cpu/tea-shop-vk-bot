@@ -129,9 +129,15 @@ async def _report_one(session_factory, conversation: Conversation, reported_at: 
         await _mark_reported(session_factory, conversation.peer_id)
         return False
 
-    summary = await claude_client.generate_dialog_report(
-        _build_transcript(conversation, messages, orders, escalations)
+    # Пересказ — тоже запрос к Claude: переписка в истории уже с метками, а
+    # вопросы менеджеру и заказы — со значениями, их меняем здесь. Пересказ
+    # менеджеру остаётся с метками: диалог он открывает по ссылке.
+    from app import privacy
+
+    transcript = await privacy.tokenize(
+        conversation.peer_id, _build_transcript(conversation, messages, orders, escalations)
     )
+    summary = await claude_client.generate_dialog_report(transcript)
 
     await telegram_client.send_message(
         _build_telegram_message(conversation, messages, summary),

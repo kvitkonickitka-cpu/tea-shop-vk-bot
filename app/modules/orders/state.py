@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.core.database import get_session_factory
 from app.modules.orders.models import OrderDraftRow
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,6 +62,14 @@ async def set_draft(peer_id: int, draft: OrderDraft) -> None:
     # любой правки становится неактуальной — нажатие не сделает то, чего
     # клиент уже не видит.
     draft.details["version"] = int(draft.details.get("version") or 0) + 1
+    # Личное из черновика — сразу в метки: получатель из витрины или прошлого
+    # заказа появится в сводке, истории и промпте, и везде должен стать меткой.
+    from app import privacy
+
+    try:
+        await privacy.remember_details(peer_id, draft.details, draft.delivery_method)
+    except Exception:
+        logger.exception("Метки: не запомнили данные черновика peer_id=%s", peer_id)
     try:
         session_factory = get_session_factory()
     except RuntimeError:
