@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import case, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.database import get_session_factory
@@ -123,6 +123,8 @@ async def _save_points(
             "is_active": point.is_active,
             "kind": point.kind,
             "seen_pass": pass_number,
+            "latitude": point.latitude,
+            "longitude": point.longitude,
             "updated_at": datetime.now(timezone.utc),
         }
         for point in points
@@ -141,6 +143,9 @@ async def _save_points(
                 "is_active": statement.excluded.is_active,
                 "kind": statement.excluded.kind,
                 "seen_pass": statement.excluded.seen_pass,
+                # Ozon не отдал координаты на этом проходе — прежние не стираем.
+                "latitude": func.coalesce(statement.excluded.latitude, OzonDeliveryPoint.latitude),
+                "longitude": func.coalesce(statement.excluded.longitude, OzonDeliveryPoint.longitude),
                 "updated_at": statement.excluded.updated_at,
             },
         )
@@ -482,3 +487,61 @@ async def count() -> int:
 
         total = await session.scalar(sql_func.count(OzonDeliveryPoint.id))
     return int(total or 0)
+
+
+# --- поиск по геопозиции --------------------------------------------------------
+
+_COORDS_CHECKED: tuple[float, bool] | None = None
+
+
+async def has_coordinates() -> bool:
+    """Есть ли в копии каталога пункты с координатами. Ответ живёт 10 минут."""
+    global _COORDS_CHECKED
+    if _COORDS_CHECKED is not None and time.monotonic() - _COORDS_CHECKED[0] < 600:
+        return _COORDS_CHECKED[1]
+    try:
+        async with get_session_factory()() as session:
+            found = (await session.execute(
+                select(OzonDeliveryPoint.id).where(
+                    OzonDeliveryPoint.latitude.is_not(None), OzonDeliveryPoint.is_active.is_not(False)
+                ).limit(1)
+            )).first() is not None
+    except Exception:
+        logger.exception("Не проверили координаты пунктов Ozon")
+        return False
+    _COORDS_CHECKED = (time.monotonic(), found)
+    return found
+
+
+def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Расстояние по прямой, в метрах (гаверсинус)."""
+    import math
+
+    rad = math.radians
+    dlat, dlon = rad(lat2 - lat1), rad(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(rad(lat1)) * math.cos(rad(lat2)) * math.sin(dlon / 2) ** 2
+    return 6_371_000 * 2 * math.asin(math.sqrt(a))
+
+
+async def near(latitude: float, longitude: float, radius_km: float, limit: int = 20) -> list[tuple]:
+    """Пункты в радиусе от точки, ближние первыми: [(пункт, метры)].
+
+    Сначала прямоугольник в базе (по индексу не нужен — пунктов в нём
+    немного), потом точное расстояние в коде.
+    """
+    import math
+
+    dlat = radius_km / 111.0
+    dlon = radius_km / max(1e-6, 111.0 * math.cos(math.radians(latitude)))
+    async with get_session_factory()() as session:
+        rows = (await session.execute(
+            select(OzonDeliveryPoint).where(
+                OzonDeliveryPoint.is_active.is_not(False),
+                OzonDeliveryPoint.latitude.between(latitude - dlat, latitude + dlat),
+                OzonDeliveryPoint.longitude.between(longitude - dlon, longitude + dlon),
+            )
+        )).scalars().all()
+    measured = [(row, distance_m(latitude, longitude, row.latitude, row.longitude)) for row in rows]
+    measured = [pair for pair in measured if pair[1] <= radius_km * 1000]
+    measured.sort(key=lambda pair: pair[1])
+    return measured[:limit]

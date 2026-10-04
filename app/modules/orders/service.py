@@ -21,7 +21,7 @@ from typing import Any
 from app.core.config import settings
 from app.messages import client as client_messages, manager as manager_messages, templates
 from app.modules.dialog import vk_client
-from app.modules.orders import address as address_parser, contacts, order_chat, state, vk_orders_client
+from app.modules.orders import address as address_parser, contacts, geo, order_chat, state, vk_orders_client
 from app.modules.orders.state import OrderDraft
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ async def _direct_points(
     """Сразу пункты Ozon рядом с адресом из заказа. False — прежний вопрос «в какой город».
 
     Улицы в адресе нет, а пунктов в городе много — вместо списка просим
-    адрес пункта (улица и дом, адрес с карты Ozon или скриншот).
+    адрес пункта (улица и дом, геопозиция или адрес с карты Ozon).
 
     Тот же поиск, что и «город и улица» в диалоге: до четырёх пунктов с
     номерами, первыми — на этой улице, с ценой у каждого, если Ozon ответил
@@ -131,7 +131,7 @@ async def _direct_points(
     if asked:
         text = templates.storefront_ask_point(
             order_id=order_id, items=items, items_total=items_total, city=city,
-            delivery_cost=draft.delivery_cost, ask=ask,
+            delivery_cost=draft.delivery_cost, ask=ask, geo=geo.has_button(keyboard),
         )
     else:
         text = templates.storefront_points(
@@ -143,6 +143,7 @@ async def _direct_points(
         peer_id=user_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
         text=text, keyboard=keyboard,
     )
+    await geo.note_shown(user_id, keyboard, "storefront")
     return True
 
 
@@ -511,8 +512,15 @@ async def _lead_with_cheapest(
     if other is not None:
         label = (templates.storefront_faster_button(other["carrier"]) if other_kind == "faster"
                  else templates.storefront_cheaper_button(other["carrier"]))
-        rows.append([keyboards.text_button(label, {"a": "ship", "m": other["method"],
-                                                   "v": fresh.details.get("version")})])
+        other_button = keyboards.text_button(label, {"a": "ship", "m": other["method"],
+                                                     "v": fresh.details.get("version")})
+        geo_row = next((row for row in rows if geo.has_button({"buttons": [row]})), None)
+        if geo_row is not None and len(geo_row) == 1:
+            # Как в примере: [📍 Отправить геопозицию] [Нужно быстрее — СДЭК] —
+            # в ряду с кнопкой геопозиции ВК разрешает ещё одну.
+            geo_row.append(other_button)
+        else:
+            rows.append([other_button])
     keyboard = keyboards.inline([row for row in rows if row]) if rows else None
     shows = await keyboards.for_peer(peer_id, keyboard) is not None
 
@@ -532,12 +540,13 @@ async def _lead_with_cheapest(
         per_point_prices=all(point.get("price") is not None for point in shown), ask=ask,
         other=(other_kind, other["carrier"], other["client_cost"], other["eta_phrase"],
                round(lead["cost"] - other["cost"], 2)) if other is not None else None,
-        hint=hint if shows and shown else "",
+        hint=hint if shows and shown else "", geo=shows and geo.has_button(keyboard),
     )
     await client_messages.send(
         peer_id=peer_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
         text=text, keyboard=keyboard,
     )
+    await geo.note_shown(peer_id, keyboard, "storefront")
     return True
 
 
@@ -623,6 +632,7 @@ async def after_carrier(peer_id: int, method: str) -> tuple[str, dict | None] | 
         shown=shown, asked=asked, recipient=candidate, hint=hint if keyboard else "",
         last=(last.name, last.phone, last.email) if last is not None and last.email else None,
         button=keyboard is not None, surcharge=bool(fresh.details.get("delivery_surcharge")),
+        geo=geo.has_button(keyboard),
     )
     return text, keyboard
 

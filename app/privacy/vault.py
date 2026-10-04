@@ -23,7 +23,7 @@ from app.privacy.models import PiiEntry
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("NAME", "PHONE", "EMAIL", "ADDR")
+KINDS = ("NAME", "PHONE", "EMAIL", "ADDR", "GEO")
 _TTL_SECONDS = 120
 
 
@@ -142,3 +142,25 @@ def forget_cache() -> None:
     """Для тестов: база очищена — кэш тоже."""
     _books.clear()
     _memory_only.clear()
+
+
+async def forget_kind_older_than(kind: str, hours: float) -> int:
+    """Удалить метки вида старше `hours` часов — для геопозиции, которая нужна только на время выбора."""
+    from sqlalchemy import delete, func, text
+
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return 0
+    async with session_factory() as session:
+        result = await session.execute(
+            delete(PiiEntry).where(
+                PiiEntry.kind == kind,
+                PiiEntry.created_at < func.now() - text(f"interval '{float(hours)} hours'"),
+            )
+        )
+        await session.commit()
+    if result.rowcount:
+        # Кэш метки сбрасываем целиком: какие клиенты затронуты, не знаем.
+        _books.clear()
+    return result.rowcount or 0

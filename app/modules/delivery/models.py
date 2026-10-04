@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -33,6 +33,11 @@ class OzonDeliveryPoint(Base):
     # говорит, что пункт исчез, — он просто перестаёт его отдавать. Сравнение
     # с номером завершённого прохода и есть способ это заметить.
     seen_pass: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Координаты из `delivery-point/info` — для поиска ближайших пунктов по
+    # геопозиции клиента. Появляются у пункта на первом проходе каталога
+    # после обновления; пока их нет, геопозиция для Ozon не предлагается.
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

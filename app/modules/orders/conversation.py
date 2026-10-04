@@ -13,7 +13,7 @@ from pathlib import Path
 from app import privacy
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
-from app.modules.delivery import cdek_client, ozon_client, ozon_quote
+from app.modules.delivery import cdek_client, ozon_catalog, ozon_client, ozon_quote
 from app.messages import client as client_messages, funnel, manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
@@ -24,6 +24,7 @@ from app.modules.dialog import (
     history as dialog_history,
 )
 from app.modules.dialog.claude_client import _BASE_SYSTEM_PROMPT
+from app.modules.orders import address as address_parser
 from app.modules.orders import cancellation
 from app.modules.orders import contacts
 from app.modules.orders import eta
@@ -651,8 +652,8 @@ def _describe_draft(draft: OrderDraft | None) -> str:
     if draft.details.get("point_asked") and not shown and not fixed_point:
         lines.append(
             f"Пункт выдачи не выбран: клиента попросили назвать улицу и дом пункта, "
-            f"прислать адрес с карты или скриншот. Его ответ (адрес со скриншота — "
-            f"тоже) передай в pickup_point set_delivery_method с городом "
+            f"адрес с карты или отправить геопозицию. Его ответ-адрес передай в "
+            f"pickup_point set_delivery_method с городом "
             f"«{draft.details.get('address', '')}»."
         )
     if shown and not offer and not fixed_point:
@@ -800,14 +801,19 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         last.remember(draft.details)
         await state.set_draft(peer_id, draft)
         return result + "\n" + repeat_delivery.suggestion(last)
+    from app.modules.orders import geo
+
+    with_geo = await geo.offer_for(peer_id)
     result += (
         "\nТеперь предложи клиенту доставку. Первым предлагай пункт выдачи "
         "Ozon — он заметно дешевле, клиент забирает посылку сам. Если нужно "
         "быстрее, предложи пункт выдачи СДЭК: дороже, но идёт в полтора-два "
         "раза меньше. Курьер СДЭК до двери — тоже можно. "
         f"{_OTHER_METHODS_HINT}"
-        f"Спроси сразу город и улицу — «{templates.ASK_WHERE}» (вместе со ссылкой "
-        "на карту) — в том же сообщении, что и предложение дополнить заказ: по "
+        f"Спроси сразу город и улицу — «{templates.ask_where(with_geo)}»"
+        + (" (кнопку геопозиции поставит код; геопозицию разберёт тоже код)" if with_geo
+           else " (вместе со ссылкой на карту)")
+        + " — в том же сообщении, что и предложение дополнить заказ: по "
         "улице первыми покажутся ближайшие пункты. Назвал только город — "
         "работай с ним, улицу не переспрашивай."
     )
@@ -908,6 +914,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     per_point_prices = False
     not_found_note = ""
     city = ""
+    # Геопозиция клиента — только из кода (app/modules/orders/geo.py), не от
+    # модели: ближайшие пункты в радиусе вместо поиска по улице.
+    near = tool_input.get("_near")
+    distances: dict = {}
     # Город большой, а улица не названа (или не нашлась): список не
     # показываем, просим адрес пункта. Четыре случайных пункта из сотни —
     # не выбор: клиент всё равно идёт на карту, а потом пишет адрес.
@@ -943,7 +953,27 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         draft.details["tariff_code"] = tariff.code
         draft.details["address"] = address
 
-        if method == "cdek_pvz" and chosen:
+        if method == "cdek_pvz" and near and not chosen:
+            draft.details.pop("delivery_point", None)
+            try:
+                city_list = await cdek_client.city_points(address)
+            except Exception:
+                logger.exception("Не нашли пункты выдачи СДЭК для peer_id=%s", peer_id)
+                city_list = []
+            measured = sorted(
+                ((point, ozon_catalog.distance_m(near[0], near[1], point.latitude, point.longitude))
+                 for point in city_list if point.latitude is not None and point.longitude is not None),
+                key=lambda pair: pair[1],
+            )
+            measured = [pair for pair in measured if pair[1] <= settings.geo_search_radius_km * 1000]
+            if not measured:
+                return ToolExecution(GEO_NOTHING_NEAR)
+            shown = points.remember(
+                draft.details, method, address,
+                [{"id": point.code, "address": point.describe(), "distance": round(meters)}
+                 for point, meters in measured[: points.MAX_SHOWN]],
+            )
+        elif method == "cdek_pvz" and chosen:
             draft.details["delivery_point"] = chosen["id"]
             label = f"{label}: {chosen['address']}"
             points.forget(draft.details)
@@ -1007,7 +1037,21 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             points.forget(draft.details)
         else:
             try:
-                picked = await _ozon_points(draft, city, hint)
+                if near:
+                    pairs = await ozon_quote.points_near(
+                        near[0], near[1], radius_km=settings.geo_search_radius_km,
+                        weight_grams=_draft_weight_grams(draft), declared_value=draft.items_total,
+                    )
+                    distances = {row.id: round(meters) for row, meters in pairs}
+                    rows = [row for row, _ in pairs]
+                    picked = ozon_quote.Picked(rows, len(rows), len(rows), True)
+                    # Город — по ближайшему пункту: клиент его мог и не называть,
+                    # а выбор «1» дальше сверяется со списком этого города.
+                    parsed = address_parser.city_and_street(rows[0].address) if rows else None
+                    if parsed:
+                        city = parsed[0]
+                else:
+                    picked = await _ozon_points(draft, city, hint)
             except Exception:
                 logger.exception("Не подобрали пункт Ozon в «%s» для peer_id=%s", city, peer_id)
                 picked = ozon_quote.Picked([], 0, 0, False)
@@ -1016,7 +1060,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             narrowed = bool(hint) and picked.hint_matched
             # Без улицы в большом городе — просим адрес пункта; в маленьком
             # пункты города и есть полный список, его и показываем.
-            ask_point = bool(candidates) and not narrowed and picked.total > points.MAX_SHOWN
+            ask_point = bool(candidates) and not narrowed and not near and picked.total > points.MAX_SHOWN
             if hint and not picked.hint_matched:
                 # Адрес с карты Ozon может не найтись у нас: копия каталога
                 # неполная. Тупик «не нашёлся» хуже, чем пункты города.
@@ -1028,6 +1072,8 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                     )
                 hint = ""
 
+            if not candidates and near:
+                return ToolExecution(GEO_NOTHING_NEAR)
             if not candidates:
                 if picked.found:
                     return ToolExecution(
@@ -1053,6 +1099,9 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 points.forget(draft.details)
             else:
                 per_point_prices = all(row.get("price") is not None for row in priced)
+                for row in priced:
+                    if row["id"] in distances:
+                        row["distance"] = distances[row["id"]]
                 shown = points.remember(draft.details, method, city, priced)
             # Пункт не фиксируем, даже если он один: выбирает клиент.
             draft.details.pop("ozon_point_id", None)
@@ -1133,7 +1182,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     if ask_point:
         return ToolExecution(
             head + "Назови клиенту состав заказа и эти суммы (доставку — «около»). " + not_found_note
-            + _ask_point_instruction(method, city, recipient_ask)
+            + _ask_point_instruction(method, city, recipient_ask, await _geo_ok(peer_id, method))
         )
     if shown:
         return ToolExecution(
@@ -1163,12 +1212,23 @@ _ASK_RECIPIENT = (
 )
 
 
-def _ask_point_instruction(method: str, city: str, recipient_ask: str) -> str:
+# Ответ инструмента, когда по геопозиции в радиусе ничего нет: его видит
+# только код геопозиции, клиенту отвечает он сам.
+GEO_NOTHING_NEAR = "GEO_NOTHING_NEAR"
+
+
+async def _geo_ok(peer_id: int, method: str) -> bool:
+    from app.modules.orders import geo
+
+    return await geo.offer_for(peer_id, method)
+
+
+def _ask_point_instruction(method: str, city: str, recipient_ask: str, geo: bool = False) -> str:
     carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
     lines = [
         f"Пункт выдачи ещё НЕ выбран. Пунктов {carrier} в городе {city} много — список "
         "не перечисляй и адреса не придумывай. Попроси этими словами, ссылку не "
-        f"обрамляй знаками препинания:\n{templates.ask_point_address(carrier)}\n"
+        f"обрамляй знаками препинания:\n{templates.ask_point_address(carrier, geo)}\n"
     ]
     if recipient_ask == _ASK_RECIPIENT:
         lines.append(
@@ -1178,9 +1238,10 @@ def _ask_point_instruction(method: str, city: str, recipient_ask: str) -> str:
     else:
         lines.append(recipient_ask)
     lines.append(
-        "Когда клиент назовёт улицу и дом, пришлёт адрес с карты или скриншот (адрес "
-        "прочитай с картинки) — вызови set_delivery_method с тем же городом и этим "
-        "адресом в pickup_point: инструмент покажет пункты рядом с номерами."
+        "Когда клиент назовёт улицу и дом или пришлёт адрес с карты — вызови "
+        "set_delivery_method с тем же городом и этим адресом в pickup_point: инструмент "
+        "покажет пункты рядом с номерами. Скриншоты не проси. Геопозицию клиента "
+        "разбирает код: ты увидишь [GEO_n] и уже отправленный список пунктов."
     )
     return " ".join(lines)
 

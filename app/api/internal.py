@@ -146,6 +146,12 @@ async def _run_scheduled() -> dict:
     # ответом и передачей остатка. Дёшево и важнее всего остального.
     result["inbound"] = await _run_task("Сообщения без ответа", inbound.rescue_stale())
 
+    # Геопозиции клиентов старше GEO_RETENTION_HOURS — удалить: после выбора
+    # пункта они не нужны, а хранить точку на карте дольше незачем.
+    from app import privacy
+
+    result["geo_forgotten"] = await _run_task("Геопозиции: удаление старых", privacy.forget_old_geo())
+
     # Брошенные черновики: пара запросов к базе, и тоже до каталога Ozon.
     result["draft_nudges"] = await _run_task(
         "Брошенные черновики", draft_nudge.check_drafts()

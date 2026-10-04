@@ -99,6 +99,24 @@ class DeliveryPoint:
     # pvz или postamat: в постамат посылку кладут в ячейку, и клиенту это
     # стоит сказать заранее.
     kind: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+def coordinates_of(item: dict) -> tuple[float | None, float | None]:
+    """Широта и долгота пункта — защитно: схема ответа в документации скупая."""
+    raw = item.get("coordinates") or item.get("location") or {}
+    if not isinstance(raw, dict):
+        return None, None
+    lat = raw.get("latitude", raw.get("lat"))
+    lon = raw.get("longitude", raw.get("lon", raw.get("lng")))
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None, None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+        return None, None
+    return lat, lon
 
 
 @dataclass(frozen=True)
@@ -341,6 +359,7 @@ async def delivery_points_info(ids: list[int]) -> list[DeliveryPoint]:
         data = await call("/v1/delivery-point/info", {"delivery_point_ids": rest})
     points = []
     for item in data.get("delivery_points") or []:
+        latitude, longitude = coordinates_of(item)
         points.append(
             DeliveryPoint(
                 id=item.get("delivery_point_id"),
@@ -349,6 +368,8 @@ async def delivery_points_info(ids: list[int]) -> list[DeliveryPoint]:
                 shipment_method_ids=tuple(item.get("shipment_method_ids") or ()),
                 is_active=item.get("is_active", True),
                 kind=item.get("type", ""),
+                latitude=latitude,
+                longitude=longitude,
             )
         )
     return points

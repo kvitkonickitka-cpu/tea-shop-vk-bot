@@ -49,6 +49,15 @@ def text_button(label: str, payload: dict, color: str = "secondary") -> dict:
     return {"action": {"type": "text", "label": _label(label), "payload": raw}, "color": color}
 
 
+def location_button(payload: dict) -> dict:
+    """[📍 Отправить геопозицию]: подпись у этого типа кнопки ставит сам ВК.
+
+    В ряду с ней — не больше одной кнопки: так велит документация ВК.
+    """
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return {"action": {"type": "location", "payload": raw}}
+
+
 def link_button(label: str, link: str) -> dict:
     return {"action": {"type": "open_link", "label": _label(label), "link": link}}
 
@@ -118,6 +127,12 @@ async def shows_link_button(peer_id: int) -> bool:
     Кнопка `open_link` открывает ЮKassa напрямую, без этой проверки.
     """
     probe = inline([[link_button("Оплатить", "https://yoomoney.ru/")]])
+    return await for_peer(peer_id, probe) is not None
+
+
+async def shows_location_button(peer_id: int) -> bool:
+    """Умеет ли приложение клиента кнопку геопозиции."""
+    probe = inline([[location_button({"a": "geo"})]])
     return await for_peer(peer_id, probe) is not None
 
 

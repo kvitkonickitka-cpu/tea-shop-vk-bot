@@ -52,6 +52,7 @@ SAMPLES = {
     "base_name": "Ozon", "base_price": 117, "base_when": "получите ≈ 10 октября", "fast_name": "СДЭК",
     "fast_price": 245, "fast_when": "получите ≈ 8 октября",
     "when": "получите ≈ 10 октября", "chosen_in_vk": False, "geo": False,
+    "radius_km": 10, "distances": ["≈ 600 м"],
     "other": ("faster", "СДЭК", 245, "получите ≈ 8 октября", -128),
     "ask": "Пришлите почту для чека.", "button": True, "single_name": "Те Гуань Инь", "rating": "no", "offer": "Да Хун Пао",
     "description": "Утёсный улун", "source": "Те Гуань Инь", "novelties": True,

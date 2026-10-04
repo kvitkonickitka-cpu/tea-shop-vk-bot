@@ -97,6 +97,30 @@ async def points_for(
     )
 
 
+async def points_near(
+    latitude: float, longitude: float, *, radius_km: float, weight_grams: int, declared_value: float,
+    limit: int = _MAX_OPTIONS,
+) -> list[tuple]:
+    """Ближайшие пункты в радиусе, которые примут нашу посылку: [(пункт, метры)]."""
+    found = await ozon_catalog.near(latitude, longitude, radius_km, limit=max(limit, _CHECK_POOL))
+    if not found:
+        return []
+    try:
+        allowed = await ozon_client.available_points(
+            delivery_point_ids=[row.id for row, _ in found],
+            shipment_method_id=settings.ozon_shipment_method_id,
+            weight_grams=weight_grams,
+            length_mm=settings.ozon_default_length_mm,
+            width_mm=settings.ozon_default_width_mm,
+            height_mm=settings.ozon_default_height_mm,
+            declared_value=declared_value,
+        )
+    except Exception:
+        logger.exception("Не проверили доступность ближайших пунктов Ozon")
+        return found[:limit]
+    return [pair for pair in found if pair[0].id in allowed][:limit]
+
+
 async def price_for(
     point_id: int, *, phone: str, weight_grams: int, declared_value: float
 ) -> ozon_client.Quote:

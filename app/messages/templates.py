@@ -627,13 +627,64 @@ OZON_POINTS_MAP = "https://www.ozon.ru/geo/"
 _POINT_MAPS = {"Ozon": OZON_POINTS_MAP, "СДЭК": "https://www.cdek.ru/ru/offices"}
 
 
-def ask_point_address(carrier: str = "Ozon") -> str:
-    """Город большой, улица не названа: просим адрес пункта вместо списка."""
+def ask_point_address(carrier: str = "Ozon", geo: bool = False) -> str:
+    """Город большой, улица не названа: просим место вместо списка.
+
+    Скриншот больше не просим: картинка уходит в Claude как есть, со всем,
+    что попало в кадр. С кнопкой геопозиции — она; без неё — улица или адрес
+    с карты.
+    """
+    if geo:
+        return (
+            f"Пунктов выдачи {carrier} в городе много — отправьте геопозицию кнопкой ниже, "
+            "покажу ближайшие. Или напишите улицу и номер дома пункта."
+        )
     return (
         f"Пунктов выдачи {carrier} в городе много — подскажите, какой удобен: напишите "
-        "улицу и номер дома пункта, скопируйте его адрес с карты или пришлите скриншот. "
+        "улицу и номер дома пункта или скопируйте его адрес с карты. "
         f"Все пункты {carrier} на карте: {_POINT_MAPS[carrier]}"
     )
+
+
+# Город для поиска по геопозиции, если ни клиент, ни ВК его не назвали.
+GEO_CITY_PLACEHOLDER = "рядом с вами"
+GEO_WHERE_HINT = "Или отправьте геопозицию кнопкой — покажу ближайшие пункты."
+
+
+def geo_points(*, carrier: str, shown: list[dict], per_point_prices: bool, delivery_cost, when: str,
+               surcharge: bool, ask: str, hint: str, distances: list[str]) -> str:
+    """Ближайшие к геопозиции пункты: расстояние, цена, дата — и что прислать дальше."""
+    if per_point_prices:
+        head = f"Ближайшие пункты выдачи {carrier}" + (f", {when}" if when else "") + ":"
+    else:
+        head = (f"Ближайшие пункты выдачи {carrier} — {_delivery_cost_text(delivery_cost, surcharge)}"
+                + (f", {when}" if when else "") + ":")
+    lines = [head]
+    for point, distance in zip(shown, distances):
+        parts = [part for part in (distance,
+                                   f"{amount(point['price'])} ₽" if per_point_prices and point.get("price") is not None
+                                   else "") if part]
+        lines.append(f"{point['n']}) {point['address']}" + (f" — {', '.join(parts)}" if parts else ""))
+    lines.append(ask)
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
+
+
+def geo_nothing_near(carrier: str, radius_km: float) -> str:
+    return (
+        f"В радиусе {radius_km:g} км от вас пунктов выдачи {carrier} не нашлось. "
+        "Напишите город и улицу, где удобно забрать, — поищу по адресу."
+    )
+
+
+def geo_need_city(carrier: str) -> str:
+    return f"Чтобы найти пункты {carrier} рядом, напишите, пожалуйста, город."
+
+
+def geo_lost() -> str:
+    """Метка геопозиции истекла или не завелась — координат у нас нет."""
+    return "Не получилось прочитать геопозицию. Напишите, пожалуйста, город и улицу, где удобно забрать."
 
 
 STOREFRONT_ORDER = "storefront_order"
@@ -667,7 +718,8 @@ def storefront_points(
     return "\n".join(lines)
 
 
-def storefront_ask_point(*, order_id, items: list[dict], items_total, city: str, delivery_cost, ask: str) -> str:
+def storefront_ask_point(*, order_id, items: list[dict], items_total, city: str, delivery_cost, ask: str,
+                         geo: bool = False) -> str:
     """Заказ из витрины, город большой, а улицы в адресе нет — просим адрес пункта."""
     listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
     if delivery_cost is None:
@@ -678,7 +730,7 @@ def storefront_ask_point(*, order_id, items: list[dict], items_total, city: str,
         f"Заказ №{order_id} принят: {listed} — {amount(items_total)} ₽.",
         f"Дешевле всего — пункт выдачи Ozon в городе {city}{cost}, заберёте сами. "
         "Быстрее, но дороже — пункт выдачи СДЭК или курьер: напишите, если нужен он.",
-        ask_point_address("Ozon"),
+        ask_point_address("Ozon", geo),
         ask,
     ])
 
@@ -796,12 +848,12 @@ def carrier_button(option: dict) -> str:
 def storefront_carrier_chosen(*, carrier: str, city: str, delivery_cost, eta: str, shown: list[dict],
                               asked: bool, recipient: dict | None, hint: str = "",
                               last: tuple[str, str, str] | None = None, button: bool = True,
-                              surcharge: bool = False) -> str:
+                              surcharge: bool = False, geo: bool = False) -> str:
     """Перевозчик выбран: пункт и почта для чека — и сразу счёт."""
     cost = _delivery_cost_text(delivery_cost, surcharge)
     lines = [f"{carrier}, пункт выдачи — {cost}" + (f", {eta}." if eta else ".")]
     if asked:
-        lines += ["", ask_point_address(carrier)]
+        lines += ["", ask_point_address(carrier, geo)]
     else:
         lines += ["", f"Пункты выдачи {carrier} в городе {city}:"]
         lines += [f"{point['n']}) {point['address']}" for point in shown]
@@ -864,14 +916,14 @@ def storefront_ask_last(name: str, phone: str, email: str, button: bool = True) 
     return "Выберите пункт. " + ask_last_recipient(name, phone, email, button=button)
 
 
-def taken(*, name: str, price, upsell: str = "", upsell_price=None, gap=None) -> str:
+def taken(*, name: str, price, upsell: str = "", upsell_price=None, gap=None, geo: bool = False) -> str:
     """«Взять <сорт>» под консультацией: то, что модель писала после «беру»."""
     lines = [f"Записала: {name} — {amount(price)} ₽."]
     extra = upsell_line(upsell, upsell_price, gap)
     if extra:
         lines.append(extra)
     lines.append("Если нужно больше пачек — напишите сколько.")
-    lines.append(ASK_WHERE)
+    lines.append(ask_where(geo))
     return "\n".join(lines)
 
 
@@ -891,6 +943,15 @@ ASK_WHERE = (
     "Куда везти — город и улица, где удобно забрать? "
     f"Пункты выдачи и постаматы Ozon на карте: {OZON_POINTS_MAP} — можно выбрать там и прислать адрес."
 )
+ASK_WHERE_GEO = (
+    "Куда везти — город и улица, где удобно забрать? Или отправьте геопозицию кнопкой ниже — "
+    "покажу ближайшие пункты."
+)
+
+
+def ask_where(geo: bool = False) -> str:
+    """«Куда везти?» — с кнопкой геопозиции без ссылки на карту, без кнопки — с картой."""
+    return ASK_WHERE_GEO if geo else ASK_WHERE
 ASK_POINT_AND_RECIPIENT = (
     "Выберите пункт выдачи и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
 )
