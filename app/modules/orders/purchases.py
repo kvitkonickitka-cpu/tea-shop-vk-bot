@@ -53,12 +53,16 @@ async def context(peer_id: int) -> str:
     """Блок для промпта или пустая строка, если заказов нет."""
     if not settings.purchase_history_in_prompt_enabled:
         return ""
+    from app.modules.dialog import test_mode
+
     try:
+        since = await test_mode.fresh_since(peer_id)
         async with get_session_factory()() as session:
             orders = (
                 await session.execute(
                     select(Order)
-                    .where(Order.peer_id == peer_id, Order.payment_status == orders_repository.PAID)
+                    .where(Order.peer_id == peer_id, Order.payment_status == orders_repository.PAID,
+                           test_mode.since_clause(Order.created_at, since))
                     .order_by(Order.created_at.desc())
                     .limit(LIMIT)
                 )

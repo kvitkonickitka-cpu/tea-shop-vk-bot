@@ -237,8 +237,16 @@ async def _respond(batch: Batch, budget_seconds: float) -> None:
     # может («Нет», «Изменить», старая кнопка), уходит модели текстом.
     from app.modules.orders import geo
 
+    from app.modules.dialog import test_mode, vk_client
+
     texts: list[InboundMessage] = []
     for row in batch.rows:
+        if not is_button(row.message) and test_mode.command_of(row.message.get("text")):
+            # Команда тестового аккаунта — коду, не модели и не в историю.
+            answer = await test_mode.handle(batch.peer_id, row.message.get("text"))
+            if answer is not None:
+                await vk_client.send_message(batch.peer_id, answer)
+                continue
         if geo.is_geo(row.message):
             # Геопозицию разбирает код: ближайшие пункты, модель видит только метку.
             answer = await geo.handle(batch.peer_id, row.message)

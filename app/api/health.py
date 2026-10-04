@@ -58,4 +58,17 @@ async def health_check(request: Request) -> dict:
         # Когда задачи по расписанию отрабатывали в последний раз. Пусто
         # означает, что триггер не сработал ни разу с момента выкатки.
         "по расписанию": await heartbeat.describe() or "отметок нет",
+        # TEST_VK_IDS: без ID — только счётчики. «не переведено» больше нуля —
+        # запись не стала ID (лучше писать числовой id), и пометки 🧪 у этого
+        # аккаунта не будет.
+        "тестовые аккаунты": await _test_ids_status(),
     }
+
+
+async def _test_ids_status() -> dict | str:
+    try:
+        from app.modules.analytics import service as analytics
+
+        return await analytics.test_ids_status()
+    except Exception:
+        return "не проверили"

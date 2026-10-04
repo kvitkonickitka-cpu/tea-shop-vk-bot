@@ -114,6 +114,7 @@ _MISSING_COLUMNS = (
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS last_offer_buttons JSONB",
     # Повторные касания: клиент запретил сообщения — продающих не шлём.
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS unreachable_at TIMESTAMPTZ",
+    "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS fresh_since TIMESTAMPTZ",
     # Аналитика: тестовые заказы не попадают в представления для DataLens.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS source VARCHAR",
