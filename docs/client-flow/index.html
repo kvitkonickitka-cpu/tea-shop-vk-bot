@@ -7,7 +7,7 @@
   <h1>Что происходит<br>на стороне клиента</h1>
   <div class="sub">Все пути, по которым идёт человек, написавший в сообщество: от вопроса про чай до вручения посылки. Как бот ведёт к покупке и где её теряет, оплата и напоминания, отмена, сборка со сканированием кодов «Честного знака», закрывающий чек, возвраты и то, что видит менеджер.</div>
   <div class="meta">
-    <p><b>Собрано по коду</b> ветки <code>feature/retention</code> (ещё не в бою): повторные касания после вручения — оценка кнопками, «Повторить» по личному ритму, второй шанс, реактивация — под одним фильтром; заварка в «вручено»; история покупок в промпте. Всё остальное, включая funnel v3, — в бою с 03.10.2026: продающая часть, короткий путь до оплаты (склейка сообщений, сводка со ссылкой без «Оформляем?», пункты с номерами, кнопки ВК, один вопрос постоянному клиенту, «Повторить» одним нажатием), кнопка прошлого получателя и расчёт Ozon со служебным телефоном.</p>
+    <p><b>Собрано по коду</b> ветки <code>feature/pii-tokens</code> (ещё не в бою; в неё входит и <code>feature/analytics-layer</code>): схема <code>analytics</code> для DataLens, недостающие события воронки, метка рекламной кампании, тестовые данные отдельно от настоящих; метки вместо персональных данных в запросах к Claude. Всё остальное — в бою: <code>main</code>, ревизия <code>4b4951b</code> (04.10.2026), включая повторные касания после вручения, заварку в «вручено» и историю покупок в промпте.</p>
     <p><b>Режим:</b> оплата ЮKassa на <b>боевом</b> магазине 1470686, чеки — «Чеки от ЮKassa»; ссылка на оплату живёт час; почта для чека обязательна и проверяется по DNS; ассортимент — из Google Таблицы; закрывающий чек при вручении — за флагом, выключен; Почта России выключена; первым предлагается пункт выдачи Ozon.</p>
     <p><b>Часы:</b> бот отвечает на сообщения круглосуточно. По своей инициативе он не пишет с 23:00 до 09:00 по Москве, а продающие напоминания («заказ ждёт вас», «повторить заказ?») — только с 10:00 до 21:00. Менеджер работает с 10:00 до 23:00, все семь дней.</p>
     <p><b>Как читать примеры.</b> Реплики с пометкой «дословно из кода» клиент получит буква в букву — их собирает программа по шаблонам из <code>app/messages/templates.py</code>. Остальные реплики бота формулирует Claude по инструкции: смысл и порядок те же, слова будут другими.</p>
@@ -31,6 +31,8 @@
   <div><b>10а. Повторные касания</b><span>оценка, «Повторить», второй шанс, реактивация</span></div>
   <div><b>11. Менеджер</b><span>вопросы, ответ менеджера, очередь, команды</span></div>
   <div><b>12. Фото, голосовые, витрина ВК</b><span>нестандартные входы</span></div>
+  <div><b>12а. Данные для аналитики</b><span>схема для DataLens, события, тестовые данные</span></div>
+  <div><b>12б. Персональные данные и Claude API</b><span>метки вместо ФИО, телефонов, почт</span></div>
   <div><b>13. Риски и недочёты</b><span>что осталось</span></div>
   <div><b>14. Что делать дальше</b><span>по порядку</span></div>
   <div><b>Приложение</b><span>все тексты бота дословно</span></div>
@@ -39,6 +41,11 @@
 <h3>Что изменилось с прошлой редакции</h3>
 <table class="changes">
   <tr><th style="width:32%">Было</th><th>Стало</th></tr>
+  <tr><td>ФИО, телефон, почта и адрес клиента уходили в Claude API как есть</td><td>Модель видит метки <code>[NAME_1]</code>, <code>[PHONE_1]</code>, <code>[EMAIL_1]</code>, <code>[ADDR_1]</code>; значения — только у нас, зашифрованы; клиенту, перевозчику, в чек и менеджеру — настоящие данные <span class="new">новое</span></td></tr>
+  <tr><td>Аналитики не было: только ежедневный отчёт</td><td>Схема <code>analytics</code> для Yandex DataLens: заказы, позиции, события воронки, касания, клиенты — без персональных данных и без тестовых заказов; договор столбцов под тестом <span class="new">новое</span></td></tr>
+  <tr><td>В журнале воронки — только кнопки, счета и касания</td><td>Весь путь: начало диалога, «Взять», черновик и откуда он, допродажа, доставка, пункт, получатель, счёт любым путём, напоминания, отказ банка, оплата со способом, отправление, судьба посылки, возврат, отмена, оценка, отзыв, вопрос менеджеру, «стоп» — у каждого события источник <span class="new">новое</span></td></tr>
+  <tr><td>Попытки оплаты навсегда оставались «pending»</td><td>Статус попытки, способ оплаты и сумма к зачислению обновляются по уведомлениям ЮKassa <span class="fixed">исправлено</span></td></tr>
+  <tr><td>Откуда пришёл клиент — неизвестно</td><td>Метка кампании <code>ref</code> из первого сообщения сохраняется один раз; без метки — органика <span class="new">новое</span></td></tr>
   <tr><td>После «вручено» — одно «Повторить заказ?» через 21 день на пачку</td><td>Цепочка касаний: оценка кнопками через 3 дня → «Повторить» по ритму клиента → второй шанс с другим сортом → реактивация через 90 дней. Одно касание за раз, пауза 3 дня, общий фильтр <span class="new">новое</span></td></tr>
   <tr><td>«Будет здорово, если напишете, как вам чай» в «вручено»</td><td>Как заваривать купленное — из таблицы, с видео; об оценке спросят кнопками через три дня <span class="new">новое</span></td></tr>
   <tr><td>Модель не видела прошлых покупок клиента</td><td>«Покупки клиента» в промпте: что брал, как оценил — для подбора, без персональных данных <span class="new">новое</span></td></tr>
@@ -693,6 +700,242 @@ Claude не ответил или упал — «Извините, у меня �
 <p>Постоянному клиенту вместо получателя из заказа — прошлый получатель: «Выберите пункт. Получатель как в прошлый раз — Иванов Иван, +79001234567, ivanov@mail.ru? Нажмите «Да, на эти данные» или пришлите ФИО, телефон и почту — сразу пришлю счёт.» и кнопка [Да, на эти данные] под пунктами; после выбора пункта она снова под ответом. Без получателя в заказе — «Выберите пункт и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт.». Адрес не разобрался (нет города) или Ozon не нашёл пунктов — прежнее сообщение «Осталось выбрать доставку… В какой город везём?». Если не разобрался состав — клиент слышит «заказ принят, уточним доставку», менеджер получает заказ на руки.</p>
 </section>
 <section class="section">
+<h2>12а. Данные для аналитики 🆕</h2>
+<p>Чарты Yandex DataLens читают только схему <code>analytics</code> — представления поверх рабочих таблиц. Это договор: столбцы только добавляются в конец, существующие не переименовываются, не удаляются и не меняют тип. Договор записан в <code>analytics/contract.yaml</code>; тест падает на любом расхождении, в том числе на новом столбце, который туда не записан. Представления пересоздаются при старте контейнера; не получилось — бот работает как работал, ошибка в логе.</p>
+<div class="cols">
+<div class="note"><b>Время</b>Все моменты — <code>timestamptz</code>, Postgres хранит их в UTC. Рядом с каждым — дата по Москве (<code>…_date_msk</code>): по ней удобно группировать дни. Суммы — <code>numeric</code> в рублях.</div>
+<div class="note"><b>Клиент без персональных данных</b><code>client_key</code> — HMAC от VK ID с секретом <code>CLIENT_KEY_SECRET</code>: один и тот же у человека во всех представлениях, по нему VK ID не восстановить. ФИО, телефонов, почт, адресов и текстов переписки в схеме нет.</div>
+</div>
+<div class="warn"><b>Тестовые данные исключены</b>Тестовые аккаунты — переменная <code>TEST_VK_IDS</code> (VK ID или ссылки на страницы через запятую): их клиенты и заказы помечаются <code>is_test</code> тиком расписания. Оплата в тестовом магазине ЮKassa (поле <code>test</code> в уведомлении) помечает заказ сразу. Тестовые заказы не предлагаются «как в прошлый раз» и не дают повторных касаний реальным клиентам; самим тестовым аккаунтам — дают, чтобы владелец мог проверить всё на себе. Что будет помечено — <code>scripts/api.sh analytics/sync</code>.</div>
+<p><b>Метка рекламной кампании</b> — <code>ref</code> и <code>ref_source</code> из первого сообщения клиента (ссылка вида <code>vk.me/club…?ref=…</code>). Пишется один раз, при первом контакте; пусто — органика.</p>
+<h3>Справочник событий воронки — analytics.dim_event</h3>
+<p style="font-size:8.6pt">У каждого события — время, клиент, номер заказа (если событие про заказ) и источник: текст клиента, кнопка, код бота, витрина, напоминание, менеджер, перевозчик, ЮKassa. «Порядок» — место шага в основной воронке.</p>
+<table>
+  <thead><tr><th style="width:24%">Код</th><th>Подпись</th><th style="width:10%">Порядок</th><th style="width:16%">Этап</th></tr></thead>
+  <tr><td><code>dialog_start</code></td><td>Начало диалога</td><td>10</td><td>Диалог</td></tr>
+  <tr><td><code>take_shown</code></td><td>Показаны кнопки «Взять»</td><td>20</td><td>Диалог</td></tr>
+  <tr><td><code>button:take</code></td><td>Нажата «Взять»</td><td>25</td><td>Диалог</td></tr>
+  <tr><td><code>draft_created</code></td><td>Черновик создан</td><td>30</td><td>Заказ</td></tr>
+  <tr><td><code>upsell_offered</code></td><td>Допродажа предложена</td><td>35</td><td>Заказ</td></tr>
+  <tr><td><code>upsell_accepted</code></td><td>Допродажа принята</td><td>36</td><td>Заказ</td></tr>
+  <tr><td><code>delivery_quoted</code></td><td>Доставка посчитана</td><td>40</td><td>Заказ</td></tr>
+  <tr><td><code>point_chosen</code></td><td>Пункт выдачи выбран</td><td>45</td><td>Заказ</td></tr>
+  <tr><td><code>recipient_set</code></td><td>Получатель записан</td><td>50</td><td>Заказ</td></tr>
+  <tr><td><code>invoice_auto</code></td><td>Счёт выставлен автоматически</td><td>60</td><td>Счёт</td></tr>
+  <tr><td><code>invoice_confirmed</code></td><td>Счёт после «Оформляем?»</td><td>60</td><td>Счёт</td></tr>
+  <tr><td><code>invoice_returning</code></td><td>Счёт постоянному клиенту</td><td>60</td><td>Счёт</td></tr>
+  <tr><td><code>invoice_repeat</code></td><td>Счёт по «Повторить»</td><td>60</td><td>Счёт</td></tr>
+  <tr><td><code>invoice_manual</code></td><td>Счёт командой менеджера</td><td>60</td><td>Счёт</td></tr>
+  <tr><td><code>payment_reminder_1</code></td><td>Напоминание об оплате 1</td><td>65</td><td>Счёт</td></tr>
+  <tr><td><code>payment_reminder_2</code></td><td>Напоминание об оплате 2</td><td>66</td><td>Счёт</td></tr>
+  <tr><td><code>invoice_expired</code></td><td>Счёт истёк</td><td></td><td>Счёт</td></tr>
+  <tr><td><code>invoice_canceled</code></td><td>Счёт отменён магазином</td><td></td><td>Счёт</td></tr>
+  <tr><td><code>payment_declined</code></td><td>Банк отказал</td><td></td><td>Счёт</td></tr>
+  <tr><td><code>payment_succeeded</code></td><td>Оплата прошла</td><td>70</td><td>Оплата</td></tr>
+  <tr><td><code>shipment_created</code></td><td>Отправление создано</td><td>80</td><td>Доставка</td></tr>
+  <tr><td><code>handed_over</code></td><td>Передано перевозчику</td><td>85</td><td>Доставка</td></tr>
+  <tr><td><code>at_pickup_point</code></td><td>В пункте выдачи</td><td>88</td><td>Доставка</td></tr>
+  <tr><td><code>delivered</code></td><td>Вручено</td><td>90</td><td>Доставка</td></tr>
+  <tr><td><code>not_delivered</code></td><td>Не вручено</td><td></td><td>Доставка</td></tr>
+  <tr><td><code>refunded</code></td><td>Возврат</td><td></td><td>После покупки</td></tr>
+  <tr><td><code>canceled_by_client</code></td><td>Отмена клиентом</td><td></td><td>Заказ</td></tr>
+  <tr><td><code>rated</code></td><td>Оценка</td><td>95</td><td>После покупки</td></tr>
+  <tr><td><code>review_saved</code></td><td>Отзыв</td><td>96</td><td>После покупки</td></tr>
+  <tr><td><code>escalation_opened</code></td><td>Вопрос менеджеру открыт</td><td></td><td>Менеджер</td></tr>
+  <tr><td><code>escalation_closed</code></td><td>Менеджер ответил</td><td></td><td>Менеджер</td></tr>
+  <tr><td><code>opted_out</code></td><td>Отписка «стоп»</td><td></td><td>После покупки</td></tr>
+  <tr><td><code>button</code></td><td>Нажатие кнопки</td><td></td><td>Кнопки</td></tr>
+  <tr><td><code>button_stale</code></td><td>Нажата устаревшая кнопка</td><td></td><td>Кнопки</td></tr>
+  <tr><td><code>touch</code></td><td>Повторное касание отправлено</td><td></td><td>Касания</td></tr>
+  <tr><td><code>touch_order</code></td><td>Заказ после касания (7 дней)</td><td></td><td>Касания</td></tr>
+  <tr><td><code>touch_optout</code></td><td>Отписка после касания (2 дня)</td><td></td><td>Касания</td></tr>
+</table>
+<div class="note"><b>Чего в журнале нет</b>Событий до 01.10.2026 — журнал воронки начинается с этой даты. Счёт, отправка напоминаний и судьба посылки старых заказов есть в самих заказах (<code>v_orders</code>), а не в событиях. Способ оплаты и сумма к зачислению — только у оплат после включения журнала: ЮKassa присылает их в уведомлении, отдельно мы их не запрашиваем.</div>
+<h3>Статусы заказа — analytics.dim_status</h3>
+<table>
+  <thead><tr><th style="width:24%">Код</th><th>Подпись</th><th style="width:10%">Порядок</th></tr></thead>
+  <tr><td><code>awaiting_payment</code></td><td>Ждёт оплаты</td><td>10</td></tr>
+  <tr><td><code>payment_failed</code></td><td>Счёт не выставился</td><td>15</td></tr>
+  <tr><td><code>payment_expired</code></td><td>Счёт истёк</td><td>20</td></tr>
+  <tr><td><code>canceled</code></td><td>Отменён клиентом</td><td>25</td></tr>
+  <tr><td><code>paid</code></td><td>Оплачен</td><td>30</td></tr>
+  <tr><td><code>confirmed</code></td><td>Оплачен, передаётся перевозчику</td><td>40</td></tr>
+  <tr><td><code>cdek_registered</code></td><td>Заведён в СДЭК</td><td>50</td></tr>
+  <tr><td><code>cdek_stuck</code></td><td>СДЭК не ответил</td><td>55</td></tr>
+  <tr><td><code>cdek_rejected</code></td><td>СДЭК отказал</td><td>56</td></tr>
+  <tr><td><code>reported</code></td><td>Передан в работу</td><td>60</td></tr>
+  <tr><td><code>refunded</code></td><td>Возврат</td><td>90</td></tr>
+</table>
+<h3>Представления и столбцы</h3>
+<h4>analytics.v_orders</h4>
+<p style="font-size:8.6pt">Заказы клиентов, по строке на заказ, без тестовых. Заказ появляется, когда выставлен счёт (или оформлен заказ без оплаты в старой схеме); черновики сюда не попадают. Оплаченный — is_paid; выручку считать по total оплаченных, без возвращённых (is_refunded).</p>
+<table>
+  <thead><tr><th style="width:23%">Столбец</th><th style="width:13%">Тип</th><th>Что это и как считается</th></tr></thead>
+  <tr><td><code>order_id</code></td><td><code>integer</code></td><td>Номер заказа — тот же, что видят клиент и менеджер.</td></tr>
+  <tr><td><code>client_key</code></td><td><code>varchar</code></td><td>Псевдонимный ключ клиента (HMAC от VK ID). Тот же в остальных представлениях.</td></tr>
+  <tr><td><code>client_order_number</code></td><td><code>integer</code></td><td>Порядковый номер заказа у клиента среди всех его заказов: 1 — первый.</td></tr>
+  <tr><td><code>client_paid_order_number</code></td><td><code>integer</code></td><td>Порядковый номер среди оплаченных заказов клиента: 1 — первая покупка, 2 и больше — повторная. У неоплаченных пусто.</td></tr>
+  <tr><td><code>created_at</code></td><td><code>timestamptz</code></td><td>Когда заказ создан (выставлен первый счёт), UTC.</td></tr>
+  <tr><td><code>created_date_msk</code></td><td><code>date</code></td><td>Дата создания заказа по Москве.</td></tr>
+  <tr><td><code>paid_at</code></td><td><code>timestamptz</code></td><td>Когда пришли деньги, UTC. У старых заказов без отметки — время сообщения клиенту об оплате.</td></tr>
+  <tr><td><code>paid_date_msk</code></td><td><code>date</code></td><td>Дата оплаты по Москве.</td></tr>
+  <tr><td><code>delivered_at</code></td><td><code>timestamptz</code></td><td>Когда посылку вручили клиенту, UTC (по данным перевозчика или отметке менеджера).</td></tr>
+  <tr><td><code>delivered_date_msk</code></td><td><code>date</code></td><td>Дата вручения по Москве.</td></tr>
+  <tr><td><code>status</code></td><td><code>varchar</code></td><td>Статус заказа кодом; подпись — status_label, справочник — dim_status.</td></tr>
+  <tr><td><code>status_label</code></td><td><code>text</code></td><td>Статус заказа по-русски.</td></tr>
+  <tr><td><code>is_paid</code></td><td><code>boolean</code></td><td>Деньги по заказу пришли (в том числе если потом был возврат).</td></tr>
+  <tr><td><code>is_refunded</code></td><td><code>boolean</code></td><td>По заказу оформлен возврат.</td></tr>
+  <tr><td><code>is_canceled</code></td><td><code>boolean</code></td><td>Клиент отменил заказ до оплаты.</td></tr>
+  <tr><td><code>is_delivered</code></td><td><code>boolean</code></td><td>Посылка вручена.</td></tr>
+  <tr><td><code>channel</code></td><td><code>text</code></td><td>Канал заказа кодом: dialog — собран в переписке, storefront — из витрины ВК, returning — постоянный клиент («как в прошлый раз»), repeat — «Повторить» (обычно по напоминанию).</td></tr>
+  <tr><td><code>channel_label</code></td><td><code>text</code></td><td>Канал заказа по-русски.</td></tr>
+  <tr><td><code>carrier</code></td><td><code>text</code></td><td>Перевозчик: cdek, ozon, russian_post.</td></tr>
+  <tr><td><code>delivery_method</code></td><td><code>varchar</code></td><td>Способ доставки кодом: ozon_pvz, cdek_pvz, cdek_courier, russian_post.</td></tr>
+  <tr><td><code>delivery_type</code></td><td><code>text</code></td><td>Тип доставки: pickup — пункт выдачи, courier — курьер, post — почта.</td></tr>
+  <tr><td><code>items_total</code></td><td><code>numeric(10,2)</code></td><td>Сумма товаров, руб.</td></tr>
+  <tr><td><code>delivery_cost</code></td><td><code>numeric(10,2)</code></td><td>Доставка для клиента, руб. 0 — бесплатная.</td></tr>
+  <tr><td><code>carrier_delivery_cost</code></td><td><code>numeric(10,2)</code></td><td>Цена перевозчика, руб.: при бесплатной доставке её платит магазин.</td></tr>
+  <tr><td><code>total</code></td><td><code>numeric(10,2)</code></td><td>Итог к оплате клиентом, руб.: товары + доставка для клиента.</td></tr>
+  <tr><td><code>free_delivery</code></td><td><code>boolean</code></td><td>Доставка бесплатна для клиента: заказ выше порога FREE_DELIVERY_THRESHOLD.</td></tr>
+  <tr><td><code>items_count</code></td><td><code>integer</code></td><td>Сколько пачек в заказе.</td></tr>
+  <tr><td><code>upsell_offered</code></td><td><code>boolean</code></td><td>Клиенту предлагали допродажу из столбца «С чем советуем».</td></tr>
+  <tr><td><code>upsell_item</code></td><td><code>text</code></td><td>Какой товар предлагали допродажей.</td></tr>
+  <tr><td><code>upsell_accepted</code></td><td><code>boolean</code></td><td>Предложенный допродажей товар есть в заказе.</td></tr>
+  <tr><td><code>payment_attempts</code></td><td><code>integer</code></td><td>Сколько раз выставляли счёт по заказу: второй и дальше — после истёкшего счёта, отказа банка или правки.</td></tr>
+  <tr><td><code>payment_method</code></td><td><code>text</code></td><td>Способ оплаты от ЮKassa: bank_card, sbp, yoo_money и т. п. У старых заказов пусто.</td></tr>
+  <tr><td><code>income_amount</code></td><td><code>numeric(10,2)</code></td><td>Сколько получит магазин после комиссии ЮKassa, руб. Есть не у всех заказов.</td></tr>
+  <tr><td><code>rating</code></td><td><code>varchar</code></td><td>Оценка клиента кодом: great, ok, no. Пусто — не оценивал.</td></tr>
+  <tr><td><code>rating_label</code></td><td><code>varchar</code></td><td>Оценка по-русски: «Очень понравился», «Нормально», «Не моё».</td></tr>
+  <tr><td><code>has_review</code></td><td><code>boolean</code></td><td>Клиент оставил отзыв о заказе.</td></tr>
+  <tr><td><code>ref</code></td><td><code>varchar</code></td><td>Метка рекламной кампании клиента (ref из ссылки при первом контакте). Пусто — органика.</td></tr>
+  <tr><td><code>ref_source</code></td><td><code>varchar</code></td><td>Источник метки кампании (ref_source). Пусто — органика.</td></tr>
+</table>
+<h4>analytics.v_order_items</h4>
+<p style="font-size:8.6pt">Позиции заказов, по строке на товар в заказе, без тестовых заказов. Сумма — цена × количество.</p>
+<table>
+  <thead><tr><th style="width:23%">Столбец</th><th style="width:13%">Тип</th><th>Что это и как считается</th></tr></thead>
+  <tr><td><code>order_id</code></td><td><code>integer</code></td><td>Номер заказа, связь с v_orders.order_id.</td></tr>
+  <tr><td><code>client_key</code></td><td><code>varchar</code></td><td>Псевдонимный ключ клиента.</td></tr>
+  <tr><td><code>line_no</code></td><td><code>integer</code></td><td>Номер строки в заказе.</td></tr>
+  <tr><td><code>item_name</code></td><td><code>text</code></td><td>Товар как в заказе: название вместе с фасовкой.</td></tr>
+  <tr><td><code>product</code></td><td><code>text</code></td><td>Сорт без фасовки.</td></tr>
+  <tr><td><code>pack</code></td><td><code>text</code></td><td>Фасовка из названия: «100 г», «50 г». Пусто — в названии фасовки нет.</td></tr>
+  <tr><td><code>quantity</code></td><td><code>integer</code></td><td>Количество пачек.</td></tr>
+  <tr><td><code>price</code></td><td><code>numeric(10,2)</code></td><td>Цена за пачку, руб.</td></tr>
+  <tr><td><code>amount</code></td><td><code>numeric(10,2)</code></td><td>Сумма по строке, руб.: цена × количество.</td></tr>
+  <tr><td><code>created_at</code></td><td><code>timestamptz</code></td><td>Когда создан заказ, UTC.</td></tr>
+  <tr><td><code>created_date_msk</code></td><td><code>date</code></td><td>Дата создания заказа по Москве.</td></tr>
+  <tr><td><code>is_paid</code></td><td><code>boolean</code></td><td>Заказ оплачен.</td></tr>
+  <tr><td><code>status</code></td><td><code>varchar</code></td><td>Статус заказа кодом (dim_status).</td></tr>
+</table>
+<h4>analytics.v_funnel_events</h4>
+<p style="font-size:8.6pt">События воронки по одному на строку, без тестовых клиентов и заказов. Подписи и порядок шагов — dim_event: сначала по точному коду (event), потом по общему (event_kind).</p>
+<table>
+  <thead><tr><th style="width:23%">Столбец</th><th style="width:13%">Тип</th><th>Что это и как считается</th></tr></thead>
+  <tr><td><code>event_id</code></td><td><code>integer</code></td><td>Номер события.</td></tr>
+  <tr><td><code>created_at</code></td><td><code>timestamptz</code></td><td>Когда случилось, UTC.</td></tr>
+  <tr><td><code>created_date_msk</code></td><td><code>date</code></td><td>Дата события по Москве.</td></tr>
+  <tr><td><code>event</code></td><td><code>varchar</code></td><td>Код события, как пишет бот: draft_created, button:take, touch:repeat_nudge…</td></tr>
+  <tr><td><code>event_kind</code></td><td><code>varchar</code></td><td>Общий код: button — любое нажатие, touch — любое касание, иначе как event.</td></tr>
+  <tr><td><code>event_label</code></td><td><code>text</code></td><td>Подпись события по-русски.</td></tr>
+  <tr><td><code>funnel_order</code></td><td><code>integer</code></td><td>Порядок шага в основной воронке; пусто — событие вне воронки.</td></tr>
+  <tr><td><code>stage</code></td><td><code>text</code></td><td>Этап воронки по-русски.</td></tr>
+  <tr><td><code>client_key</code></td><td><code>varchar</code></td><td>Псевдонимный ключ клиента.</td></tr>
+  <tr><td><code>order_id</code></td><td><code>integer</code></td><td>Номер заказа, если событие про заказ. У событий черновика пусто.</td></tr>
+  <tr><td><code>source</code></td><td><code>varchar</code></td><td>Источник кодом: text, button, code, storefront, reminder, manager, carrier, yookassa.</td></tr>
+  <tr><td><code>source_label</code></td><td><code>varchar</code></td><td>Источник по-русски. Пусто — событие записано до 10.2026.</td></tr>
+  <tr><td><code>button_action</code></td><td><code>text</code></td><td>Какая кнопка нажата: take, repeat, pt (пункт), rate, offer_ok…</td></tr>
+  <tr><td><code>touch</code></td><td><code>text</code></td><td>Повторное касание, к которому относится событие: feedback_ask, repeat_nudge, second_touch, reactivation.</td></tr>
+  <tr><td><code>origin</code></td><td><code>text</code></td><td>Откуда черновик (draft_created): text, take, repeat, storefront, returning, button.</td></tr>
+  <tr><td><code>attempt</code></td><td><code>integer</code></td><td>Номер попытки оплаты у событий счёта и оплаты.</td></tr>
+  <tr><td><code>amount</code></td><td><code>numeric(10,2)</code></td><td>Сумма события, руб.: счёт, оплата или цена доставки.</td></tr>
+  <tr><td><code>income_amount</code></td><td><code>numeric(10,2)</code></td><td>Сколько получит магазин после комиссии (payment_succeeded), руб.</td></tr>
+  <tr><td><code>payment_method</code></td><td><code>text</code></td><td>Способ оплаты (payment_succeeded) или способ доставки (delivery_quoted, point_chosen).</td></tr>
+  <tr><td><code>reason</code></td><td><code>text</code></td><td>Причина отказа банка от ЮKassa (payment_declined): insufficient_funds и т. п.</td></tr>
+  <tr><td><code>rating</code></td><td><code>text</code></td><td>Оценка (rated): great, ok, no.</td></tr>
+  <tr><td><code>carrier</code></td><td><code>text</code></td><td>Перевозчик (shipment_created): cdek, ozon.</td></tr>
+  <tr><td><code>item</code></td><td><code>text</code></td><td>Товар допродажи (upsell_offered, upsell_accepted).</td></tr>
+</table>
+<h4>analytics.v_touches</h4>
+<p style="font-size:8.6pt">Повторные касания после покупки, по строке на отправленное касание, без тестовых клиентов. Результат касания засчитывается до следующего касания этому клиенту: нажатие и заказ — в течение 7 дней, отписка — 2 дней.</p>
+<table>
+  <thead><tr><th style="width:23%">Столбец</th><th style="width:13%">Тип</th><th>Что это и как считается</th></tr></thead>
+  <tr><td><code>touch_id</code></td><td><code>integer</code></td><td>Номер касания.</td></tr>
+  <tr><td><code>client_key</code></td><td><code>varchar</code></td><td>Псевдонимный ключ клиента.</td></tr>
+  <tr><td><code>touch</code></td><td><code>text</code></td><td>Касание кодом: feedback_ask, repeat_nudge, second_touch, reactivation.</td></tr>
+  <tr><td><code>touch_label</code></td><td><code>text</code></td><td>Касание по-русски.</td></tr>
+  <tr><td><code>sent_at</code></td><td><code>timestamptz</code></td><td>Когда отправлено, UTC.</td></tr>
+  <tr><td><code>sent_date_msk</code></td><td><code>date</code></td><td>Дата отправки по Москве.</td></tr>
+  <tr><td><code>order_id</code></td><td><code>integer</code></td><td>Заказ, по поводу которого касание (у реактивации — последний заказ).</td></tr>
+  <tr><td><code>pressed</code></td><td><code>boolean</code></td><td>Клиент нажал кнопку под касанием.</td></tr>
+  <tr><td><code>pressed_action</code></td><td><code>text</code></td><td>Какую кнопку нажал первой: repeat, rate, take, other, advise…</td></tr>
+  <tr><td><code>ordered_7d</code></td><td><code>boolean</code></td><td>Клиент оплатил заказ в течение 7 дней после касания.</td></tr>
+  <tr><td><code>new_order_id</code></td><td><code>integer</code></td><td>Номер заказа, оплаченного после касания.</td></tr>
+  <tr><td><code>opted_out_2d</code></td><td><code>boolean</code></td><td>Клиент отписался («стоп») в течение 2 дней после касания.</td></tr>
+</table>
+<h4>analytics.v_clients</h4>
+<p style="font-size:8.6pt">Клиенты, по строке на человека, без тестовых. Выручка — сумма total оплаченных заказов без возвращённых. Клиент появляется при первом сообщении или первом заказе.</p>
+<table>
+  <thead><tr><th style="width:23%">Столбец</th><th style="width:13%">Тип</th><th>Что это и как считается</th></tr></thead>
+  <tr><td><code>client_key</code></td><td><code>varchar</code></td><td>Псевдонимный ключ клиента (HMAC от VK ID).</td></tr>
+  <tr><td><code>first_contact_at</code></td><td><code>timestamptz</code></td><td>Первый контакт: первое сообщение или первый заказ, UTC.</td></tr>
+  <tr><td><code>first_contact_date_msk</code></td><td><code>date</code></td><td>Дата первого контакта по Москве.</td></tr>
+  <tr><td><code>first_order_at</code></td><td><code>timestamptz</code></td><td>Когда создан первый заказ (выставлен счёт), UTC.</td></tr>
+  <tr><td><code>first_paid_order_at</code></td><td><code>timestamptz</code></td><td>Когда создан первый оплаченный заказ, UTC.</td></tr>
+  <tr><td><code>last_order_at</code></td><td><code>timestamptz</code></td><td>Когда создан последний заказ, UTC.</td></tr>
+  <tr><td><code>last_paid_order_at</code></td><td><code>timestamptz</code></td><td>Когда создан последний оплаченный заказ, UTC.</td></tr>
+  <tr><td><code>orders_count</code></td><td><code>integer</code></td><td>Сколько заказов создано (с выставленным счётом).</td></tr>
+  <tr><td><code>paid_orders_count</code></td><td><code>integer</code></td><td>Сколько заказов оплачено.</td></tr>
+  <tr><td><code>revenue</code></td><td><code>numeric(10,2)</code></td><td>Выручка с клиента, руб.: оплаченные заказы без возвращённых.</td></tr>
+  <tr><td><code>opted_out</code></td><td><code>boolean</code></td><td>Отписан от продающих сообщений («стоп»).</td></tr>
+  <tr><td><code>opted_out_at</code></td><td><code>timestamptz</code></td><td>Когда отписался, UTC.</td></tr>
+  <tr><td><code>unreachable</code></td><td><code>boolean</code></td><td>ВК не доставляет клиенту сообщения (запретил или удалил страницу).</td></tr>
+  <tr><td><code>ref</code></td><td><code>varchar</code></td><td>Метка рекламной кампании при первом контакте. Пусто — органика.</td></tr>
+  <tr><td><code>ref_source</code></td><td><code>varchar</code></td><td>Источник метки кампании. Пусто — органика.</td></tr>
+</table>
+<div class="note"><b>Как подключить DataLens</b>Подключение PostgreSQL: хост <code>111.88.153.34</code>, порт <code>5432</code>, база <code>teashop</code>, пользователь <code>datalens_reader</code>, схема <code>analytics</code>. Роль — только чтение схемы, без доступа к рабочим таблицам; создаётся один раз скриптом <code>analytics/datalens_role.sql</code> на виртуалке с базой, пароль — из переменной окружения. Сеть уже открыта: правила группы безопасности, которые считались «устаревшими», — ровно адреса DataLens из его документации. Подробно — <code>docs/infrastructure.md</code>, раздел «Аналитика: DataLens».</div>
+</section>
+
+<section class="section">
+<h2>12б. Персональные данные и Claude API 🆕</h2>
+<p>Модель не видит ФИО, телефонов, почт и адресов клиентов: вместо них — метки. Значения меток хранятся только у нас, в Yandex Cloud, в таблице <code>pii_vault</code> — зашифрованными, а клиент там обозначен псевдонимным ключом, не VK ID. Код подставляет значения обратно везде, где текст уходит человеку или в инструмент. Клиент разницы не замечает.</p>
+<div class="chat">
+  <div class="turn from-client"><div class="bubble"><span class="who">Клиент пишет</span>1, Иванов Иван, 89001234567, ivanov@mail.ru</div></div>
+  <div class="sys">модель получает: «1, [NAME_1], [PHONE_1], [EMAIL_1]» и вызывает set_recipient с метками → код подставляет значения, проверяет почту по DNS, записывает в заказ</div>
+  <div class="turn from-bot exact"><div class="bubble"><span class="who">Бот</span>Заказ №12 — проверьте, всё ли верно:<br>…<br>Получатель: Иванов Иван, +79001234567, ivanov@mail.ru<br>Итого: 1621 ₽<br><span class="kbd">[Оплатить 1621 ₽]</span></div></div>
+  <div class="sys">в историю диалога (её читает модель на следующем ходу) эта сводка записана как «Получатель: [NAME_1], [PHONE_1], [EMAIL_1]»</div>
+</div>
+<h3>Что заменяется меткой</h3>
+<table>
+  <thead><tr><th style="width:24%">Что</th><th>Как находим</th></tr></thead>
+  <tr><td>Телефон <code>[PHONE_n]</code></td><td>Все российские форматы: +7, 8, 7, скобки, пробелы, дефисы; без кода страны — только мобильные на 9 (иначе за телефон сошёл бы номер накладной). Один номер в любом виде — одна метка: хранится как <code>+7XXXXXXXXXX</code></td></tr>
+  <tr><td>Почта <code>[EMAIL_n]</code></td><td>По виду адреса, хранится строчными</td></tr>
+  <tr><td>ФИО <code>[NAME_n]</code></td><td>Словарь pymorphy3 (локально, без сети): два-три слова с заглавной, среди которых имя или отчество, или одно слово, которое словарь уверенно считает именем. Когда бот ждёт данные получателя — отдельный кусок из двух-трёх слов, даже строчными. Сорта и синонимы из таблицы каталога, города и перевозчики — в стоп-листе: «Да Хун Пао» не станет меткой</td></tr>
+  <tr><td>Адрес <code>[ADDR_n]</code></td><td>Адрес доставки из заказа витрины — целиком; адрес для курьера — целиком, когда бот его попросил</td></tr>
+  <tr><td>Имена в ответах менеджера</td><td>«Иван, добрый день!» в истории — «[NAME_1], добрый день!»</td></tr>
+  <tr><td>Получатель из витрины и прошлых заказов</td><td>Регистрируется, как только попадает в черновик: дальше узнаётся в сводках, промпте и истории как известное значение</td></tr>
+</table>
+<p><b>Не заменяется:</b> адреса пунктов выдачи (публичные) и город с улицей, которые клиент называет для поиска пункта — без них модель не сможет говорить о пунктах. Имя из профиля ВК бот не запрашивает и модели не передаёт.</p>
+<h3>Где значения подставляются обратно</h3>
+<ul>
+  <li><b>Ответ клиенту в ВК</b> — перед отправкой.</li>
+  <li><b>Аргументы инструментов</b> — до проверки почты по DNS и формата телефона и до записи в черновик и заказ: перевозчик, ЮKassa и чек получают настоящие данные.</li>
+  <li><b>Вопрос менеджеру и отзыв</b> — в базу и в Telegram уходят со значениями.</li>
+  <li><b>Пересказ диалога</b> для отчёта менеджеру остаётся с метками: сам диалог менеджер открывает по ссылке.</li>
+</ul>
+<div class="warn"><b>Чужая или выдуманная метка</b>Если модель напишет метку, которой у этого клиента нет, ответ не уходит: клиент получает «Извините, у меня техническая заминка…», в логе — ошибка. Текст с дырой или с данными другого клиента отправить нельзя.</div>
+<div class="note"><b>Последний рубеж</b>Прямо перед отправкой в Anthropic весь запрос ещё раз проверяется на телефоны и почты. Найденное заменяется на <code>[REDACTED]</code>, в лог — предупреждение без значения, в ежедневный отчёт Ops — строка «Персональные данные к Claude: перехвачено N». Это страховка: если строка появилась, метки что-то пропустили.</div>
+<h3>Что остаётся риском</h3>
+<ul>
+  <li><b>Фото и скриншоты</b> уходят модели как есть: на снимке заказа, квитанции или карты может быть имя, телефон, адрес.</li>
+  <li><b>Имя в середине фразы без фамилии</b>, если словарь в нём не уверен: «Надежда заберёт», «для Веры», «Роман приедет», «маме Свете», имя строчными вне оформления («получит иван») — останется словом. Фамилия без имени («получит Смирнов») — тоже.</li>
+  <li><b>Город-тёзка рядом с улицей</b> может стать меткой: «Владимир Ленина» — как имя. Это перестраховка: модель переспросит улицу.</li>
+  <li><b>Адрес курьера</b>, который клиент назвал до того, как бот его попросил («курьером на Ленина 5, кв 3»), уходит модели как есть.</li>
+  <li><b>Карточки менеджеру в Telegram</b> — со значениями, как и раньше. Telegram — тоже иностранный сервис; список карточек с персональными данными — в отчёте для юриста.</li>
+</ul>
+</section>
+
+<section class="section">
 <h2>13. Риски и недочёты</h2>
 <div class="legend">
   <span><span class="dot" style="background:#a33b34"></span> высокий — клиент теряет деньги, заказ или доверие</span>
@@ -760,6 +1003,15 @@ Claude не ответил или упал — «Извините, у меня �
   <tr><td>15</td><td>Оплачен прошлый вариант заказа</td>
       <td>Клиент поправил заказ после ссылки, а заплатил по старой, которая у ЮKassa ещё живёт: поедет оплаченный вариант, менеджер получит «⚠️ оплачен прошлый вариант» и уточнит у клиента</td>
       <td class="sev sev-low">низкий</td><td><code>payment/webhook.py</code></td></tr>
+  <tr><td>16</td><td>Фото и скриншоты уходят в Claude как есть</td>
+      <td>На снимке заказа, квитанции или карты могут быть имя, телефон, адрес — метки по картинке не ставятся. Вариант: распознавать текст на своей стороне и отправлять модели текст с метками вместо снимка</td>
+      <td class="sev sev-mid">средний</td><td><code>dialog/attachments.py</code></td></tr>
+  <tr><td>17</td><td>Не всякое имя узнаётся</td>
+      <td>«Надежда заберёт», «Роман приедет», «получит Смирнов» — словарь не уверен (слово бывает и именем, и обычным словом), слово уходит модели как есть. Обратная ошибка — «Владимир Ленина» станет меткой, и модель переспросит улицу</td>
+      <td class="sev sev-low">низкий</td><td><code>privacy/detect.py</code></td></tr>
+  <tr><td>18</td><td>Ключ меток потерять нельзя</td>
+      <td>Без <code>PII_ENCRYPTION_KEY</code> метки в истории не расшифровать: бот не сможет подставить прежние данные и попросит их заново. Ключ — в секретах GitHub и в менеджере паролей владельца</td>
+      <td class="sev sev-mid">средний</td><td>секреты</td></tr>
 
 </table>
 </section>
@@ -774,6 +1026,8 @@ Claude не ответил или упал — «Извините, у меня �
   <li><b>Настоящие вес и габариты</b> — столбцы в таблице каталога. Магазин по-прежнему может терять деньги на тяжёлых заказах.</li>
   <li><b>Счета ЮKassa с долгим сроком</b> вместо часовой ссылки — теперь доступно на боевом магазине.</li>
   <li><b>Воронка по журналу <code>funnel_events</code></b>: сколько счетов выставил код сам, сколько нажатий «Оформить» и «Повторить», сколько старых кнопок.</li>
+  <li><b>Перевести накопленную историю на метки</b>: <code>scripts/api.sh pii/migrate</code> — пробный прогон, затем <code>?apply=1</code>.</li>
+  <li><b>Подключить DataLens</b>: роль <code>datalens_reader</code> скриптом на виртуалке, подключение к <code>111.88.153.34:5432</code>, схема <code>analytics</code>; включить TLS в Postgres.</li>
   <li>Снять тестовые заказы; возврат после вручения; витринный заказ вживую.</li>
 </ol>
 
@@ -1107,5 +1361,5 @@ https://vk.com/gim240363526?sel=…</div>
 Исправить и отправить: ссылка на сборку — scripts/api.sh orders/128/pack-link, затем scripts/api.sh orders/128/settlement-receipt</div>
 <div class="tpl-title">Возврат после закрывающего чека</div>
 <div class="tpl">⚠️ Возврат после закрывающего чека: чек возврата должен быть с полным расчётом и кодами маркировки возвращённых пачек. Проверьте чек возврата в кабинете ЮKassa; при расхождении — их поддержка.</div>
-<div class="meta" style="margin-top:14pt;border-top:1px solid var(--line);padding-top:8pt;font-size:8.3pt;color:var(--muted)">Документ собран по коду <code>main</code>, ревизия <code>5c5150d</code> (01.10.2026). Пересобирается командой <code>python docs/client-flow/render.py</code>.</div>
+<div class="meta" style="margin-top:14pt;border-top:1px solid var(--line);padding-top:8pt;font-size:8.3pt;color:var(--muted)">Документ собран по коду ветки <code>feature/pii-tokens</code> поверх <code>main</code>, ревизия <code>4b4951b</code> (04.10.2026). Пересобирается командой <code>python docs/client-flow/render.py</code>.</div>
 </section></body></html>
