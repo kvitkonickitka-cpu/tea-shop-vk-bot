@@ -199,6 +199,10 @@ class Settings(BaseSettings):
     # заказе, но не дольше потолка.
     repeat_nudge_days_per_pack: int = 21
     repeat_nudge_max_days: int = 60
+    # Личный интервал: у клиента два и больше вручённых заказа — срок по
+    # медиане промежутков между его заказами, в этих пределах.
+    repeat_nudge_personal_min_days: int = 14
+    repeat_nudge_personal_max_days: int = 60
     # Срок годности «Повторить заказ?»: столько дней после срока ещё досылаем.
     repeat_nudge_shelf_days: int = 7
     repeat_nudge_enabled: bool = True
