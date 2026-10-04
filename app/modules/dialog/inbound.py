@@ -363,6 +363,11 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     from app.messages import marketing
 
     await marketing.mark_reachable(peer_id)
+    # Клиент для аналитики: при первом контакте — с меткой кампании, если
+    # пришёл по ссылке с ?ref=… Потом метка не перезаписывается.
+    from app.modules.analytics import service as analytics
+
+    await analytics.ensure_client(peer_id, ref=message.get("ref"), ref_source=message.get("ref_source"))
 
     try:
         get_session_factory()

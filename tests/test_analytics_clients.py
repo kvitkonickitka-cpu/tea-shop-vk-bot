@@ -73,3 +73,21 @@ async def test_ensure_client_once(clean):
     async with clean() as session:
         row = await session.get(Client, PEER)
     assert (row.ref, row.ref_source) == ("spring", "ads")
+
+
+async def test_ref_is_kept_from_the_first_contact_only(clean, monkeypatch):
+    from app.modules.dialog import inbound
+
+    async def no_turn(peer_id, started):
+        return True
+
+    monkeypatch.setattr(inbound, "_run_turn", no_turn)
+    monkeypatch.setattr(inbound, "is_enabled", lambda: False)
+    await inbound.accept("e1", {"peer_id": PEER, "text": "привет", "ref": "autumn", "ref_source": "post"})
+    await inbound.accept("e2", {"peer_id": PEER, "text": "ещё", "ref": "other", "ref_source": "ads"})
+    await inbound.accept("e3", {"peer_id": PEER + 1, "text": "сам пришёл"})
+    async with clean() as session:
+        clients = {c.peer_id: c for c in (await session.execute(select(Client))).scalars().all()}
+    assert (clients[PEER].ref, clients[PEER].ref_source) == ("autumn", "post")
+    assert clients[PEER].client_key == client_key_module.client_key(PEER)
+    assert (clients[PEER + 1].ref, clients[PEER + 1].ref_source) == (None, None)  # органика

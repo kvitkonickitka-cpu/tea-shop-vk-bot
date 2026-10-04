@@ -216,6 +216,10 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
 
     await state.set_draft(user_id, draft)
     from app.messages import funnel
+    from app.modules.analytics import service as analytics
+
+    # Заказ из витрины бывает первым контактом: метки кампании у него нет.
+    await analytics.ensure_client(user_id)
 
     await funnel.record(user_id, "draft_created", source_=funnel.STOREFRONT, origin="storefront",
                         vk_order_id=order_id)
