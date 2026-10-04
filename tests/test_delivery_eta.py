@@ -19,13 +19,56 @@ def _eta(carrier, low, high, working):
 
 
 def test_phrase_ozon_and_cdek():
+    assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 10 октября (1 день соберём, 5 дней в пути у Ozon)"
+    assert eta.phrase(_eta("cdek", 3, 4, True)) == (
+        "≈ 8–9 октября (1 день соберём, 3–4 рабочих дня в пути у СДЭКа)"
+    )
+    assert eta.phrase(_eta("cdek", 1, 1, True)) == (
+        "≈ 6 октября (1 день соберём, 1 рабочий день в пути у СДЭКа)"
+    )
+
+
+def test_old_phrase_when_dates_are_off(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "delivery_date_enabled", False)
     assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon"
     assert eta.phrase(_eta("cdek", 3, 4, True)) == (
         "≈ 4–5 рабочих дней: 1 день соберём и сдадим, 3–4 рабочих дня в пути у СДЭКа"
     )
-    assert eta.phrase(_eta("cdek", 1, 1, True)) == (
-        "≈ 2 рабочих дня: 1 день соберём и сдадим, 1 рабочий день в пути у СДЭКа"
-    )
+    assert eta.by_date(_eta("ozon", 5, 5, False)[eta.KEY]) == ""
+
+
+@pytest.mark.parametrize(("now", "eta_", "expected"), [
+    # Воскресенье днём: соберём в понедельник, Ozon везёт календарными днями.
+    ((2026, 10, 4, 12), ("ozon", 5, 5, False), "≈ 10 октября"),
+    # После 18:00 — сборка с завтрашнего дня.
+    ((2026, 10, 5, 18), ("ozon", 5, 5, False), "≈ 12 октября"),
+    ((2026, 10, 5, 17), ("ozon", 5, 5, False), "≈ 11 октября"),
+    # Суббота вечером: завтра воскресенье, в воскресенье не сдаём — понедельник.
+    ((2026, 10, 3, 19), ("ozon", 5, 5, False), "≈ 10 октября"),
+    # СДЭК — рабочими днями: сдаём в пятницу, дальше через выходные.
+    ((2026, 10, 8, 12), ("cdek", 2, 3, True), "≈ 13–14 октября"),
+    # Через границу месяца — оба месяца словами.
+    ((2026, 10, 27, 12), ("ozon", 3, 5, False), "≈ 31 октября – 2 ноября"),
+])
+def test_date_of_receipt(now, eta_, expected):
+    from datetime import datetime
+
+    from app.core import worktime
+
+    carrier, low, high, working = eta_
+    moment = datetime(*now, tzinfo=worktime.MSK)
+    assert eta.by_date(_eta(carrier, low, high, working)[eta.KEY], moment) == expected
+
+
+def test_paid_names_the_date():
+    from types import SimpleNamespace
+
+    order = SimpleNamespace(id=128, total=917)
+    text = templates.paid(order, email="a@b.ru", posting="0123-4567-8", expected="≈ 10 октября")
+    assert text.endswith("Ждите ≈ 10 октября.")
+    assert "Ждите" not in templates.paid(order, email="a@b.ru", posting="0123-4567-8")
 
 
 def test_no_carrier_days_no_phrase():
@@ -40,7 +83,7 @@ async def test_ozon_tool_result_and_draft_carry_the_phrase(clean, ozon):  # noqa
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "ozon_pvz", "address": "Краснодар"}
     )
-    phrase = "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon"
+    phrase = "≈ 10 октября (1 день соберём, 5 дней в пути у Ozon)"
     assert f"срок {phrase}" in result.tool_result
     assert "Срок называй вместе с ценой" in result.tool_result
     draft = await state.get_draft(PEER)
@@ -57,11 +100,11 @@ async def test_cdek_courier_tool_result(clean, monkeypatch):
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "cdek_courier", "address": "Москва, Тверская 1"}
     )
-    assert "срок ≈ 4–5 рабочих дней: 1 день соберём и сдадим, 3–4 рабочих дня в пути у СДЭКа" in result.tool_result
+    assert "срок ≈ 8–9 октября (1 день соберём, 3–4 рабочих дня в пути у СДЭКа)" in result.tool_result
 
 
 def test_client_messages_show_the_phrase():
-    phrase = "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon"
+    phrase = "≈ 10 октября (1 день соберём, 5 дней в пути у Ozon)"
     common = dict(
         items=[{"name": "Те Гуань Инь", "quantity": 1, "price": 1500}],
         delivery_method="ozon_pvz", delivery_label="Ozon, пункт выдачи: Красная, 176",
@@ -79,15 +122,15 @@ def test_client_messages_show_the_phrase():
 
 
 async def test_returning_offer_brings_the_eta_into_the_order(clean, ozon):  # noqa: F811
-    draft = OrderDraft(items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 1500}],
+    draft = OrderDraft(items=[{"name": "Те Гуань Инь", "quantity": 1, "price": 1500}],
                        items_total=1500, stage="awaiting_delivery", details={})
     delivery = LastDelivery(1, "ozon_pvz", "Краснодар", "Красная улица, 176", point_id=13)
     recipient = LastRecipient(1, "Иванов Иван", "+79001234567", "")
     offer = await offers.prepare(draft, delivery, recipient)
     assert offer.eta == {"carrier": "ozon", "min": 5, "max": 5, "working": False}
-    assert "Срок: ≈ 6 дней:" in conversation._offer_message(draft, offer)
+    assert "Срок: ≈ 10 октября (" in conversation._offer_message(draft, offer)
     offers.apply(draft, offer)
-    assert eta.phrase(draft.details).startswith("≈ 6 дней:")
+    assert eta.phrase(draft.details).startswith("≈ 10 октября (")
 
 
 async def test_handover_range_still_supported(monkeypatch):
@@ -95,7 +138,7 @@ async def test_handover_range_still_supported(monkeypatch):
 
     monkeypatch.setattr(settings, "handover_days_min", 1)
     monkeypatch.setattr(settings, "handover_days", 2)
-    assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 6–7 дней: 1–2 дня соберём и сдадим, 5 дней в пути у Ozon"
+    assert eta.phrase(_eta("ozon", 5, 5, False)) == "≈ 10–11 октября (1–2 дня соберём, 5 дней в пути у Ozon)"
 
 
 @pytest.mark.parametrize("with_conditions", [True, False])

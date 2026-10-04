@@ -69,8 +69,8 @@ async def test_order_from_the_admin_notice_offers_two_carriers_once(clean, shop)
     await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
     text, board = shop["sent"][-1]
     assert text.startswith("Заказ №820826 принят: Дянь Хун // 100 грамм × 1 — 1500 ₽.\n\nДоставка в Краснодар:\n")
-    assert "• Ozon, пункт выдачи — 121 ₽, ≈ 7 дней" in text
-    assert "• СДЭК, пункт выдачи — 245 ₽, ≈ 3–4 рабочих дня" in text
+    assert "• Ozon, пункт выдачи — 121 ₽, получите ≈ 11 октября" in text
+    assert "• СДЭК, пункт выдачи — 245 ₽, получите ≈ 7–8 октября" in text
     assert "пришлите почту для чека" in text and text.endswith("Выберите доставку кнопкой ниже 👇")
     assert labels(board) == ["Ozon — 121 ₽", "СДЭК — 245 ₽"]
     # Модель видит заказ в истории — без телефона и почты.

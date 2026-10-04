@@ -122,7 +122,8 @@ def receipt_destination(email: str, phone: str) -> str:
 # --- клиенту ---------------------------------------------------------------
 
 
-def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bool = False) -> str:
+def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bool = False,
+         expected: str = "") -> str:
     """Оплата получена. Посылка в этот момент ещё не собрана — так и говорим.
 
     Раньше номер отправления Ozon подавался так, будто посылка уже едет, а
@@ -149,6 +150,10 @@ def paid(order, *, email: str = "", phone: str = "", posting: str = "", cdek: bo
             "Заказ в работе. Для передачи в доставку нужно участие менеджера — "
             "он напишет вам здесь."
         )
+    if expected and (posting or cdek):
+        # Дата считается от момента оплаты, а не от сводки: прошёл час — она
+        # могла сдвинуться за вечернюю отсечку.
+        lines.append(f"Ждите {expected}.")
     return "\n".join(lines)
 
 

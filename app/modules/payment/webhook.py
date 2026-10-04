@@ -21,6 +21,7 @@ from app.modules.dialog import vk_client
 from app.modules.marking import packing
 from app.modules.orders import (
     cdek_watch,
+    eta,
     order_chat,
     repository as orders_repository,
     shipping,
@@ -375,6 +376,7 @@ async def _tell_client(order, registered: shipping.Registered) -> None:
             phone=details.get("recipient_phone", ""),
             posting=registered.ozon_posting or "",
             cdek=bool(registered.cdek_uuid),
+            expected=eta.by_date(details.get(eta.KEY)),
         ),
         on_failure=_client_unreachable(order, templates.PAID),
     )

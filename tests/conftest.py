@@ -146,6 +146,22 @@ def daytime(monkeypatch):
     )
 
 
+# Часы, от которых считается дата получения: воскресенье, 4 октября 2026,
+# полдень по Москве. С ними «1 день сборки + 5 дней Ozon» — всегда
+# «≈ 10 октября», а не дата, плывущая вместе с настенным календарём.
+FROZEN_ETA_NOW = (2026, 10, 4, 12, 0)
+
+
+@pytest.fixture(autouse=True)
+def frozen_eta_clock(monkeypatch):
+    from datetime import datetime
+
+    from app.core import worktime
+    from app.modules.orders import eta
+
+    monkeypatch.setattr(eta, "_now", lambda: datetime(*FROZEN_ETA_NOW, tzinfo=worktime.MSK))
+
+
 # Домены, у которых в тестах «нет почтового сервера». Остальные считаются
 # живыми: в сеть тесты не ходят.
 DEAD_MAIL_DOMAINS = {"yandex.ry", "gmial.com", "test.ru", "example.com"}

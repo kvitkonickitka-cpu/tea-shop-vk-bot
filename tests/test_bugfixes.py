@@ -47,7 +47,7 @@ SAMPLES = {
     "waited_minutes": 120, "weeks": 3, "delivery_method": "ozon_pvz", "delivery_cost": 117,
     "gap": 200, "free": False, "next_step": "Куда везти — город и улица, где удобно забрать?",
     "ask_recipient": True, "upsell": "Да Хун Пао", "upsell_price": 1500,
-    "eta": "≈ 6 дней: 1 день соберём и сдадим, 5 дней в пути у Ozon",
+    "eta": "≈ 10 октября (1 день соберём, 5 дней в пути у Ozon)", "expected": "≈ 10 октября",
     "price": 1500,
     "ask": "Пришлите почту для чека.", "button": True, "single_name": "Те Гуань Инь", "rating": "no", "offer": "Да Хун Пао",
     "description": "Утёсный улун", "source": "Те Гуань Инь", "novelties": True,

@@ -444,7 +444,7 @@ async def _quote_both(draft: OrderDraft, city: str, street: str) -> list[dict]:
     free = bool(free_delivery_threshold()) and draft.items_total >= free_delivery_threshold()
     for option in found:
         option["client_cost"] = 0 if free else round(option["cost"], 2)
-        option["eta_phrase"] = eta.phrase_for(option["eta"])
+        option["eta_phrase"] = eta.receive(option["eta"])
     return found
 
 
