@@ -294,6 +294,13 @@ class Settings(BaseSettings):
     # Заказ из витрины: сразу пункты Ozon рядом с адресом из заказа, а не
     # вопрос «в какой город везём?».
     storefront_direct_points_enabled: bool = True
+    # Заказ из «Товаров» сразу по самому дешёвому варианту: пункт и почта в
+    # первом же сообщении, быстрый перевозчик — строкой и кнопкой
+    # (app/modules/orders/service.py, `_lead_with_cheapest`).
+    storefront_direct_ozon_enabled: bool = True
+    # Клиент выбрал в «Товарах» СДЭК — первым предлагать СДЭК, а Ozon строкой
+    # «дешевле на N ₽». По умолчанию выключено: дешёвый вариант — первым.
+    storefront_respect_vk_delivery: bool = False
     # «Повторить заказ» одним нажатием: сразу счёт по прошлому заказу.
     repeat_one_tap_enabled: bool = True
 

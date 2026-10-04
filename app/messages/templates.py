@@ -705,6 +705,89 @@ def storefront_carriers(*, order_id, items: list[dict], items_total, city: str, 
     return "\n".join(lines)
 
 
+def storefront_lead(
+    *, order_id, items: list[dict], items_total, carrier: str, delivery_cost, surcharge: bool, when: str,
+    total, chosen_in_vk: bool, shown: list[dict], per_point_prices: bool, ask: str,
+    other: tuple[str, str, float, str, float] | None, hint: str = "", geo: bool = False,
+) -> str:
+    """Заказ из «Товаров»: сразу самый дешёвый вариант, место и почта — одним сообщением.
+
+    `other` — (вид, перевозчик, цена для клиента, срок, разница с ведущим):
+    «faster» — быстрее и дороже, «cheaper» — дешевле (клиент выбрал в
+    «Товарах» другого перевозчика).
+    """
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    lines = [f"Заказ №{order_id} принят: {listed} — {amount(items_total)} ₽."]
+    if not delivery_cost:
+        cost = "доставка бесплатно"
+    elif surcharge:
+        cost = f"доплата за доставку {amount(delivery_cost)} ₽"
+    else:
+        cost = f"доставка {amount(delivery_cost)} ₽"
+    lead = f"Вы выбрали {carrier} — пункт выдачи {carrier}" if chosen_in_vk else f"Дешевле всего — пункт выдачи {carrier}"
+    head = f"{lead}: {cost}" + (f", {when}" if when else "") + "."
+    if delivery_cost:
+        # ВК показал клиенту «К оплате» без доставки — в сводке будет больше.
+        head += f" Итого {amount(total)} ₽ — к сумме из «Товаров» прибавляется доставка."
+    lines.append(head)
+    if shown:
+        lines.append(f"Пункты выдачи {carrier} рядом:")
+        for point in shown:
+            price = f" — {amount(point['price'])} ₽" if per_point_prices and point.get("price") is not None else ""
+            lines.append(f"{point['n']}) {point['address']}{price}")
+    else:
+        lines.append(ask_where_to_pick(carrier, geo))
+    lines.append(ask)
+    if other is not None:
+        kind, name, price, other_when, gap = other
+        tail = f", {other_when}" if other_when else ""
+        if kind == "faster":
+            if not price:
+                cost = "бесплатно"
+            elif not delivery_cost:
+                # Ведущий вариант бесплатный — значит, порог пройден, и за
+                # быстрый клиент платит только разницу.
+                cost = f"с доплатой {amount(price)} ₽"
+            else:
+                cost = f"{amount(price)} ₽"
+            lines.append(f"Нужно быстрее — {name}: {cost}{tail}.")
+        else:
+            cost = f"{amount(price)} ₽" if price else "бесплатно"
+            lines.append(f"Дешевле на {amount(abs(gap))} ₽ — {name}: {cost}{tail}.")
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
+
+
+def ask_where_to_pick(carrier: str, geo: bool = False) -> str:
+    """Город большой, пункт не выбран: спросить, где удобно забрать."""
+    if geo:
+        return "Где удобно забрать? Отправьте геопозицию кнопкой или напишите улицу — покажу ближайшие пункты."
+    return (
+        "Где удобно забрать? Напишите улицу — покажу ближайшие пункты. Или скопируйте адрес "
+        f"пункта с карты: {_POINT_MAPS[carrier]}"
+    )
+
+
+def storefront_lead_email(name: str, phone: str) -> str:
+    """Получатель из заказа «Товаров» — показать и попросить почту."""
+    return (
+        f"Получатель из заказа: {name}, {phone}. Пришлите почту для чека — и сразу пришлю ссылку на оплату. "
+        "Если получатель другой — напишите ФИО, телефон и почту."
+    )
+
+
+STOREFRONT_LEAD_ALL = "Пришлите ФИО, телефон и почту получателя — и сразу пришлю ссылку на оплату."
+
+
+def storefront_faster_button(carrier: str) -> str:
+    return f"Нужно быстрее — {carrier}"
+
+
+def storefront_cheaper_button(carrier: str) -> str:
+    return f"Дешевле — {carrier}"
+
+
 def carrier_button(option: dict) -> str:
     cost = "бесплатно" if not option["client_cost"] else f"{amount(option['client_cost'])} ₽"
     return f"{option['carrier']} — {cost}"
@@ -712,9 +795,10 @@ def carrier_button(option: dict) -> str:
 
 def storefront_carrier_chosen(*, carrier: str, city: str, delivery_cost, eta: str, shown: list[dict],
                               asked: bool, recipient: dict | None, hint: str = "",
-                              last: tuple[str, str, str] | None = None, button: bool = True) -> str:
+                              last: tuple[str, str, str] | None = None, button: bool = True,
+                              surcharge: bool = False) -> str:
     """Перевозчик выбран: пункт и почта для чека — и сразу счёт."""
-    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    cost = _delivery_cost_text(delivery_cost, surcharge)
     lines = [f"{carrier}, пункт выдачи — {cost}" + (f", {eta}." if eta else ".")]
     if asked:
         lines += ["", ask_point_address(carrier)]

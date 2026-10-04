@@ -208,9 +208,12 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
             int(user_id), f"Заказ №{order_id} принят! Проверим состав и напишем здесь расчёт доставки 🙏",
         )
         return
+    delivery = order.get("delivery") if isinstance(order.get("delivery"), dict) else {}
     await start_order(
         int(user_id), int(order_id), items=items, address=_address_of(order),
         recipient=_recipient_of(order), source="market_order_new",
+        vk_delivery=vk_delivery_kind(" ".join(
+            str(delivery.get(key) or "") for key in ("type", "service", "name", "title"))),
     )
 
 
@@ -252,6 +255,31 @@ class Notice:
     items: list[dict]
     address: str
     recipient: tuple[str, str] | None
+    delivery: str = ""
+
+
+def vk_delivery_kind(raw: str) -> str:
+    """Способ доставки из «Товаров» — кодом: cdek, ozon, post, courier, pickup, default, other.
+
+    Сам текст способа в журнал не пишем целиком: в строке клиента после
+    двоеточия идёт город, а у курьера мог бы оказаться и адрес.
+    """
+    text = (raw or "").casefold()
+    if not text:
+        return ""
+    if "сдэк" in text or "cdek" in text:
+        return "cdek"
+    if "ozon" in text or "озон" in text:
+        return "ozon"
+    if "почт" in text:
+        return "post"
+    if "курьер" in text:
+        return "courier"
+    if "самовывоз" in text:
+        return "pickup"
+    if "по умолчанию" in text:
+        return "default"
+    return "other"
 
 
 def parse_notice(text: str, attachments: list | None = None) -> Notice | None:
@@ -280,19 +308,22 @@ def parse_notice(text: str, attachments: list | None = None) -> Notice | None:
                 items.append({"name": row.group(1).strip(), "quantity": quantity,
                               "price": round(line_total / max(quantity, 1), 2)})
         address = _field(text, "Адрес доставки")
+        delivery_raw = _field(text, "Способ доставки")
         name, phone = _field(text, "Получатель"), contacts.normalize_phone(_field(text, "Контактный телефон"))
         recipient = (name, phone) if name and phone else None
     else:
         # Клиенту ВК пишет только город и товар карточкой-вложением.
-        delivery = re.search(r"^\s*Доставка[^:\n]*:\s*(.+?)\s*$", text, re.MULTILINE)
-        address = delivery.group(1) if delivery else ""
+        delivery = re.search(r"^\s*(Доставка[^:\n]*):\s*(.+?)\s*$", text, re.MULTILINE)
+        address = delivery.group(2) if delivery else ""
+        delivery_raw = delivery.group(1) if delivery else ""
         recipient = None
         for attachment in attachments or []:
             product = (attachment or {}).get("market") if (attachment or {}).get("type") == "market" else None
             if product and product.get("title"):
                 items.append({"name": product["title"].strip(), "quantity": 1,
                               "price": _rubles(product.get("price"))})
-    return Notice(order_id, "client" if client else "admin", user_id, items, address.strip(), recipient)
+    return Notice(order_id, "client" if client else "admin", user_id, items, address.strip(), recipient,
+                  vk_delivery_kind(delivery_raw))
 
 
 async def handle_notice(peer_id: int, message: dict) -> bool:
@@ -304,7 +335,7 @@ async def handle_notice(peer_id: int, message: dict) -> bool:
     logger.info("Уведомление ВК о заказе %s (%s) для peer_id=%s: товаров %d",
                 notice.order_id, notice.kind, buyer, len(notice.items))
     await start_order(buyer, notice.order_id, items=notice.items, address=notice.address,
-                      recipient=notice.recipient, source=f"notice_{notice.kind}")
+                      recipient=notice.recipient, source=f"notice_{notice.kind}", vk_delivery=notice.delivery)
     return True
 
 
@@ -330,7 +361,7 @@ def _catalog_item(name: str, price: float, quantity: int) -> dict:
 
 async def start_order(
     peer_id: int, order_id: int, *, items: list[dict], address: str,
-    recipient: tuple[str, str] | None, source: str,
+    recipient: tuple[str, str] | None, source: str, vk_delivery: str = "",
 ) -> None:
     """Завести заказ из «Товаров» один раз — из того источника, что пришёл первым.
 
@@ -372,6 +403,10 @@ async def start_order(
     await analytics.ensure_client(peer_id)
     await funnel.record(peer_id, "draft_created", source_=funnel.STOREFRONT, origin="storefront",
                         vk_order_id=order_id)
+    if vk_delivery:
+        # Что клиент выбрал в «Товарах» — кодом, без города и адреса.
+        await funnel.record(peer_id, "storefront_vk_delivery", source_=funnel.STOREFRONT,
+                            vk_order_id=order_id, kind=vk_delivery)
 
     listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
     # Модель должна знать, о чём шаблонный вопрос клиента «как оплатить заказ».
@@ -383,6 +418,11 @@ async def start_order(
     )
 
     options = await _quote_both(draft, city, street) if city else []
+    if options and await _lead_with_cheapest(peer_id, order_id, items, items_total, city, street, options,
+                                             recipient, vk_delivery):
+        await _tell_manager(order_id, peer_id, f"{listed} — {templates.amount(items_total)} ₽. "
+                            "Клиенту предложен самый дешёвый вариант доставки и пункты.")
+        return
     if options:
         await _offer_carriers(peer_id, order_id, items, items_total, city, options)
         await _tell_manager(order_id, peer_id, f"{listed} — {templates.amount(items_total)} ₽. "
@@ -409,6 +449,96 @@ async def start_order(
     )
     await _tell_manager(order_id, peer_id, f"{listed} — {templates.amount(items_total)} ₽. "
                         "Клиенту предложено выбрать доставку в диалоге.")
+
+
+async def _lead_with_cheapest(
+    peer_id: int, order_id: int, items: list[dict], items_total: float, city: str, street: str,
+    options: list[dict], recipient: tuple[str, str] | None, vk_delivery: str,
+) -> bool:
+    """Первое сообщение по заказу из «Товаров» — сразу по самому дешёвому варианту.
+
+    Раньше клиент сначала выбирал перевозчика из двух равноправных кнопок, и
+    только потом бот спрашивал пункт: лишний шаг на пути к оплате. Теперь
+    дешёвый вариант (задача про порядок, `upgrade.py`) уже выбран: в том же
+    сообщении — пункты или вопрос, где удобно забрать, и почта для чека.
+    Быстрый перевозчик — строкой и кнопкой [Нужно быстрее — СДЭК], она ведёт
+    в прежнюю ветку «перевозчик выбран». False — прежнее предложение двух
+    перевозчиков.
+    """
+    from app.messages import keyboard as keyboards
+    from app.modules.orders import buttons, conversation, eta, repeat_delivery, upgrade
+
+    if not settings.storefront_direct_ozon_enabled:
+        return False
+    quotes = [option["quote"] for option in options]
+    lead_quote = upgrade.cheapest(quotes)
+    if (settings.storefront_respect_vk_delivery and vk_delivery in ("cdek", "ozon")
+            and any(row["carrier"] == vk_delivery for row in quotes)):
+        # Клиент сам выбрал перевозчика в «Товарах» — его первым.
+        lead_quote = next(row for row in quotes if row["carrier"] == vk_delivery)
+    lead = next(option for option in options if option["quote"] is lead_quote)
+    base = upgrade.cheapest(quotes)
+    if lead_quote is base:
+        other_quote = upgrade.faster(quotes)
+        other_kind = "faster"
+    else:
+        other_quote, other_kind = base, "cheaper"
+    other = next((option for option in options if option["quote"] is other_quote), None)
+
+    draft = await state.get_draft(peer_id)
+    upgrade.remember(draft.details, city, quotes)
+    draft.details["storefront_quotes"] = [
+        {key: option[key] for key in ("method", "carrier", "client_cost", "eta_phrase")} for option in options
+    ]
+    await state.set_draft(peer_id, draft)
+    try:
+        await conversation._execute_set_delivery_method(
+            peer_id, {"method": lead["method"], "address": city, "pickup_point": street}
+        )
+    except Exception:
+        logger.exception("Витринный заказ %s: не записали доставку %s", order_id, lead["method"])
+        return False
+    fresh = await state.get_draft(peer_id)
+    if fresh is None or fresh.delivery_method != lead["method"]:
+        return False
+    shown = list(fresh.details.get("shown_points") or [])
+    asked = bool(fresh.details.get("point_asked"))
+    if not (shown or asked):
+        return False
+
+    keyboard, hint = await buttons.for_reply(peer_id)
+    rows = [list(row) for row in (keyboard or {}).get("buttons", [])]
+    if other is not None:
+        label = (templates.storefront_faster_button(other["carrier"]) if other_kind == "faster"
+                 else templates.storefront_cheaper_button(other["carrier"]))
+        rows.append([keyboards.text_button(label, {"a": "ship", "m": other["method"],
+                                                   "v": fresh.details.get("version")})])
+    keyboard = keyboards.inline([row for row in rows if row]) if rows else None
+    shows = await keyboards.for_peer(peer_id, keyboard) is not None
+
+    last = await repeat_delivery.last_recipient_for(peer_id)
+    if last is not None and last.email:
+        ask = templates.ask_last_recipient(last.name, last.phone, last.email, button=shows)
+    elif recipient:
+        ask = templates.storefront_lead_email(*recipient)
+    else:
+        ask = templates.STOREFRONT_LEAD_ALL
+    cost = fresh.delivery_cost or 0
+    text = templates.storefront_lead(
+        order_id=order_id, items=items, items_total=items_total, carrier=lead["carrier"],
+        delivery_cost=cost, surcharge=bool(fresh.details.get(upgrade.SURCHARGE)),
+        when=eta.receive(fresh.details.get(eta.KEY)), total=items_total + cost,
+        chosen_in_vk=lead_quote is not base, shown=shown,
+        per_point_prices=all(point.get("price") is not None for point in shown), ask=ask,
+        other=(other_kind, other["carrier"], other["client_cost"], other["eta_phrase"],
+               round(lead["cost"] - other["cost"], 2)) if other is not None else None,
+        hint=hint if shows and shown else "",
+    )
+    await client_messages.send(
+        peer_id=peer_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
+        text=text, keyboard=keyboard,
+    )
+    return True
 
 
 async def _quote_both(draft: OrderDraft, city: str, street: str) -> list[dict]:
@@ -492,7 +622,7 @@ async def after_carrier(peer_id: int, method: str) -> tuple[str, dict | None] | 
         carrier=carrier, city=city, delivery_cost=fresh.delivery_cost, eta=eta.phrase(fresh.details),
         shown=shown, asked=asked, recipient=candidate, hint=hint if keyboard else "",
         last=(last.name, last.phone, last.email) if last is not None and last.email else None,
-        button=keyboard is not None,
+        button=keyboard is not None, surcharge=bool(fresh.details.get("delivery_surcharge")),
     )
     return text, keyboard
 
