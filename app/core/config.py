@@ -225,6 +225,13 @@ class Settings(BaseSettings):
     second_touch_after_days: float = 14
     second_touch_shelf_days: float = 10
 
+    # Реактивация: через столько дней после последнего вручения, если заказов
+    # с тех пор не было; срок годности и как часто можно одному клиенту.
+    reactivation_enabled: bool = True
+    reactivation_after_days: float = 90
+    reactivation_shelf_days: float = 30
+    reactivation_repeat_days: float = 180
+
     # Повторные касания после вручения (`orders/retention.py`) — общие правила.
     # Пауза между любыми двумя продающими касаниями одному клиенту.
     marketing_min_gap_days: float = 3

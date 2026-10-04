@@ -648,6 +648,8 @@ _HANDLERS = {
     "add_item": _on_add_item,
     "edit": _to_model,
     "rate": _on_rate,
+    # «Подобрать чай» под реактивацией — консультация, её ведёт модель.
+    "advise": _to_model,
     "other": _to_model,
 }
 

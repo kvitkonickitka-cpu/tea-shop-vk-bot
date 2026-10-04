@@ -520,6 +520,21 @@ def second_touch(*, offer: str, price, description: str = "", source: str = "", 
     return f"{head}\nЕсли захотите — нажмите «Взять» или просто напишите.\n{STOP_LINE}"
 
 
+def reactivation(*, offers: list[dict], source: str = "", novelties: bool = False) -> str:
+    """Реактивация: коротко, без давления и скидок. `offers` — название, цена, описание."""
+    if novelties:
+        head = "Здравствуйте! Давно не виделись 🍵 У нас появилось новое:"
+    elif source:
+        head = f"Здравствуйте! Давно не виделись 🍵 К {source} у нас советуют:"
+    else:
+        head = "Здравствуйте! Давно не виделись 🍵 Возможно, вам понравится:"
+    lines = [head]
+    lines += [f"• {_offer(o['name'], o['price'], o.get('description', ''))}" for o in offers]
+    lines.append("Если захотите — нажмите «Взять», повторите прошлый заказ или попросите подобрать чай.")
+    lines.append(STOP_LINE)
+    return "\n".join(lines)
+
+
 def marketing_stopped() -> str:
     """3.23. Ответ на «стоп»."""
     return (

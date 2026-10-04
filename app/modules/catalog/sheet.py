@@ -67,6 +67,7 @@ _COLUMNS = {
     "как заваривать": "brewing",
     "заварка": "brewing",
     "видео": "video",
+    "новинка": "is_new",
     "другие названия": "synonyms",
 }
 _REQUIRED = ("name", "price")
@@ -85,6 +86,16 @@ class Parsed:
 
 
 BREWING_MAX_CHARS = 300
+
+
+def _is_new(values: dict, where: str, warnings: list[str]) -> bool:
+    """«Новинка»: «да» или пусто. Непонятное — не новинка и предупреждение."""
+    raw = (values.get("is_new") or "").strip().lower()
+    if raw in _YES:
+        return True
+    if raw and raw not in _NO:
+        warnings.append(f"{where}: «Новинка» — «{raw}», нужно «да» или пусто; считаем, что не новинка")
+    return False
 
 
 def _brewing(values: dict, where: str, warnings: list[str]) -> tuple[str, str]:
@@ -201,6 +212,8 @@ def parse_csv(text: str) -> Parsed:
                 for part in values.get("recommended", "").split(",")
                 if part.strip()
             ],
+            # Новинка — реактивация и второй шанс предлагают её первой.
+            "is_new": _is_new(values, where, result.warnings),
             # Как заваривать — для сообщения «вручено».
             **dict(zip(("brewing", "video"), _brewing(values, where, result.warnings))),
             # Как ещё называют товар — чтобы кнопка «Взять» нашла его в

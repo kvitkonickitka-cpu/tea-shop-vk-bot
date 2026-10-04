@@ -199,12 +199,13 @@ async def blocker(peer_id: int, now: datetime) -> str | None:
 
 
 async def _candidates(now: datetime, kinds) -> list[Touch]:
-    from app.modules.orders import feedback, repeat_nudge, second_touch
+    from app.modules.orders import feedback, reactivation, repeat_nudge, second_touch
 
     providers = {
         templates.FEEDBACK_ASK: (settings.feedback_ask_enabled, feedback.ask_candidates),
         templates.REPEAT_NUDGE: (settings.repeat_nudge_enabled, repeat_nudge.candidates),
         templates.SECOND_TOUCH: (settings.second_touch_enabled, second_touch.candidates),
+        templates.REACTIVATION: (settings.reactivation_enabled, reactivation.candidates),
     }
     found: list[Touch] = []
     for kind in KINDS:
