@@ -56,6 +56,8 @@ views:
     - has_review: boolean
     - ref: character varying
     - ref_source: character varying
+    - expected_delivery_date: date
+    - delivery_surcharge: numeric(10,2)
   v_order_items:
     - order_id: integer
     - client_key: character varying

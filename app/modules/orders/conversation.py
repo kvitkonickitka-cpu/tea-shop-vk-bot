@@ -1969,6 +1969,14 @@ async def _confirm_with_payment(
     ключ идемпотентности, и повторная попытка (очередь принесла событие
     дважды) обязана вернуть тот же счёт, а не выставить второй.
     """
+    # Ожидаемая дата получения на момент счёта — для аналитики: сравнить с
+    # фактическим вручением. Считается заново при каждой попытке.
+    span = eta.dates(draft.details.get(eta.KEY))
+    if span:
+        draft.details["expected_from"], draft.details["expected_by"] = span[0].isoformat(), span[1].isoformat()
+    else:
+        draft.details.pop("expected_from", None)
+        draft.details.pop("expected_by", None)
     order_key = draft.details.get("order_key")
     if not order_key:
         order_key = f"vk{peer_id}-{int(time.time())}"
