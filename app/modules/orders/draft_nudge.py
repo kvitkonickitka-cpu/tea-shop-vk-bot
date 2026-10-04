@@ -9,7 +9,10 @@
   оплате, второй голос там лишний;
 - тишина дольше `draft_nudge_after_hours` после последней реплики бота, и
   последняя реплика — наша: если клиент написал, а ответа нет, напоминать
-  ему о заказе странно;
+  ему о заказе странно. Черновик из заказа «Товаров» — через
+  `storefront_draft_nudge_after_minutes` (`STOREFRONT_EARLY_NUDGE_ENABLED`):
+  клиент сам нажал «Оформить» и горячее всех. Пункт не выбран — вместо
+  «Оформить?» вопрос о месте и кнопка геопозиции;
 - черновику не больше `draft_nudge_max_age_hours`: через неделю «заказ ждёт
   вас» читается как рассылка;
 - вопрос у менеджера открыт или менеджер писал после начала черновика —
@@ -105,6 +108,34 @@ def nudge_text(row: OrderDraftRow) -> str:
     return templates.draft_nudge_unpriced(items, items_total=items_total)
 
 
+def _storefront(row: OrderDraftRow) -> bool:
+    return (row.details or {}).get("origin") == "storefront"
+
+
+def _silence(row: OrderDraftRow) -> timedelta:
+    if settings.storefront_early_nudge_enabled and _storefront(row):
+        return timedelta(minutes=settings.storefront_draft_nudge_after_minutes)
+    return timedelta(hours=settings.draft_nudge_after_hours)
+
+
+def _point_missing(row: OrderDraftRow) -> bool:
+    details = row.details or {}
+    return (row.delivery_method in ("ozon_pvz", "cdek_pvz")
+            and not (details.get("ozon_point_id") or details.get("delivery_point")))
+
+
+async def _message(row: OrderDraftRow) -> tuple[str, dict | None]:
+    """Текст и кнопки напоминания. Витринный заказ без пункта — вопрос о месте."""
+    if settings.storefront_early_nudge_enabled and _storefront(row) and _point_missing(row):
+        from app.modules.orders import geo
+
+        with_geo = await geo.offer_for(row.peer_id, row.delivery_method)
+        carrier = "Ozon" if row.delivery_method == "ozon_pvz" else "СДЭК"
+        keyboard = keyboards.inline([[geo.button((row.details or {}).get("version"))]]) if with_geo else None
+        return templates.draft_nudge_where(list(row.items or []), carrier=carrier, geo=with_geo), keyboard
+    return nudge_text(row), nudge_keyboard(row)
+
+
 def nudge_keyboard(row: OrderDraftRow) -> dict | None:
     """«Оформить» — только когда доставка посчитана: иначе оформлять нечего."""
     if not (row.delivery_method and row.delivery_cost is not None):
@@ -148,7 +179,6 @@ async def check_drafts(now: datetime | None = None) -> dict:
     except RuntimeError:
         return {"sent": 0, "skipped": "нет базы"}
 
-    silence = timedelta(hours=settings.draft_nudge_after_hours)
     max_age = timedelta(hours=settings.draft_nudge_max_age_hours)
     sent = 0
 
@@ -176,7 +206,7 @@ async def check_drafts(now: datetime | None = None) -> dict:
                 continue
             role, last_at = last
             last_at = last_at if last_at.tzinfo else last_at.replace(tzinfo=timezone.utc)
-            if role != "assistant" or now - last_at < silence:
+            if role != "assistant" or now - last_at < _silence(row):
                 continue
             candidates.append((row, started))
 
@@ -188,12 +218,13 @@ async def check_drafts(now: datetime | None = None) -> dict:
             continue
         if await marketing.is_opted_out(row.peer_id) or await marketing.is_unreachable(row.peer_id):
             continue
+        text, keyboard = await _message(row)
         if await client_messages.send(
             peer_id=row.peer_id,
             ref=ref,
             event_type=templates.DRAFT_NUDGE,
-            text=nudge_text(row),
-            keyboard=nudge_keyboard(row),
+            text=text,
+            keyboard=keyboard,
         ):
             sent += 1
             logger.info(

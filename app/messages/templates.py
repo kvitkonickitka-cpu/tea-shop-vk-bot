@@ -519,6 +519,16 @@ def draft_nudge_priced(
     return "\n".join(lines)
 
 
+def draft_nudge_where(items, *, carrier: str, geo: bool = False) -> str:
+    """Заказ из «Товаров» ждёт, а пункт не выбран: спросить место, с кнопкой геопозиции."""
+    how = ("отправьте геопозицию кнопкой или напишите улицу — покажу ближайшие пункты"
+           if geo else "напишите улицу, где удобно забрать, — покажу ближайшие пункты")
+    return (
+        f"Заказ ждёт вас: {composition(items)}. Осталось выбрать пункт выдачи {carrier}: {how}, "
+        f"и сразу пришлю ссылку на оплату.\n{_NUDGE_CLOSING}"
+    )
+
+
 def draft_nudge_unpriced(items, *, items_total) -> str:
     """3.21. Клиент выбрал чай и замолчал до расчёта доставки."""
     return (

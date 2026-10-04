@@ -226,6 +226,10 @@ class Settings(BaseSettings):
     # до какого возраста черновика ещё напоминаем.
     draft_nudge_after_hours: float = 3
     draft_nudge_max_age_hours: float = 48
+    # Черновик из заказа «Товаров» — клиент сам нажал «Оформить», самый
+    # горячий: напоминаем через час тишины, а не через три.
+    storefront_early_nudge_enabled: bool = True
+    storefront_draft_nudge_after_minutes: float = 60
     # «Повторить заказ?» после вручения: столько дней на каждую пачку в
     # заказе, но не дольше потолка.
     repeat_nudge_days_per_pack: int = 21
