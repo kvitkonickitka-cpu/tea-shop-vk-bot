@@ -139,8 +139,11 @@ async def _report_one(session_factory, conversation: Conversation, reported_at: 
     )
     summary = await claude_client.generate_dialog_report(transcript)
 
+    from app.modules.analytics import service as analytics
+
+    test = await analytics.is_test_client(conversation.peer_id)
     await telegram_client.send_message(
-        _build_telegram_message(conversation, messages, summary),
+        _build_telegram_message(conversation, messages, summary, test=test),
         chat_id=settings.telegram_reports_chat_id,
     )
 
@@ -174,9 +177,12 @@ def _build_transcript(conversation, messages, orders, escalations) -> str:
     return "\n".join(lines)
 
 
-def _build_telegram_message(conversation, messages, summary: str) -> str:
+def _build_telegram_message(conversation, messages, summary: str, *, test: bool = False) -> str:
+    from app.modules.analytics.service import TEST_MARK
+
     return (
-        "<b>Диалог завершён</b>\n"
+        (f"{TEST_MARK}\n" if test else "")
+        + "<b>Диалог завершён</b>\n"
         f"{html.escape(summary.strip())}\n\n"
         f"Сообщений: {len(messages)}\n"
         f"{vk_client.dialog_link(conversation.peer_id)}"

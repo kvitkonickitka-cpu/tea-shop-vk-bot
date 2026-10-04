@@ -48,7 +48,7 @@ async def test_repeat_button_sends_invoice_with_current_prices(clean, world, mon
     text, board = world["sent"][-1]
     assert world["model"] == [] and world["payments"] == [1]
     assert "• Те Гуань Инь (тест) × 1 — 1600 ₽" in text and f"Доставка: пункт выдачи Ozon, {POINT} — 121 ₽" in text
-    assert "Получатель: Иванов Иван, +79001234567, ivanov@mail.ru" in text and "Итого: 1721 ₽" in text
+    assert "Получатель: Иванов Иван, +79001234567, ivanov@mail.ru" in text and "Итого к оплате с учётом доставки: 1721 ₽" in text
     assert board["buttons"][0][0]["action"]["label"] == "Оплатить 1721 ₽"
     async with clean() as session:
         events = (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS).order_by(FunnelEvent.id))).scalars().all()

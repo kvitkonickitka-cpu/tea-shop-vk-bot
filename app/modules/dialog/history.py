@@ -13,15 +13,23 @@ _MAX_HISTORY_MESSAGES = 20
 # живой менеджер, зашедший в диалог руками.
 AUTHOR_BOT = "bot"
 AUTHOR_MANAGER = "manager"
+# Служебное сообщение ВК (заказ из «Товаров»): написано не ботом и не
+# менеджером, но модель должна его видеть.
+AUTHOR_VK = "vk"
 
 # В API Claude ролей всего две, отдельной «менеджерской» нет. Поэтому автора
 # показываем модели прямо в тексте реплики: иначе она читает чужие слова как
 # свои и, например, считает, что это она обещала клиенту перезвонить.
 _MANAGER_MARKER = "[ответ менеджера] "
+_VK_MARKER = "[уведомление ВК] "
 
 
 def mark_author(content: str, author: str | None) -> str:
-    return f"{_MANAGER_MARKER}{content}" if author == AUTHOR_MANAGER else content
+    if author == AUTHOR_MANAGER:
+        return f"{_MANAGER_MARKER}{content}"
+    if author == AUTHOR_VK:
+        return f"{_VK_MARKER}{content}"
+    return content
 
 # Резервное хранилище на случай, если DATABASE_URL не настроен (например,
 # локальная разработка) — переживёт только до перезапуска процесса.

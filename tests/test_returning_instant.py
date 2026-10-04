@@ -26,14 +26,19 @@ INSTANT = (
     "• Те Гуань Инь (тест) × 1 — 1500 ₽\n"
     f"Доставка: пункт выдачи Ozon, {POINT} — 121 ₽\n"
     "Срок: ≈ 7 дней: 1 день соберём и сдадим, 6 дней в пути у Ozon\n"
+    "\n"
     "Получатель: Иванов Иван, +79001234567, ivanov@mail.ru\n"
-    "Итого: 1621 ₽\n"
+    "Итого к оплате с учётом доставки: 1621 ₽\n"
+    "\n"
+    "Кнопка оплаты действует 60 минут. После оплаты пришлём чек на указанную в заказе почту и сразу передадим заказ в доставку.\n"
+    "\n"
+    "К нему можно добавить Да Хун Пао — 1500 ₽, до бесплатной доставки как раз не хватает 1500 ₽.\n"
+    "\n"
+    "Если что-то не так — напишите, поправлю и пришлю новую ссылку.\n"
     "\n"
     "Оплатить — кнопкой ниже 👇\n"
-    "Кнопка оплаты действует 60 минут. После оплаты пришлём чек на ivanov@mail.ru и сразу передадим заказ в доставку.\n"
-    f"Условия покупки, доставки и возврата: {settings.conditions_url}\n"
-    "К нему можно добавить Да Хун Пао — 1500 ₽, до бесплатной доставки как раз не хватает 1500 ₽.\n"
-    "Оплатите кнопкой — или напишите, что поменять."
+    "\n"
+    f"Условия покупки, доставки и возврата: {settings.conditions_url}"
 )
 
 
@@ -112,7 +117,7 @@ async def test_add_button_reissues_the_link(clean, world):
     await say(add["label"], 2, json.loads(add["payload"]))
     text, board = world["sent"][-1]
     assert world["payments"] == [1, 2]
-    assert "• Да Хун Пао × 1 — 1500 ₽" in text and "— бесплатно" in text and "Итого: 3000 ₽" in text
+    assert "• Да Хун Пао × 1 — 1500 ₽" in text and "— бесплатно" in text and "Итого к оплате с учётом доставки: 3000 ₽" in text
     assert "yoomoney" not in text
     assert board["buttons"][0][0]["action"]["link"] == "https://yoomoney.ru/checkout/2"
     assert labels(board)[0] == ["Оплатить 3000 ₽"]
@@ -183,7 +188,7 @@ async def test_link_stays_in_text_without_buttons(clean, world):
     text, board = world["sent"][-1]
     assert board is None
     assert "Оплатить: https://yoomoney.ru/checkout/1" in text and "Ссылка действует 60 минут" in text
-    assert text.endswith("Оплатите по ссылке — или напишите, что поменять.")
+    assert text.endswith(f"Оплатить: https://yoomoney.ru/checkout/1\n\nУсловия покупки, доставки и возврата: {settings.conditions_url}")
 
 
 async def test_flag_off_keeps_the_offer(clean, world, monkeypatch):

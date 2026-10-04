@@ -95,14 +95,14 @@ async def test_recipient_completes_order_and_invoice_goes_at_once(clean, world):
     assert reply == (
         f"Заказ №{order.id} — проверьте, всё ли верно:\n"
         "• Те Гуань Инь (тест) × 1 — 1500 ₽\n"
-        "Доставка: пункт выдачи Ozon, Краснодар, Ставропольская, 230 — 121 ₽\n"
+        "Доставка: пункт выдачи Ozon, Краснодар, Ставропольская, 230 — 121 ₽\n\n"
         "Получатель: Иванов Иван, +79001234567, ivanov@mail.ru\n"
-        "Итого: 1621 ₽\n\n"
-        "Оплатить: https://yoomoney.ru/checkout/1\n"
-        "Ссылка действует 60 минут. После оплаты пришлём чек на ivanov@mail.ru и сразу "
-        "передадим заказ в доставку.\n"
-        "Условия покупки, доставки и возврата: https://vk.ru/@teapotwice-usloviya-dostavki-oplaty-i-vozvrata\n"
-        "Если что-то не так — напишите, поправлю и пришлю новую ссылку."
+        "Итого к оплате с учётом доставки: 1621 ₽\n\n"
+        "Ссылка действует 60 минут. После оплаты пришлём чек на указанную в заказе почту и сразу "
+        "передадим заказ в доставку.\n\n"
+        "Если что-то не так — напишите, поправлю и пришлю новую ссылку.\n\n"
+        "Оплатить: https://yoomoney.ru/checkout/1\n\n"
+        "Условия покупки, доставки и возврата: https://vk.ru/@teapotwice-usloviya-dostavki-oplaty-i-vozvrata"
     )
     assert attempt.snapshot["items"][0]["name"] == "Те Гуань Инь (тест)"
     assert attempt.snapshot["details"]["recipient_email"] == "ivanov@mail.ru"
@@ -131,7 +131,7 @@ async def test_changed_price_asks_again(clean, world):
     assert draft.items[0]["price"] == 1700 and draft.details["seen_total"] == 1821
     # На «да» — confirm_order, как раньше.
     result = await conversation._execute_confirm_order(PEER)
-    assert "Итого: 1821 ₽" in result.client_reply and len(world["payments"]) == 1
+    assert "Итого к оплате с учётом доставки: 1821 ₽" in result.client_reply and len(world["payments"]) == 1
 
 
 async def test_out_of_stock_blocks_invoice(clean, world):

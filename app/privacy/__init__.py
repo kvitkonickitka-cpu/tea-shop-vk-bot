@@ -210,7 +210,11 @@ async def remember_details(peer_id: int, details: dict | None, delivery_method: 
     offer = details.get("offer") or {}
     if isinstance(offer, dict):
         await remember_recipient(peer_id, offer.get("name"), offer.get("phone"), offer.get("email"))
-    await remember(peer_id, "ADDR", details.get("vk_order_address"))
+    # Адрес из витрины — меткой, только если в нём есть дом: голый город
+    # («Краснодар») — не персональные данные, а модели он нужен для доставки.
+    storefront_address = str(details.get("vk_order_address") or "")
+    if any(ch.isdigit() for ch in storefront_address):
+        await remember(peer_id, "ADDR", storefront_address)
     if delivery_method == "cdek_courier":
         await remember(peer_id, "ADDR", details.get("address"))
 

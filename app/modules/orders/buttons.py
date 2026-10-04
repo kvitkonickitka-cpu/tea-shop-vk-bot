@@ -293,6 +293,29 @@ async def _on_point(peer_id: int, payload: dict) -> Press:
     return await _invoice_or(peer_id, chosen_reply)
 
 
+def carrier_keyboard(version, options: list[dict]) -> dict | None:
+    """Заказ из «Товаров»: по кнопке на перевозчика — с ценой до города."""
+    return keyboards.inline([
+        [keyboards.text_button(templates.carrier_button(option), {"a": "ship", "m": option["method"], "v": version})]
+        for option in options
+    ])
+
+
+async def _on_ship(peer_id: int, payload: dict) -> Press:
+    """Выбран перевозчик для заказа из «Товаров»: дальше пункт и почта для чека."""
+    from app.modules.orders import service as orders_service
+
+    draft = await _draft_at(peer_id, payload)
+    if draft is None or payload.get("m") not in ("ozon_pvz", "cdek_pvz") or not draft.details.get("storefront_city"):
+        return STALE
+    shown = await orders_service.after_carrier(peer_id, payload["m"])
+    if shown is None:
+        # Перевозчик не посчитал или пунктов нет — объяснит модель.
+        return TO_MODEL
+    text, keyboard = shown
+    return Press(reply=text, keyboard=keyboard)
+
+
 async def _on_add(peer_id: int, payload: dict) -> Press:
     from app.modules.orders import conversation
 
@@ -644,6 +667,7 @@ async def _to_model(peer_id: int, payload: dict) -> Press:
 
 _HANDLERS = {
     "pt": _on_point,
+    "ship": _on_ship,
     "add": _on_add,
     "email_yes": _on_email_yes,
     "email_no": _on_email_no,
