@@ -43,6 +43,10 @@ DRAFT_NUDGE = "draft_nudge_sent"
 AT_PICKUP = "at_pickup_point"
 PICKUP_EXPIRING = "pickup_expiring"
 REPEAT_NUDGE = "repeat_nudge"
+# Повторные касания после вручения (кроме «Повторить» — оно выше).
+FEEDBACK_ASK = "feedback_ask"
+SECOND_TOUCH = "second_touch"
+REACTIVATION = "reactivation"
 
 
 def _amount_value(value):
@@ -377,11 +381,19 @@ def handed_over(order, *, carrier: str, number: str = "", tracking_url: str = ""
     return "\n".join(lines)
 
 
-def delivered(order, *, receipt_email: str = "") -> str:
+def delivered(
+    order, *, receipt_email: str = "", brewing: list[dict] | None = None,
+    guide_url: str = "", ask_feedback: bool = True,
+) -> str:
     """Посылка вручена.
 
     Про закрывающий чек предупреждаем заранее: второе письмо из ЮKassa по
     уже оплаченному заказу иначе выглядит как повторное списание.
+
+    `brewing` — как заваривать купленное (до двух товаров: название, текст,
+    видео). Блок заварки встаёт на место «напишите, как вам чай»: об этом
+    через несколько дней спросит оценка кнопками. Без заварки строка
+    остаётся, если отдельной оценки нет (`ask_feedback`).
     """
     lines = [f"Заказ №{order.id} вручён — спасибо, что выбрали нас! 🍵"]
     if receipt_email:
@@ -389,7 +401,17 @@ def delivered(order, *, receipt_email: str = "") -> str:
             f"На {receipt_email} придёт итоговый чек о получении товара. Это не "
             "новое списание, а закрывающий документ к уже оплаченному заказу."
         )
-    lines.append("Будет здорово, если напишете, как вам чай.")
+    if brewing:
+        lines.append("")
+        lines.append("Как заваривать:")
+        for block in brewing:
+            lines.append(f"• {block['name']}: {block['text']}")
+            if block.get("video"):
+                lines.append(f"  Видео: {block['video']}")
+        if guide_url:
+            lines.append(f"Все способы заварки: {guide_url}")
+    elif ask_feedback:
+        lines.append("Будет здорово, если напишете, как вам чай.")
     return "\n".join(lines)
 
 
@@ -476,6 +498,41 @@ def repeat_nudge(items, *, weeks: int) -> str:
         "Повторить заказ с доставкой туда же? Или подскажу, что попробовать ещё.\n"
         "Если не хотите таких напоминаний — напишите «стоп»."
     )
+
+
+STOP_LINE = "Если не хотите таких сообщений — напишите «стоп»."
+
+
+def _offer(offer: str, price, description: str) -> str:
+    return f"{offer} ({amount(price)} ₽)" + (f" — {description}" if description else "")
+
+
+def second_touch(*, offer: str, price, description: str = "", source: str = "", rating=None) -> str:
+    """Второй шанс: другой сорт. Не «повторить», а «попробовать»."""
+    if rating == "great" and source:
+        head = f"Здравствуйте! Вам понравился {source} — попробуйте {_offer(offer, price, description)}."
+    elif rating == "no":
+        head = f"Здравствуйте! Подобрала вам другой чай — {_offer(offer, price, description)}."
+    elif source:
+        head = f"Здравствуйте! К {source} у нас советуют {_offer(offer, price, description)}."
+    else:
+        head = f"Здравствуйте! Хотите попробовать {_offer(offer, price, description)}?"
+    return f"{head}\nЕсли захотите — нажмите «Взять» или просто напишите.\n{STOP_LINE}"
+
+
+def reactivation(*, offers: list[dict], source: str = "", novelties: bool = False) -> str:
+    """Реактивация: коротко, без давления и скидок. `offers` — название, цена, описание."""
+    if novelties:
+        head = "Здравствуйте! Давно не виделись 🍵 У нас появилось новое:"
+    elif source:
+        head = f"Здравствуйте! Давно не виделись 🍵 К {source} у нас советуют:"
+    else:
+        head = "Здравствуйте! Давно не виделись 🍵 Возможно, вам понравится:"
+    lines = [head]
+    lines += [f"• {_offer(o['name'], o['price'], o.get('description', ''))}" for o in offers]
+    lines.append("Если захотите — нажмите «Взять», повторите прошлый заказ или попросите подобрать чай.")
+    lines.append(STOP_LINE)
+    return "\n".join(lines)
 
 
 def marketing_stopped() -> str:
@@ -804,6 +861,44 @@ def manager_question(question: str, reason: str, link: str) -> str:
 
 
 _CONSENT = {"yes": "можно", "no": "нельзя", "unknown": "не спрашивали"}
+
+
+RATINGS = {"great": "Очень понравился", "ok": "Нормально", "no": "Не моё"}
+
+
+def feedback_ask(order, single_name: str = "") -> str:
+    """Оценка через несколько дней после вручения. Кнопки — `RATINGS`."""
+    about = single_name or f"чай из заказа №{order.id}"
+    return f"Здравствуйте! Как вам {about}? 🍵"
+
+
+def rated_great() -> str:
+    return (
+        "Спасибо, очень приятно! 🙏 Напишите пару слов о чае — с вашего "
+        "разрешения опубликуем отзыв в сообществе."
+    )
+
+
+def rated_ok() -> str:
+    return "Спасибо за честность! Что было бы лучше — крепче, мягче, другой вкус? Подберу."
+
+
+def rated_no() -> str:
+    return (
+        "Жаль, что не подошёл 😔 Расскажите, что было не так — вкус, крепость, "
+        "аромат? Подберу что-то ближе к вашему вкусу."
+    )
+
+
+def manager_rating(order_id, rating: str, link: str) -> str:
+    """Оценка кнопкой: «Очень понравился» и «Не моё» — карточкой менеджеру."""
+    mark = "⭐" if rating == "great" else "🤔"
+    return (
+        f"{mark} <b>Оценка заказа №{order_id}: «{RATINGS.get(rating, rating)}»</b>\n"
+        + ("Бот спросил, что не подошло, и продолжает разговор — это не вопрос к вам, "
+           "но загляните, если нужно.\n" if rating == "no" else "")
+        + link
+    )
 
 
 def manager_feedback(order_id, text: str, consent: str, link: str) -> str:

@@ -167,3 +167,25 @@ class OrderFeedback(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class OrderRating(Base):
+    """Оценка заказа: кнопкой под «Как вам чай?» или по отзыву текстом.
+
+    Одна на заказ — последняя побеждает. По ней решают повторные касания:
+    «Не моё» — повтор этого заказа не предлагаем, а второй шанс предлагает
+    другой сорт; модель видит оценку в истории покупок.
+    """
+
+    __tablename__ = "order_ratings"
+
+    order_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    # great — «Очень понравился», ok — «Нормально», no — «Не моё».
+    rating: Mapped[str] = mapped_column(String)
+    # button — кнопкой, text — по отзыву словами (save_feedback).
+    source: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

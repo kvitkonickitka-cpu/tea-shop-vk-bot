@@ -186,7 +186,7 @@ async def check_drafts(now: datetime | None = None) -> dict:
             continue
         if await escalation_state.is_open(row.peer_id):
             continue
-        if await marketing.is_opted_out(row.peer_id):
+        if await marketing.is_opted_out(row.peer_id) or await marketing.is_unreachable(row.peer_id):
             continue
         if await client_messages.send(
             peer_id=row.peer_id,

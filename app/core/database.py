@@ -110,6 +110,8 @@ _MISSING_COLUMNS = (
     # Кнопки ВК: что умеет приложение клиента.
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS client_info JSONB",
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS last_offer_buttons JSONB",
+    # Повторные касания: клиент запретил сообщения — продающих не шлём.
+    "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS unreachable_at TIMESTAMPTZ",
     # Мониторинг: какие сбои уже ушли в Ops подробностью.
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
 )

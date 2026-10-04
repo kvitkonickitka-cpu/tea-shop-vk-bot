@@ -12,6 +12,18 @@ logger = logging.getLogger(__name__)
 
 _resolved: dict[str, int] = {}
 
+# Коды ВК «сообщение не доставить»: клиент запретил сообщения сообщества,
+# закрыл их настройками приватности или занёс сообщество в чёрный список.
+UNREACHABLE_CODES = {900, 901, 902}
+
+
+class VkApiError(RuntimeError):
+    """Ошибка API ВК с кодом — по коду видно, можно ли писать клиенту вообще."""
+
+    def __init__(self, error):
+        super().__init__(f"VK API error: {error}")
+        self.code = error.get("error_code") if isinstance(error, dict) else None
+
 
 def _screen_name(raw: str) -> str:
     """Короткое имя из того, что вписали: ссылки, «@имя», «id123»."""
@@ -114,4 +126,4 @@ async def send_message(
         response.raise_for_status()
         data = response.json()
         if "error" in data:
-            raise RuntimeError(f"VK API error: {data['error']}")
+            raise VkApiError(data["error"])

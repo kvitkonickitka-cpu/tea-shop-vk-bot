@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -22,6 +23,8 @@ from app.core import worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages.models import ClientNotice, ClientPreference
+
+logger = logging.getLogger(__name__)
 
 # Отписка распознаётся кодом, а не моделью: «стоп» должен работать всегда,
 # одинаково и без обращения к Claude. Поэтому и правило узкое — короткое
@@ -38,7 +41,7 @@ _FILLER = {
 _MAX_WORDS = 5
 
 # Продающие напоминания: только на них «стоп» означает отписку.
-SALES_REMINDERS = ("draft_nudge_sent", "repeat_nudge")
+SALES_REMINDERS = ("draft_nudge_sent", "repeat_nudge", "feedback_ask", "second_touch", "reactivation")
 
 # Без базы отписка держится в памяти процесса — лучше, чем забыть её совсем.
 _fallback_opted_out: set[int] = set()
@@ -134,6 +137,52 @@ async def is_opted_out(peer_id: int) -> bool:
     return bool(row and row.marketing_opt_out)
 
 
+async def mark_unreachable(peer_id: int) -> None:
+    """ВК не доставляет клиенту сообщения — продающих касаний не будет."""
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return
+    now = datetime.now(timezone.utc)
+    statement = insert(ClientPreference).values(
+        peer_id=peer_id, marketing_opt_out=False, unreachable_at=now
+    ).on_conflict_do_update(
+        index_elements=[ClientPreference.peer_id], set_={"unreachable_at": now}
+    )
+    try:
+        async with session_factory() as session:
+            await session.execute(statement)
+            await session.commit()
+    except Exception:
+        logger.exception("Не отметили peer_id=%s недостижимым", peer_id)
+
+
+async def mark_reachable(peer_id: int) -> None:
+    """Клиент написал сам — значит, сообщения снова доходят."""
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return
+    try:
+        async with session_factory() as session:
+            row = await session.get(ClientPreference, peer_id)
+            if row is not None and row.unreachable_at is not None:
+                row.unreachable_at = None
+                await session.commit()
+    except Exception:
+        logger.exception("Не сняли отметку «недостижим» у peer_id=%s", peer_id)
+
+
+async def is_unreachable(peer_id: int) -> bool:
+    try:
+        session_factory = get_session_factory()
+    except RuntimeError:
+        return False
+    async with session_factory() as session:
+        row = await session.get(ClientPreference, peer_id)
+    return bool(row and row.unreachable_at)
+
+
 async def opt_out(peer_id: int) -> None:
     """Отписать от продающих сообщений. Повторная отписка ничего не меняет."""
     try:
@@ -151,3 +200,8 @@ async def opt_out(peer_id: int) -> None:
     async with session_factory() as session:
         await session.execute(statement)
         await session.commit()
+
+    # Отписка в течение двух дней после касания — засчитываем касанию.
+    from app.modules.orders import retention
+
+    await retention.note_opt_out(peer_id, now)

@@ -199,6 +199,49 @@ class Settings(BaseSettings):
     # заказе, но не дольше потолка.
     repeat_nudge_days_per_pack: int = 21
     repeat_nudge_max_days: int = 60
+    # Личный интервал: у клиента два и больше вручённых заказа — срок по
+    # медиане промежутков между его заказами, в этих пределах.
+    repeat_nudge_personal_min_days: int = 14
+    repeat_nudge_personal_max_days: int = 60
+    # Срок годности «Повторить заказ?»: столько дней после срока ещё досылаем.
+    repeat_nudge_shelf_days: int = 7
+    repeat_nudge_enabled: bool = True
+
+    # «Как заваривать» в сообщении «вручено»: из столбцов таблицы «Как
+    # заваривать» и «Видео». Больше двух товаров в заказе — ещё ссылка на
+    # общий пост о заварке, если он задан.
+    brewing_in_delivered_enabled: bool = True
+    brewing_guide_url: str = ""
+
+    # Оценка кнопками через несколько дней после вручения; срок годности —
+    # сколько дней после срока ещё спрашиваем.
+    feedback_ask_enabled: bool = True
+    feedback_ask_after_days: float = 3
+    feedback_ask_shelf_days: float = 7
+
+    # Второй шанс: другой сорт через столько дней после проигнорированного
+    # «Повторить» (или в срок «Повторить», если заказ оценён «Не моё»).
+    second_touch_enabled: bool = True
+    second_touch_after_days: float = 14
+    second_touch_shelf_days: float = 10
+
+    # Реактивация: через столько дней после последнего вручения, если заказов
+    # с тех пор не было; срок годности и как часто можно одному клиенту.
+    reactivation_enabled: bool = True
+    reactivation_after_days: float = 90
+    reactivation_shelf_days: float = 30
+    reactivation_repeat_days: float = 180
+
+    # «Покупки клиента» в промпте модели — для подбора по прошлым заказам.
+    purchase_history_in_prompt_enabled: bool = True
+
+    # Повторные касания после вручения (`orders/retention.py`) — общие правила.
+    # Пауза между любыми двумя продающими касаниями одному клиенту.
+    marketing_min_gap_days: float = 3
+    # Клиент писал недавно — разговор идёт, касание будет не к месту.
+    marketing_quiet_after_client_hours: float = 12
+    # Менеджер писал в диалог — его разговор, бот не встревает.
+    marketing_quiet_after_manager_hours: float = 48
 
     # Счёт без отдельного «Оформляем?»: как только заказ полный, код сам
     # выставляет счёт и присылает сводку со ссылкой. Подтверждение — оплата.
