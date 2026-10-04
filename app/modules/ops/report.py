@@ -57,6 +57,14 @@ async def collect(now: datetime | None = None) -> dict:
                 )
             )
         ).one()
+        redacted = (
+            await session.execute(
+                text(
+                    "select count(*) from ops_events "
+                    "where kind = 'pii_redacted' and at > now() - interval '24 hours'"
+                )
+            )
+        ).scalar_one()
         dialogs = (
             await session.execute(
                 text(
@@ -73,7 +81,7 @@ async def collect(now: datetime | None = None) -> dict:
     disk = await host.disk()
     return {
         "now": now, "stats": stats, "pulses": int(pulses or 0), "expected": expected,
-        "dialogs": int(dialogs or 0), "tasks": tasks, "disk": disk,
+        "dialogs": int(dialogs or 0), "tasks": tasks, "disk": disk, "pii_redacted": int(redacted or 0),
         "retention": await _retention(now),
     }
 
@@ -159,6 +167,12 @@ def render(data: dict) -> str:
     else:
         lines.append("<b>Ответ клиенту</b>: ответов не было")
     lines.append(f"<b>Диалогов</b>: {data['dialogs']}")
+    if data.get("pii_redacted"):
+        # Метки что-то пропустили, и телефон или почту снял последний рубеж.
+        lines.append(
+            f"<b>Персональные данные к Claude</b>: перехвачено перед отправкой {data['pii_redacted']} ⚠️ "
+            "— метки что-то пропустили"
+        )
 
     lines += _retention_lines(data.get("retention"))
 

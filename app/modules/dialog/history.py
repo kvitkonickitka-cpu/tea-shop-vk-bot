@@ -1,7 +1,11 @@
+import logging
+
 from sqlalchemy import select
 
 from app.core.database import get_session_factory
 from app.modules.dialog.models import Conversation, ConversationMessage
+
+logger = logging.getLogger(__name__)
 
 _MAX_HISTORY_MESSAGES = 20
 
@@ -24,6 +28,25 @@ def mark_author(content: str, author: str | None) -> str:
 _fallback_histories: dict[int, list[dict]] = {}
 
 
+async def _with_labels(peer_id: int, role: str, content: str, author: str | None) -> str:
+    """В историю — версия с метками вместо персональных данных.
+
+    Это единственное место записи истории, поэтому и шаблоны, которые бот
+    отправил сам (сводка со ссылкой, «как в прошлый раз»), и ответы
+    менеджера попадают сюда с метками, хотя клиенту ушли со значениями.
+    Имена по словарю ищем в словах людей — клиента и менеджера; в текстах
+    бота хватает известных значений, телефонов и почт.
+    """
+    from app import privacy
+
+    try:
+        return await privacy.tokenize(peer_id, content, names=role == "user" or author == AUTHOR_MANAGER)
+    except Exception:
+        # Историю не теряем: телефоны и почты снимет последний рубеж перед Claude.
+        logger.exception("Метки: не заменили данные в реплике для истории peer_id=%s", peer_id)
+        return content
+
+
 async def get_history(peer_id: int) -> list[dict]:
     try:
         session_factory = get_session_factory()
@@ -42,6 +65,7 @@ async def get_history(peer_id: int) -> list[dict]:
 
 
 async def append_message(peer_id: int, role: str, content: str, author: str | None = None) -> None:
+    content = await _with_labels(peer_id, role, content, author)
     try:
         session_factory = get_session_factory()
     except RuntimeError:
@@ -66,6 +90,8 @@ async def append_message(peer_id: int, role: str, content: str, author: str | No
 
 
 async def append_exchange(peer_id: int, user_text: str, assistant_text: str) -> None:
+    user_text = await _with_labels(peer_id, "user", user_text, None)
+    assistant_text = await _with_labels(peer_id, "assistant", assistant_text, None)
     try:
         session_factory = get_session_factory()
     except RuntimeError:

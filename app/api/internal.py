@@ -10,6 +10,7 @@ from app.core import heartbeat, worktime
 from app.core.config import settings
 from app.messages import manager as manager_messages, templates
 from app.modules import events
+from app.modules.analytics import service as analytics_service
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
 from app.modules.ops import alerts as ops_alerts, journal as ops_journal, pulse as ops_pulse, report as ops_report
@@ -149,6 +150,8 @@ async def _run_scheduled() -> dict:
     result["draft_nudges"] = await _run_task(
         "Брошенные черновики", draft_nudge.check_drafts()
     )
+    # Аналитика: клиенты, ключи, пометка тестовых данных — пара запросов.
+    result["analytics"] = await _run_task("Аналитика: клиенты и тесты", analytics_service.sync())
     # Повторные касания после вручения: оценка, «Повторить», второй шанс,
     # реактивация — общим фильтром и по одному на клиента.
     result["retention"] = await _run_task("Повторные касания", _retention_summary())
@@ -277,6 +280,32 @@ _MANUAL_EVENTS = {
 # остальные команды заказа, объявленные после него.
 @router.post("/internal/orders/{order_id}/handed-over")
 @router.post("/internal/orders/{order_id}/at-pickup")
+@router.post("/internal/analytics/sync")
+async def analytics_sync(request: Request):
+    """Клиенты и тестовые данные для аналитики.
+
+        scripts/api.sh analytics/sync            что будет помечено тестовым
+        scripts/api.sh 'analytics/sync?apply=1'  пометить сейчас (тик делает это сам)
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    return await analytics_service.sync(apply=request.query_params.get("apply") in ("1", "true", "да"))
+
+
+@router.post("/internal/pii/migrate")
+async def pii_migrate(request: Request):
+    """Перенос накопленной истории на метки персональных данных.
+
+        scripts/api.sh pii/migrate              пробный прогон: сколько и каких меток, примеры с масками
+        scripts/api.sh 'pii/migrate?apply=1'    применить; перед записью — копия таблицы истории
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.privacy import migrate
+
+    return await migrate.run(apply=request.query_params.get("apply") in ("1", "true", "да"))
+
+
 @router.post("/internal/retention/check")
 async def retention_check(request: Request):
     """Повторные касания для одного клиента — что ушло бы и почему нет.

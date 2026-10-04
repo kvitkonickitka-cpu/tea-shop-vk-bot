@@ -7,6 +7,7 @@ import json
 import pytest
 from sqlalchemy import select
 
+from app import privacy
 from app.core.config import settings
 from app.messages import keyboard as keyboards, manager as manager_messages, templates
 from app.messages.models import ClientNotice
@@ -90,7 +91,9 @@ async def test_recipient_from_the_order_asks_only_email(clean, shop):
     assert draft.delivery_method == "ozon_pvz" and not draft.details.get("ozon_point_id")
     assert draft.details["storefront_recipient"] == {"name": "Петров Пётр", "phone": "+79007654321"}
     # Сказанное ботом — в истории и в журнале отправок, менеджер знает о заказе.
-    assert (await dialog_history.get_history(PEER))[-1]["content"] == text
+    said = (await dialog_history.get_history(PEER))[-1]["content"]
+    assert "Получатель из заказа: [NAME_1], [PHONE_1]." in said  # модель видит метки
+    assert await privacy.detokenize(PEER, said) == text
     async with clean() as session:
         notices = (await session.execute(select(ClientNotice.event_type))).scalars().all()
     assert notices == [templates.STOREFRONT_ORDER]

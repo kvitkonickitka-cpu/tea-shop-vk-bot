@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -89,6 +89,9 @@ class Order(Base):
     # Почему чек не ушёл — последняя причина. Менеджеру говорим, когда она
     # меняется, а не каждый тик.
     settlement_note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Тестовый заказ: тестовый аккаунт (TEST_VK_IDS) или оплата в тестовом
+    # магазине ЮKassa. В аналитику не попадает.
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class OrderPayment(Base):
@@ -115,6 +118,11 @@ class OrderPayment(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     amount: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    # Обновляются по уведомлениям ЮKassa: раньше статус оставался тем, с каким
+    # счёт создан (pending), и оплаченная попытка выглядела неоплаченной.
+    payment_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    income_amount: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     # Заполняется, когда счёт закрыт с нашей стороны: истёк срок или банк
     # отказал. По ЮKassa он может при этом оставаться оплачиваемым.
     closed_at: Mapped[Optional[datetime]] = mapped_column(

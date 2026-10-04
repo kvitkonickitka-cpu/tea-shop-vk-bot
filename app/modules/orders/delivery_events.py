@@ -126,6 +126,12 @@ async def record(
         return None
 
     logger.info("Заказ %s: событие %s (%s)", order_id, event, source)
+    from app.messages import funnel
+
+    await funnel.record(
+        order.peer_id, event.split(".", 1)[1], order_id=order.id, at=now,
+        source_=funnel.CARRIER if source == SOURCE_CARRIER else funnel.MANAGER,
+    )
     await _consequences(order, event)
     return order
 

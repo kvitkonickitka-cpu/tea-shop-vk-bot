@@ -36,7 +36,7 @@ from sqlalchemy import or_, select
 from app.core import worktime
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.messages import client as client_messages, keyboard as keyboards, templates
+from app.messages import client as client_messages, funnel, keyboard as keyboards, templates
 from app.modules.dialog import history as dialog_history
 from app.modules.dialog.models import ConversationMessage
 from app.modules.orders import order_chat, repository as orders_repository, state
@@ -213,6 +213,8 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
             keyboard=_pay_keyboard(order, payment) if button else None,
         )
         await orders_repository.set_state(order.id, reminder_2_sent_at=now)
+        if sent:
+            await funnel.record(order.peer_id, "payment_reminder_2", order_id=order.id, source_=funnel.REMINDER)
         return templates.REMINDER_2 if sent else None
 
     if order.reminder_1_sent_at is None and now >= first_due:
@@ -229,6 +231,8 @@ async def _remind(order: Order, payment: yookassa_client.Payment, now: datetime)
             keyboard=_pay_keyboard(order, payment) if button else None,
         )
         await orders_repository.set_state(order.id, reminder_1_sent_at=now)
+        if sent:
+            await funnel.record(order.peer_id, "payment_reminder_1", order_id=order.id, source_=funnel.REMINDER)
         return templates.REMINDER_1 if sent else None
 
     return None

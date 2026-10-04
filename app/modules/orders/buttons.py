@@ -163,6 +163,8 @@ async def prepare(peer_id: int, reply: str, *, consult: bool = False) -> str:
         logger.exception("Не собрали кнопки для peer_id=%s", peer_id)
         return reply
     await take.remember_set(peer_id, names if markup is not None else None)
+    if markup is not None and names:
+        await funnel.record(peer_id, "take_shown", source_=funnel.CODE, items=names)
     if markup is None:
         return reply
     _ready[peer_id] = markup
@@ -192,19 +194,21 @@ async def handle(peer_id: int, message: dict) -> Press:
         return TO_MODEL
     order_id = payload.get("o") if isinstance(payload.get("o"), int) else None
     await funnel.record(
-        peer_id, f"button:{action}", order_id=order_id, version=payload.get("v"),
+        peer_id, f"button:{action}", order_id=order_id, source_=funnel.BUTTON, version=payload.get("v"),
         touch=payload.get("t") if isinstance(payload.get("t"), str) else None,
     )
     # Под ответом на нажатие свои кнопки — набор «Взять» под прошлым
     # сообщением больше не последний.
     await take.remember_set(peer_id, None)
     try:
-        press = await handler(peer_id, payload)
+        # Всё, что случится внутри нажатия (черновик, пункт, счёт), — с кнопки.
+        with funnel.source(funnel.BUTTON):
+            press = await handler(peer_id, payload)
     except Exception:
         logger.exception("Нажатие %s у peer_id=%s не обработалось, отдаём модели", action, peer_id)
         return TO_MODEL
     if press is STALE:
-        await funnel.record(peer_id, "button_stale", order_id=order_id, action=action)
+        await funnel.record(peer_id, "button_stale", order_id=order_id, source_=funnel.BUTTON, action=action)
     return press
 
 
@@ -297,6 +301,7 @@ async def _on_add(peer_id: int, payload: dict) -> Press:
     if draft is None or not item:
         return STALE
     if draft.details.get("offer"):
+        await funnel.record(peer_id, "upsell_accepted", item=item)
         return await _add_to_offer(peer_id, item)
     had_delivery = draft.delivery_method
     city = draft.details.get("address", "")
@@ -486,9 +491,13 @@ async def _on_take(peer_id: int, payload: dict) -> Press:
         return STALE
     if await state.get_draft(peer_id) is not None or await orders_repository.live_invoice_order(peer_id) is not None:
         return STALE
-    result = await conversation._execute_propose_order(
-        peer_id, {"items": [{"name": match["name"], "quantity": 1}]}
-    )
+    token = conversation._draft_origin.set("take")
+    try:
+        result = await conversation._execute_propose_order(
+            peer_id, {"items": [{"name": match["name"], "quantity": 1}]}
+        )
+    finally:
+        conversation._draft_origin.reset(token)
     if isinstance(result, conversation.ToolExecution) and result.client_reply is not None:
         return Press(reply=result.client_reply, keyboard=_stashed.pop(peer_id, None))
     draft = await state.get_draft(peer_id)

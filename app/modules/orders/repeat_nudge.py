@@ -123,10 +123,18 @@ async def due_at(session, order: Order) -> datetime:
 
 
 async def delivered_orders(session, now: datetime, max_age: timedelta):
-    """Оплаченные, вручённые, не возвращённые заказы не старше `max_age`."""
+    """Оплаченные, вручённые, не возвращённые заказы не старше `max_age`.
+
+    Тестовые — только у тестовых аккаунтов: касания по ним реальному
+    клиенту не уходят.
+    """
+    from app.modules.analytics import service as analytics
+
+    test_filter = analytics.test_order_filter(await analytics.test_peer_ids())
     return (
         await session.execute(
             select(Order).where(
+                test_filter,
                 Order.payment_status == orders_repository.PAID,
                 Order.delivered_at.is_not(None),
                 Order.delivered_at > now - max_age,

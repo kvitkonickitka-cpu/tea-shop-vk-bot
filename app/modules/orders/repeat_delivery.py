@@ -100,7 +100,10 @@ async def _successful_orders(peer_id: int) -> list[Order]:
     except RuntimeError:
         return []
 
+    from app.modules.analytics import service as analytics
+
     try:
+        test_ids = await analytics.test_peer_ids()
         async with session_factory() as session:
             return list(
                 (
@@ -108,6 +111,8 @@ async def _successful_orders(peer_id: int) -> list[Order]:
                         select(Order)
                         .where(
                             Order.peer_id == peer_id,
+                            # Тестовые заказы «как в прошлый раз» — только тестовым аккаунтам.
+                            analytics.test_order_filter(test_ids),
                             Order.payment_status == orders_repository.PAID,
                             Order.status.not_in(("refunded", orders_repository.CANCELED)),
                             Order.not_delivered_at.is_(None),

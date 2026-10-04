@@ -7,3 +7,5 @@ sqlalchemy[asyncio]
 asyncpg
 boto3
 dnspython
+cryptography
+pymorphy3

@@ -1,0 +1,125 @@
+# Договор с Yandex DataLens: представления схемы analytics, их столбцы и типы.
+#
+# Столбцы только добавляются — в конец списка, вместе с правкой
+# app/modules/analytics/views.py. Существующие не переименовываются, не
+# удаляются и не меняют тип: на них уже построены чарты. Тест
+# tests/test_analytics_contract.py сверяет базу с этим файлом и падает на
+# любом расхождении, в том числе на новом столбце, которого здесь нет.
+# Типы — как их называет information_schema.columns.
+
+views:
+  dim_status:
+    - code: text
+    - label: text
+    - funnel_order: integer
+  dim_event:
+    - code: text
+    - label: text
+    - funnel_order: integer
+    - stage: text
+  v_orders:
+    - order_id: integer
+    - client_key: character varying
+    - client_order_number: integer
+    - client_paid_order_number: integer
+    - created_at: timestamp with time zone
+    - created_date_msk: date
+    - paid_at: timestamp with time zone
+    - paid_date_msk: date
+    - delivered_at: timestamp with time zone
+    - delivered_date_msk: date
+    - status: character varying
+    - status_label: text
+    - is_paid: boolean
+    - is_refunded: boolean
+    - is_canceled: boolean
+    - is_delivered: boolean
+    - channel: text
+    - channel_label: text
+    - carrier: text
+    - delivery_method: character varying
+    - delivery_type: text
+    - items_total: numeric(10,2)
+    - delivery_cost: numeric(10,2)
+    - carrier_delivery_cost: numeric(10,2)
+    - total: numeric(10,2)
+    - free_delivery: boolean
+    - items_count: integer
+    - upsell_offered: boolean
+    - upsell_item: text
+    - upsell_accepted: boolean
+    - payment_attempts: integer
+    - payment_method: text
+    - income_amount: numeric(10,2)
+    - rating: character varying
+    - rating_label: character varying
+    - has_review: boolean
+    - ref: character varying
+    - ref_source: character varying
+  v_order_items:
+    - order_id: integer
+    - client_key: character varying
+    - line_no: integer
+    - item_name: text
+    - product: text
+    - pack: text
+    - quantity: integer
+    - price: numeric(10,2)
+    - amount: numeric(10,2)
+    - created_at: timestamp with time zone
+    - created_date_msk: date
+    - is_paid: boolean
+    - status: character varying
+  v_funnel_events:
+    - event_id: integer
+    - created_at: timestamp with time zone
+    - created_date_msk: date
+    - event: character varying
+    - event_kind: character varying
+    - event_label: text
+    - funnel_order: integer
+    - stage: text
+    - client_key: character varying
+    - order_id: integer
+    - source: character varying
+    - source_label: character varying
+    - button_action: text
+    - touch: text
+    - origin: text
+    - attempt: integer
+    - amount: numeric(10,2)
+    - income_amount: numeric(10,2)
+    - payment_method: text
+    - reason: text
+    - rating: text
+    - carrier: text
+    - item: text
+  v_touches:
+    - touch_id: integer
+    - client_key: character varying
+    - touch: text
+    - touch_label: text
+    - sent_at: timestamp with time zone
+    - sent_date_msk: date
+    - order_id: integer
+    - pressed: boolean
+    - pressed_action: text
+    - ordered_7d: boolean
+    - new_order_id: integer
+    - opted_out_2d: boolean
+  v_clients:
+    - client_key: character varying
+    - first_contact_at: timestamp with time zone
+    - first_contact_date_msk: date
+    - first_order_at: timestamp with time zone
+    - first_paid_order_at: timestamp with time zone
+    - last_order_at: timestamp with time zone
+    - last_paid_order_at: timestamp with time zone
+    - orders_count: integer
+    - paid_orders_count: integer
+    - revenue: numeric(10,2)
+    - opted_out: boolean
+    - opted_out_at: timestamp with time zone
+    - unreachable: boolean
+    - ref: character varying
+    - ref_source: character varying

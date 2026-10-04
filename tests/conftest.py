@@ -28,6 +28,10 @@ os.environ.setdefault("TELEGRAM_MANAGER_CHAT_ID", "1")
 os.environ.setdefault("YOOKASSA_SHOP_ID", "1475067")
 os.environ.setdefault("YOOKASSA_SECRET_KEY", "test-yookassa-key")
 os.environ.setdefault("PAYMENTS_ENABLED", "true")
+# Метки вместо персональных данных включены во всех тестах: сценарии
+# проверяют, что с ними всё работает как раньше. Ключи — только тестовые.
+os.environ.setdefault("CLIENT_KEY_SECRET", "test-client-key-secret")
+os.environ.setdefault("PII_ENCRYPTION_KEY", "dGVzdC1waWkta2V5LXRlc3QtcGlpLWtleS10ZXN0LTMyYg==")
 
 
 @pytest.fixture(scope="session")
@@ -99,7 +103,7 @@ async def clean(db):
         "escalations", "escalation_states", "client_notices",
         "manager_notifications", "processed_events", "dialog_reports",
         "heartbeats", "marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events", "ops_events",
-        "order_ratings",
+        "order_ratings", "clients", "pii_vault",
     )
     async with db() as session:
         rows = (
@@ -116,6 +120,9 @@ async def clean(db):
                 text(f"truncate {', '.join(existing)} restart identity cascade")
             )
             await session.commit()
+    from app.privacy import vault
+
+    vault.forget_cache()
     return db
 
 

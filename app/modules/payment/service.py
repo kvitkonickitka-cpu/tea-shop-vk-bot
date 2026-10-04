@@ -11,7 +11,7 @@ import logging
 
 from app.core import worktime
 from app.core.config import settings
-from app.messages import client as client_messages, templates
+from app.messages import client as client_messages, funnel, templates
 from app.modules.orders import repository as orders_repository, state
 from app.modules.orders.state import OrderDraft
 from app.modules.ops.journal import order_scope
@@ -96,6 +96,16 @@ async def close_invoice(order, payment, *, notice: str | None) -> None:
     """
     await orders_repository.set_state(
         order.id, status=STATUS_UNPAID, payment_status=payment.status
+    )
+    await orders_repository.update_attempt(payment)
+    # Банк отказал — с причиной ЮKassa; срок вышел — у нас или у ЮKassa;
+    # без уведомления клиенту — отменил магазин.
+    event = {templates.PAYMENT_DECLINED: "payment_declined",
+             templates.PAYMENT_EXPIRED: "invoice_expired"}.get(notice, "invoice_canceled")
+    await funnel.record(
+        order.peer_id, event, order_id=order.id,
+        source_=funnel.YOOKASSA if payment.cancellation_reason else funnel.CODE,
+        reason=payment.cancellation_reason or None, party=payment.cancellation_party or None,
     )
 
     if payment.status == "pending":
@@ -272,6 +282,10 @@ async def issue_for_order(order) -> tuple[yookassa_client.Payment | None, str]:
     for row in await orders_repository.open_payments(order.id):
         if row.payment_id != payment.id:
             await orders_repository.close_payment(row.payment_id)
+    await funnel.record(
+        order.peer_id, "invoice_manual", order_id=order.id, source_=funnel.MANAGER,
+        attempt=attempt, total=payment.amount,
+    )
     return payment, f"счёт выставлен, попытка {attempt}"
 
 

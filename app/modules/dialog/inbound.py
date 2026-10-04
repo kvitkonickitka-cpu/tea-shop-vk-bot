@@ -43,7 +43,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.config import settings
@@ -363,6 +363,11 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     from app.messages import marketing
 
     await marketing.mark_reachable(peer_id)
+    # Клиент для аналитики: при первом контакте — с меткой кампании, если
+    # пришёл по ссылке с ?ref=… Потом метка не перезаписывается.
+    from app.modules.analytics import service as analytics
+
+    await analytics.ensure_client(peer_id, ref=message.get("ref"), ref_source=message.get("ref_source"))
 
     try:
         get_session_factory()
@@ -378,10 +383,39 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     # У событий ВК event_id есть всегда; запасной ключ — на случай, если
     # сообщение пришло без него, чтобы уникальность не склеила разные.
     event_id = event_id or f"msg:{peer_id}:{message.get('conversation_message_id') or message.get('id') or time.time_ns()}"
+    await _note_dialog_start(peer_id, event_id, message)
     await _store(event_id, message)
     if is_enabled() and not is_button(message):
         await _wait_for_quiet(peer_id)
     await _run_turn(peer_id, started)
+
+
+DIALOG_GAP = 24 * 3600
+
+
+async def _note_dialog_start(peer_id: int, event_id: str, message: dict) -> None:
+    """Начало диалога: первое сообщение клиента или первое после суток тишины.
+
+    Смотрим в `inbound_messages`, а не в историю: история пишется после хода,
+    и при склейке второе сообщение пачки ещё не видело бы первое. Повтор
+    того же события очередью начала не считается.
+    """
+    from app.messages import funnel
+
+    try:
+        async with get_session_factory()() as session:
+            earlier = (await session.execute(
+                select(InboundMessage.event_id).where(
+                    InboundMessage.peer_id == peer_id,
+                    InboundMessage.received_at > func.now() - text(f"interval '{DIALOG_GAP} seconds'"),
+                ).limit(1)
+            )).first()
+    except Exception:
+        logger.exception("Не проверили начало диалога peer_id=%s", peer_id)
+        return
+    if earlier is None:
+        await funnel.record(peer_id, "dialog_start",
+                            source_=funnel.BUTTON if is_button(message) else funnel.TEXT)
 
 
 def is_button(message: dict) -> bool:

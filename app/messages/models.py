@@ -112,3 +112,7 @@ class FunnelEvent(Base):
     order_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Откуда пришло: text — клиент написал, button — нажал, code — решил код,
+    # storefront — витрина, reminder — напоминание, manager — менеджер,
+    # carrier — перевозчик, yookassa — уведомление ЮKassa.
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)

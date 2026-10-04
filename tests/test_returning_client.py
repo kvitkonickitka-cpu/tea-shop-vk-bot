@@ -13,7 +13,7 @@ from app.messages import templates
 from app.messages.models import FunnelEvent
 from app.modules.orders import conversation, repository as orders_repository, state
 from app.modules.orders.models import Order
-from tests.test_auto_invoice import said, tool_use
+from tests.test_auto_invoice import OWN_EVENTS, said, tool_use
 from tests.test_vk_buttons import FULL, PEER, say, world  # noqa: F401
 
 POINT = "Краснодар, Ставропольская улица, 230"
@@ -77,7 +77,7 @@ async def test_checkout_button_sends_invoice(clean, world):
     assert f"Доставка: пункт выдачи Ozon, {POINT} — 121 ₽" in text
     assert board["buttons"][0][0]["action"]["label"] == "Оплатить 1621 ₽"
     async with clean() as session:
-        events = (await session.execute(select(FunnelEvent.event).order_by(FunnelEvent.id))).scalars().all()
+        events = (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS).order_by(FunnelEvent.id))).scalars().all()
     assert events == ["button:offer_ok", "invoice_auto"]
 
 
