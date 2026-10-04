@@ -78,6 +78,12 @@ async def notify(
     лог уходит критическая запись.
     """
     stored: ManagerNotification | None = None
+    if peer_id is not None or order_id is not None:
+        from app.modules.analytics import service as analytics
+
+        if await analytics.is_test_client(peer_id, order_id):
+            # Проверки владельца не должны выглядеть настоящими заказами.
+            text = f"{analytics.TEST_MARK}\n{text}"
     try:
         session_factory = get_session_factory()
     except RuntimeError:

@@ -60,6 +60,36 @@ def test_order_filter(test_ids: set[int]):
     return or_(Order.is_test.is_(False), Order.peer_id.in_(test_ids))
 
 
+TEST_MARK = "🧪 <b>Тестовый клиент</b>"
+
+
+async def is_test_client(peer_id: int | None = None, order_id: int | None = None) -> bool:
+    """Тестовый ли клиент: в TEST_VK_IDS, помечен в базе или заказ тестовый.
+
+    Для пометки в карточках менеджеру — чтобы проверки владельца не путались
+    с настоящими заказами. Ошибка — «не тестовый»: карточка важнее пометки.
+    """
+    try:
+        if peer_id is not None and peer_id in await test_peer_ids():
+            return True
+        async with get_session_factory()() as session:
+            if order_id is not None:
+                row = (await session.execute(select(Order.is_test, Order.peer_id).where(Order.id == order_id))).first()
+                if row is not None:
+                    if row.is_test:
+                        return True
+                    peer_id = peer_id if peer_id is not None else row.peer_id
+            if peer_id is not None:
+                marked = (await session.execute(select(Client.is_test).where(Client.peer_id == peer_id))).scalar()
+                if marked:
+                    return True
+                if peer_id in await test_peer_ids():
+                    return True
+    except Exception:
+        logger.warning("Не проверили, тестовый ли клиент peer_id=%s", peer_id, exc_info=True)
+    return False
+
+
 async def ensure_client(peer_id: int, *, ref: str | None = None, ref_source: str | None = None) -> None:
     """Завести клиента при первом контакте. Повторный вызов ничего не меняет.
 
