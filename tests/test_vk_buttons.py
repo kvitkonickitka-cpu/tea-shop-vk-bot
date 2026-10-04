@@ -111,8 +111,8 @@ async def test_points_get_buttons_and_a_hint(clean, world):
     text, board = world["sent"][-1]
     assert text.endswith(templates.POINTS_HINT)
     labels = [row[0]["action"]["label"] for row in board["buttons"]]
-    assert labels == ["1. Ставропольская улица, 230", "2. Ставропольская улица, 159",
-                      "3. Красная улица, 176", "4. Северная улица, 326"]
+    assert labels == ["1. Ставропольская ул., 230", "2. Ставропольская ул., 159",
+                      "3. Красная ул., 176", "4. Северная ул., 326"]
     assert json.loads(board["buttons"][1][0]["action"]["payload"])["a"] == "pt"
 
 

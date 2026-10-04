@@ -42,7 +42,7 @@ def test_choose_refuses_what_is_not_shown(answer):
 
 
 def test_short_label():
-    assert points.short("Краснодар, Ставропольская улица, 230") == "Ставропольская улица, 230"
+    assert points.short("Краснодар, Ставропольская улица, 230") == "Ставропольская ул., 230"
     assert len(points.short("Краснодар, " + "очень длинная улица " * 5 + ", 1")) == 40
 
 

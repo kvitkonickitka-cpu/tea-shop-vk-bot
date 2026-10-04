@@ -85,8 +85,8 @@ async def test_recipient_from_the_order_asks_only_email(clean, shop):
         "Заказ №77 принят: Те Гуань Инь (тест) × 1 — 1500 ₽.\n" + POINTS
         + templates.storefront_ask_email("Петров Пётр", "+79007654321") + "\n" + templates.POINTS_HINT
     )
-    assert labels(board) == ["1. Ставропольская улица, 230", "2. Ставропольская улица, 159",
-                             "3. Красная улица, 176", "4. Северная улица, 326"]
+    assert labels(board) == ["1. Ставропольская ул., 230", "2. Ставропольская ул., 159",
+                             "3. Красная ул., 176", "4. Северная ул., 326"]
     draft = await state.get_draft(PEER)
     assert draft.delivery_method == "ozon_pvz" and not draft.details.get("ozon_point_id")
     assert draft.details["storefront_recipient"] == {"name": "Петров Пётр", "phone": "+79007654321"}

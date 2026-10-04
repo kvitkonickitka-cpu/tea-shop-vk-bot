@@ -81,7 +81,7 @@ async def test_button_next_to_points_asks_only_for_point(clean, world):
     )
     point = world["sent"][-1][1]["buttons"][0][0]["action"]
     await say(point["label"], 3, json.loads(point["payload"]))
-    assert world["payments"] == [1] and "Итого: 1621 ₽" in world["sent"][-1][0]
+    assert world["payments"] == [1] and "Итого к оплате с учётом доставки: 1621 ₽" in world["sent"][-1][0]
 
 
 async def test_no_button_once_recipient_is_written(clean, world):

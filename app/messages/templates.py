@@ -194,7 +194,14 @@ def invoice_summary(
     почта полностью — опечатку в ней надо увидеть до оплаты, чек уйдёт туда.
     """
     head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
-    lines = [head]
+    lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta)]
+    lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button)
+    return "\n".join(lines)
+
+
+def _order_block(items, delivery_method, delivery_label, delivery_cost, eta) -> list[str]:
+    """Состав, доставка и срок — первый абзац сводки со ссылкой."""
+    lines = []
     for item in items:
         quantity = int(item.get("quantity") or 1)
         lines.append(
@@ -205,18 +212,30 @@ def invoice_summary(
     lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
     if eta:
         lines.append(f"Срок: {eta}")
-    lines.append(f"Получатель: {name}, {phone}, {email}")
-    lines.append(f"Итого: {amount(total)} ₽")
-    lines.append("")
-    lines.append(pay_line(link, button))
-    lines.append(
-        f"{_link_noun(button)} действует {settings.payment_invoice_ttl_minutes} минут. После "
-        f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
-    )
+    return lines
+
+
+def _payment_block(*, name, phone, email, total, link, button, extra: str = "") -> list[str]:
+    """Получатель, итог и оплата — абзацами, как их читают с телефона.
+
+    Почта здесь одна — в строке получателя: два раза один и тот же адрес в
+    сводке только удлиняли её. Кнопка оплаты — после строки «если что-то не
+    так»: так она стоит прямо над самой кнопкой.
+    """
+    lines = [
+        "",
+        f"Получатель: {name}, {phone}, {email}",
+        f"Итого к оплате с учётом доставки: {amount(total)} ₽",
+        "",
+        f"{_link_noun(button)} действует {settings.payment_invoice_ttl_minutes} минут. После оплаты "
+        "пришлём чек на указанную в заказе почту и сразу передадим заказ в доставку.",
+    ]
+    if extra:
+        lines += ["", extra]
+    lines += ["", "Если что-то не так — напишите, поправлю и пришлю новую ссылку.", "", pay_line(link, button)]
     if settings.conditions_url:
-        lines.append(f"Условия покупки, доставки и возврата: {settings.conditions_url}")
-    lines.append("Если что-то не так — напишите, поправлю и пришлю новую ссылку.")
-    return "\n".join(lines)
+        lines += ["", f"Условия покупки, доставки и возврата: {settings.conditions_url}"]
+    return lines
 
 
 def manager_paid_old_variant(order, link: str) -> str:
@@ -568,7 +587,10 @@ def point_chosen(
     return "\n".join(lines)
 
 
-_POINT_MAPS = {"Ozon": "https://www.ozon.ru/geo/", "СДЭК": "https://www.cdek.ru/ru/offices"}
+# Ссылка на карту — сразу при вопросе «куда»: клиенту проще выбрать пункт
+# или постамат глазами и прислать его адрес, чем вспоминать улицу.
+OZON_POINTS_MAP = "https://www.ozon.ru/geo/"
+_POINT_MAPS = {"Ozon": OZON_POINTS_MAP, "СДЭК": "https://www.cdek.ru/ru/offices"}
 
 
 def ask_point_address(carrier: str = "Ozon") -> str:
@@ -691,7 +713,10 @@ def item_added(*, name: str, items_total, gap=None, free: bool = False, next_ste
     return "\n".join(lines)
 
 
-ASK_WHERE = "Куда везти — город и улица, где удобно забрать?"
+ASK_WHERE = (
+    "Куда везти — город и улица, где удобно забрать? "
+    f"Пункты выдачи и постаматы Ozon на карте: {OZON_POINTS_MAP} — можно выбрать там и прислать адрес."
+)
 ASK_POINT_AND_RECIPIENT = (
     "Выберите пункт выдачи и одним сообщением пришлите ФИО, телефон и почту — сразу пришлю счёт."
 )
@@ -785,34 +810,10 @@ def returning_invoice(
     Подтверждением служит оплата, поэтому вопроса «Оформить?» нет: всё, что
     клиент проверил бы перед ним, стоит здесь, и поправить можно словами.
     """
-    lines = ["Как в прошлый раз — проверьте, всё ли верно:"]
-    for item in items:
-        quantity = int(item.get("quantity") or 1)
-        lines.append(
-            f"• {item.get('name', 'товар')} × {quantity} — "
-            f"{amount(float(item.get('price') or 0) * quantity)} ₽"
-        )
-    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
-    lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
-    if eta:
-        lines.append(f"Срок: {eta}")
-    lines.append(f"Получатель: {name}, {phone}, {email}")
-    lines.append(f"Итого: {amount(total)} ₽")
-    lines.append("")
-    lines.append(pay_line(link, button))
-    lines.append(
-        f"{_link_noun(button)} действует {settings.payment_invoice_ttl_minutes} минут. После "
-        f"оплаты пришлём чек на {email} и сразу передадим заказ в доставку."
-    )
-    if settings.conditions_url:
-        lines.append(f"Условия покупки, доставки и возврата: {settings.conditions_url}")
-    extra = upsell_line(upsell, upsell_price, gap)
-    if extra:
-        lines.append(extra)
-    lines.append(
-        "Оплатите кнопкой — или напишите, что поменять." if button
-        else "Оплатите по ссылке — или напишите, что поменять."
-    )
+    lines = ["Как в прошлый раз — проверьте, всё ли верно:",
+             *_order_block(items, delivery_method, delivery_label, delivery_cost, eta)]
+    lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button,
+                            extra=upsell_line(upsell, upsell_price, gap))
     return "\n".join(lines)
 
 

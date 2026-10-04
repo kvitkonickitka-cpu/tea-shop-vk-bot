@@ -62,10 +62,11 @@ def test_invoice_summary_shows_conditions_only_when_set(monkeypatch, url):
     assert text.startswith("Заказ №128 — проверьте, всё ли верно:\n• Те Гуань Инь × 2 — 800 ₽")
     assert "Доставка: пункт выдачи Ozon, Краснодар, Красная, 1 — 117 ₽" in text
     assert "Получатель: Иванов Иван, +79001234567, a@b.ru" in text
-    assert "Итого: 917 ₽\n\nОплатить: https://pay/x" in text
-    assert "Ссылка действует 60 минут" in text and "чек на a@b.ru" in text
+    assert "Итого к оплате с учётом доставки: 917 ₽\n\nСсылка действует 60 минут" in text
+    assert "чек на указанную в заказе почту" in text and "Оплатить: https://pay/x" in text
     assert ("Условия покупки" in text) == bool(url)
-    assert text.endswith("Если что-то не так — напишите, поправлю и пришлю новую ссылку.")
+    # Последней — ссылка на условия, без неё — оплата: она стоит прямо над кнопкой.
+    assert text.endswith(f"Условия покупки, доставки и возврата: {url}" if url else "Оплатить: https://pay/x")
 
 
 def test_paid_promises_the_handover_period(monkeypatch):

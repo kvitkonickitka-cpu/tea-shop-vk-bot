@@ -73,7 +73,7 @@ async def test_checkout_button_sends_invoice(clean, world):
     ok = world["sent"][-1][1]["buttons"][0][0]["action"]
     await say(ok["label"], 2, json.loads(ok["payload"]))
     text, board = world["sent"][-1]
-    assert world["payments"] == [1] and "Итого: 1621 ₽" in text
+    assert world["payments"] == [1] and "Итого к оплате с учётом доставки: 1621 ₽" in text
     assert f"Доставка: пункт выдачи Ozon, {POINT} — 121 ₽" in text
     assert board["buttons"][0][0]["action"]["label"] == "Оплатить 1621 ₽"
     async with clean() as session:

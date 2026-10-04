@@ -110,12 +110,42 @@ def forget(details: dict) -> None:
     details.pop("shown_for", None)
 
 
+# Слова, с которых начинается улица: всё, что перед ними, — страна, край и
+# город, а их на кнопке клиент и так знает.
+_STREET_WORDS = (
+    "улица", "ул.", "ул ", "проспект", "пр-т", "просп", "переулок", "пер.", "бульвар", "б-р", "шоссе",
+    "проезд", "набережная", "наб.", "площадь", "пл.", "микрорайон", "мкр", "тупик", "аллея", "линия",
+    "тракт", "квартал", "территория", "посёлок", "поселок", "снт",
+)
+_SHORTER = (("улица ", "ул. "), ("проспект ", "пр-т "), ("переулок ", "пер. "), ("корпус ", "к"),
+            ("строение ", "стр. "), ("микрорайон ", "мкр "), (" улица", " ул."))
+
+
 def short(address: str, limit: int = 40) -> str:
-    """Адрес для подписи кнопки: без города в начале и не длиннее лимита."""
-    text = (address or "").strip()
-    parts = [part.strip() for part in text.split(",") if part.strip()]
-    if len(parts) > 1 and not any(ch.isdigit() for ch in parts[0]):
-        text = ", ".join(parts[1:])
+    """Адрес для подписи кнопки: улица и дом, без страны, края и города.
+
+    ВК обрезает подпись по ширине кнопки, и «Россия, Краснодарский Край,
+    Краснодар, ул…» не говорит ничего. Город клиент уже назвал. Пункт кнопка
+    передаёт номером из показанного списка, поэтому подпись на то, что уходит
+    в Ozon, не влияет.
+    """
+    parts = [part.strip() for part in (address or "").split(",") if part.strip()]
+    start = 0
+    for i, part in enumerate(parts):
+        lowered = part.casefold() + " "
+        if any(word in lowered for word in _STREET_WORDS):
+            start = i
+            break
+    else:
+        # Улицы словом нет («Краснодар, Красная, 176»): берём кусок перед домом.
+        numbered = next((i for i, part in enumerate(parts) if any(ch.isdigit() for ch in part)), None)
+        if numbered is not None:
+            start = numbered - 1 if numbered > 0 and not any(ch.isdigit() for ch in parts[numbered - 1]) else numbered
+            if start == 0 and len(parts) > 2:
+                start = len(parts) - 2
+    text = ", ".join(parts[start:]) or (address or "").strip()
+    for long, brief in _SHORTER:
+        text = text.replace(long, brief)
     return text if len(text) <= limit else text[: limit - 1].rstrip(" ,") + "…"
 
 
