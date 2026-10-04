@@ -17,6 +17,7 @@ priority,field,match_type,value,direction,amount_min,amount_max,article_id,activ
 40,counterparty_name,contains,юмани,in,,,cfo_in_yookassa,true,Выплаты ЮKassa приходят нетто
 41,counterparty_name,contains,юкасса,in,,,cfo_in_yookassa,true,
 42,purpose,contains,yookassa,in,,,cfo_in_yookassa,true,
+45,purpose,contains,YANDEX7372OBLAKO,in,,,cfo_in_direct,true,Оплаты покупателей через терминал Яндекс (SBP); при смене терминала поправить номер в value
 50,counterparty_name,contains,интернет решения,in,,,cfo_in_ozon,true,Юрлицо Ozon — проверьте на своей выписке
 51,counterparty_name,contains,озон,in,,,cfo_in_ozon,true,
 52,counterparty_name,contains,озон,out,,,cfo_out_ozon_services,true,Счета от Ozon за услуги
