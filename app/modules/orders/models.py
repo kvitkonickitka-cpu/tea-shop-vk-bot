@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -89,6 +89,9 @@ class Order(Base):
     # Почему чек не ушёл — последняя причина. Менеджеру говорим, когда она
     # меняется, а не каждый тик.
     settlement_note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Тестовый заказ: тестовый аккаунт (TEST_VK_IDS) или оплата в тестовом
+    # магазине ЮKassa. В аналитику не попадает.
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class OrderPayment(Base):

@@ -112,6 +112,8 @@ _MISSING_COLUMNS = (
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS last_offer_buttons JSONB",
     # Повторные касания: клиент запретил сообщения — продающих не шлём.
     "ALTER TABLE client_preferences ADD COLUMN IF NOT EXISTS unreachable_at TIMESTAMPTZ",
+    # Аналитика: тестовые заказы не попадают в представления для DataLens.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE",
     # Мониторинг: какие сбои уже ушли в Ops подробностью.
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
 )
@@ -143,6 +145,7 @@ async def init_models() -> None:
     from app.modules.marking import models as marking_models  # noqa: F401
     from app.modules.catalog import models as catalog_models  # noqa: F401
     from app.modules.ops import models as ops_models  # noqa: F401
+    from app.modules.analytics import models as analytics_models  # noqa: F401
 
     try:
         async with _engine.begin() as conn:

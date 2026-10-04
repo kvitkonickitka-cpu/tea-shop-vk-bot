@@ -187,12 +187,16 @@ async def ask_candidates(now: datetime):
     """Заказы, по которым пора спросить «Как вам чай?»."""
     from app.modules.orders import retention
 
+    from app.modules.analytics import service as analytics
+
     after = timedelta(days=settings.feedback_ask_after_days)
     shelf = timedelta(days=settings.feedback_ask_shelf_days)
+    test_filter = analytics.test_order_filter(await analytics.test_peer_ids())
     async with get_session_factory()() as session:
         orders = (
             await session.execute(
                 select(Order).where(
+                    test_filter,
                     Order.payment_status == orders_repository.PAID,
                     Order.delivered_at <= now - after,
                     Order.delivered_at >= now - after - shelf,
