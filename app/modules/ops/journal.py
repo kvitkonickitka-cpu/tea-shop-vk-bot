@@ -128,6 +128,14 @@ def note_error(api: str, operation: str, error: BaseException, duration: float) 
     )
 
 
+def note_pii_redacted(operation: str, count: int) -> None:
+    """В запрос к Claude дошли телефон или почта — их сняли перед отправкой."""
+    # Строка на каждое найденное значение: отчёт считает строки. Самих
+    # значений здесь нет — только где нашлись.
+    for _ in range(count):
+        _BUFFER.append({"at": _now(), "kind": "pii_redacted", "api": "claude", "operation": operation[:120]})
+
+
 def note_turn(total_seconds: float, llm_seconds: float, *, operation: str | None = None) -> None:
     """Запомнить, сколько клиент ждал ответа и сколько из этого — Claude."""
     _BUFFER.append({
