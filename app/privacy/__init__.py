@@ -109,7 +109,7 @@ def _known_pattern(book: vault.Book) -> re.Pattern | None:
     return re.compile(rf"(?<![\w@.-])(?:{alternatives})(?![\w@-])", re.IGNORECASE)
 
 
-async def _replace(text: str, found: list[detect.Found], key: str) -> str:
+async def _replace(text: str, found: list[detect.Found], key: str, collect: list | None = None) -> str:
     # С конца, чтобы позиции впереди не съезжали.
     taken: list[tuple[int, int]] = []
     for item in sorted(found, key=lambda f: f.start, reverse=True):
@@ -118,24 +118,30 @@ async def _replace(text: str, found: list[detect.Found], key: str) -> str:
         label = await vault.label_for(key, item.kind, item.value)
         text = text[:item.start] + f"[{label}]" + text[item.end:]
         taken.append((item.start, item.end))
+        if collect is not None:
+            collect.append((label, item.kind, item.value))
     return text
 
 
-async def tokenize(peer_id: int, text: str, *, names: bool = True, stage: frozenset[str] = frozenset()) -> str:
+async def tokenize(
+    peer_id: int, text: str, *, names: bool = True, stage: frozenset[str] = frozenset(), collect: list | None = None
+) -> str:
     """Текст с метками вместо персональных данных клиента.
 
     `names=False` — только известные значения, телефоны и почты: для текстов,
     которые пишет не человек (промпт, результаты инструментов), где поиск
     имён по словарю дал бы ложные срабатывания на ровном месте.
+    `collect` — сюда складываются замены (метка, вид, значение): для отчёта
+    переноса истории.
     """
     if not text or not is_enabled():
         return text
     key = client_key(peer_id)
 
     contacts = detect.emails(text)
-    text = await _replace(text, contacts, key)
+    text = await _replace(text, contacts, key, collect)
     phones = detect.phones(text)
-    text = await _replace(text, phones, key)
+    text = await _replace(text, phones, key, collect)
 
     if names:
         # Распознавание — раньше известных значений: «иванов иван иванович»
@@ -143,8 +149,8 @@ async def tokenize(peer_id: int, text: str, *, names: bool = True, stage: frozen
         stop = await stop_list()
         if RECIPIENT in stage or contacts or phones:
             blanked = detect.LABEL.sub(lambda m: " " * len(m.group(0)), text)
-            text = await _replace(text, detect.recipient_names(blanked, stop), key)
-        text = await _replace(text, detect.names(text, stop), key)
+            text = await _replace(text, detect.recipient_names(blanked, stop), key, collect)
+        text = await _replace(text, detect.names(text, stop), key, collect)
 
     # Известные значения этого клиента — где бы они ни встретились: в
     # шаблоне со сводкой, в ответе менеджера, в описании черновика.
@@ -158,6 +164,8 @@ async def tokenize(peer_id: int, text: str, *, names: bool = True, stage: frozen
             for kind in ("NAME", "ADDR", "EMAIL"):
                 label = lookup.get(crypto.fingerprint(kind, match.group(0), client_key=key))
                 if label:
+                    if collect is not None:
+                        collect.append((label, kind, match.group(0)))
                     return f"[{label}]"
             return match.group(0)
 
@@ -165,7 +173,7 @@ async def tokenize(peer_id: int, text: str, *, names: bool = True, stage: frozen
     if COURIER_ADDRESS in stage:
         address = detect.courier_address(text)
         if address is not None:
-            text = await _replace(text, [address], key)
+            text = await _replace(text, [address], key, collect)
     return text
 
 

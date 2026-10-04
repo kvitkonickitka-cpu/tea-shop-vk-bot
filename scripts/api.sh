@@ -21,6 +21,8 @@
 #   scripts/api.sh yookassa/me            чей магазин, способы оплаты, фискализация
 #   scripts/api.sh 'retention/check?peer_id=123&days=21'   повторные касания клиента через N дней (&send=1 — отправить)
 #   scripts/api.sh retention/delivery-stats   как часто доходит «вручено» по Ozon и СДЭКу
+#   scripts/api.sh pii/migrate            перенос истории на метки: пробный прогон (?apply=1 — применить)
+#   scripts/api.sh analytics/sync         что будет помечено тестовым (?apply=1 — пометить)
 
 set -eu
 

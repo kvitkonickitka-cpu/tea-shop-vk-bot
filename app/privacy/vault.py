@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -42,6 +43,18 @@ class Book:
 _books: dict[str, Book] = {}
 # Без базы (локальный запуск) — только память процесса.
 _memory_only: dict[str, Book] = {}
+# Пробный прогон переноса истории: метки раздаются в памяти, в базу не пишутся.
+_simulated: dict[str, Book] | None = None
+
+
+@contextlib.contextmanager
+def simulate():
+    global _simulated
+    _simulated = {}
+    try:
+        yield
+    finally:
+        _simulated = None
 
 
 def _decrypt_rows(client_key: str, rows) -> Book:
@@ -60,6 +73,8 @@ def _decrypt_rows(client_key: str, rows) -> Book:
 
 
 async def load(client_key: str, *, fresh: bool = False) -> Book:
+    if _simulated is not None and client_key in _simulated:
+        return _simulated[client_key]
     book = _books.get(client_key)
     if book is not None and not fresh and time.monotonic() - book.loaded_at < _TTL_SECONDS:
         return book
@@ -72,6 +87,9 @@ async def load(client_key: str, *, fresh: bool = False) -> Book:
             select(PiiEntry).where(PiiEntry.client_key == client_key).order_by(PiiEntry.id)
         )).scalars().all()
     book = _decrypt_rows(client_key, rows)
+    if _simulated is not None:
+        _simulated[client_key] = book
+        return book
     _books[client_key] = book
     return book
 
@@ -85,6 +103,8 @@ async def label_for(client_key: str, kind: str, value: str) -> str:
     try:
         session_factory = get_session_factory()
     except RuntimeError:
+        session_factory = None
+    if session_factory is None or _simulated is not None:
         label = book.next_label(kind)
         book.values[label] = (kind, value)
         book.by_hash[digest] = label

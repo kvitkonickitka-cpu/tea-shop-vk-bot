@@ -292,6 +292,20 @@ async def analytics_sync(request: Request):
     return await analytics_service.sync(apply=request.query_params.get("apply") in ("1", "true", "да"))
 
 
+@router.post("/internal/pii/migrate")
+async def pii_migrate(request: Request):
+    """Перенос накопленной истории на метки персональных данных.
+
+        scripts/api.sh pii/migrate              пробный прогон: сколько и каких меток, примеры с масками
+        scripts/api.sh 'pii/migrate?apply=1'    применить; перед записью — копия таблицы истории
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.privacy import migrate
+
+    return await migrate.run(apply=request.query_params.get("apply") in ("1", "true", "да"))
+
+
 @router.post("/internal/retention/check")
 async def retention_check(request: Request):
     """Повторные касания для одного клиента — что ушло бы и почему нет.
