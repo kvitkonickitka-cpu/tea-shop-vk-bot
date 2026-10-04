@@ -136,3 +136,11 @@ async def test_flag_off_keeps_old_questions(clean, world, monkeypatch):
     await say("хочу ещё те гуань инь", 1)
     assert world["sent"][-1][0] == "Отправить туда же?"
     assert "offer" not in (await state.get_draft(PEER)).details
+
+
+def test_carrier_timeout_is_not_a_closed_point():
+    from app.modules.delivery import ozon_client
+    from app.modules.orders import offers
+
+    assert offers._is_timeout(ozon_client.OzonError("Ошибка Ozon: /v1/order/checkout — timeout ()"))
+    assert not offers._is_timeout(ozon_client.OzonError("Ozon отказал на /v1/order/checkout — 400"))
