@@ -97,3 +97,17 @@ async def test_flag_off_keeps_two_carrier_buttons(clean, shop, monkeypatch):
     await keyboards.remember_client(PEER, FULL)
     await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
     assert labels(shop["sent"][-1][1]) == ["Ozon — 121 ₽", "СДЭК — 245 ₽"]
+
+
+async def test_lead_asks_email_for_the_form_recipient_not_the_past_one(clean, shop, monkeypatch):
+    from app.modules.orders import repeat_delivery
+
+    async def past(peer_id):
+        return repeat_delivery.LastRecipient(1, "Квитко Никита Александрович", "+79990001122", "k@yandex.ru")
+
+    monkeypatch.setattr(repeat_delivery, "last_recipient_for", past)
+    await keyboards.remember_client(PEER, FULL)
+    await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
+    text, board = shop["sent"][-1]
+    assert "Получатель из заказа: Nikita Kvitko, +79214477622. Пришлите почту для чека" in text
+    assert "Да, на эти данные" not in labels(board)

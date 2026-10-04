@@ -124,8 +124,21 @@ async def test_no_recipient_in_the_order_asks_everything(clean, shop):
     assert templates.STOREFRONT_ASK_ALL in text and "storefront_recipient" not in (await state.get_draft(PEER)).details
 
 
+async def test_form_recipient_beats_the_past_one(clean, shop):
+    """04.10.2026: в форме «Тест Тестов», а бот предложил прошлого получателя."""
+    await past_order(clean)
+    text, board = await storefront(shop)
+    assert templates.storefront_ask_email("Петров Пётр", "+79007654321") in text
+    assert "Да, на эти данные" not in labels(board)
+
+
+def same_person(shop):
+    shop["order"]["recipient"] = {"name": "Иванов Иван", "phone": "+7 900 123-45-67"}
+
+
 async def test_returning_client_gets_same_data_button(clean, shop):
     await past_order(clean)
+    same_person(shop)
     text, board = await storefront(shop)
     assert templates.storefront_ask_last("Иванов Иван", "+79001234567", "ivanov@mail.ru") in text
     assert labels(board)[-1] == "Да, на эти данные"
@@ -148,6 +161,7 @@ async def test_no_buttons_without_client_info_keeps_text(clean, shop):
 
 async def test_returning_client_without_buttons_answers_yes(clean, shop):
     await past_order(clean)
+    same_person(shop)
     text, board = await storefront(shop, buttons=False)
     assert board is None and "Нажмите" not in text
     assert templates.storefront_ask_last("Иванов Иван", "+79001234567", "ivanov@mail.ru", button=False) in text

@@ -112,20 +112,24 @@ async def _direct_points(
     if draft is None or not (shown or asked) or draft.details.get("ozon_point_id"):
         return False
 
-    keyboard, hint = await buttons.for_reply(user_id)
-    shows_buttons = await keyboards.for_peer(user_id, keyboard) is not None
     last = await repeat_delivery.last_recipient_for(user_id)
     candidate = _recipient_of(order)
-    if last is not None and last.email:
+    if candidate is not None and last is not None and last.email and _same_person(candidate, last):
+        candidate = None
+    if candidate is not None:
+        # До кнопок: с получателем из формы «Да, на эти данные» не ставится.
+        draft.details["storefront_recipient"] = {"name": candidate[0], "phone": candidate[1]}
+        await state.set_draft(user_id, draft)
+    keyboard, hint = await buttons.for_reply(user_id)
+    shows_buttons = await keyboards.for_peer(user_id, keyboard) is not None
+    if candidate is not None:
+        ask = (templates.storefront_with_point_email if asked else templates.storefront_ask_email)(*candidate)
+    elif last is not None and last.email:
         ask = (
             templates.ask_last_recipient(last.name, last.phone, last.email, button=shows_buttons)
             if asked else
             templates.storefront_ask_last(last.name, last.phone, last.email, button=shows_buttons)
         )
-    elif candidate is not None:
-        draft.details["storefront_recipient"] = {"name": candidate[0], "phone": candidate[1]}
-        await state.set_draft(user_id, draft)
-        ask = (templates.storefront_with_point_email if asked else templates.storefront_ask_email)(*candidate)
     else:
         ask = templates.STOREFRONT_WITH_POINT_ALL if asked else templates.STOREFRONT_ASK_ALL
     if asked:
@@ -396,9 +400,12 @@ async def start_order(
     from app.modules.orders import repeat_delivery
 
     last = await repeat_delivery.last_recipient_for(peer_id)
-    if recipient and not (last is not None and last.email):
-        # Постоянному клиенту — прежний получатель кнопкой «Да, на эти данные»:
-        # с почтой, которую уже проверяли.
+    if recipient and not (last is not None and last.email and _same_person(recipient, last)):
+        # Получатель из формы «Товаров» — его клиент только что заполнил сам.
+        # Раньше постоянному клиенту он молча заменялся прошлым (04.10.2026:
+        # в форме «Тест Тестов», бот предложил прошлого получателя). Прошлый
+        # с кнопкой «Да, на эти данные» — только если это тот же человек:
+        # у него есть проверенная почта.
         draft.details["storefront_recipient"] = {"name": recipient[0], "phone": recipient[1]}
     await state.set_draft(peer_id, draft)
     await analytics.ensure_client(peer_id)
@@ -525,10 +532,11 @@ async def _lead_with_cheapest(
     shows = await keyboards.for_peer(peer_id, keyboard) is not None
 
     last = await repeat_delivery.last_recipient_for(peer_id)
-    if last is not None and last.email:
+    candidate = fresh.details.get("storefront_recipient")
+    if candidate:
+        ask = templates.storefront_lead_email(candidate["name"], candidate["phone"])
+    elif last is not None and last.email:
         ask = templates.ask_last_recipient(last.name, last.phone, last.email, button=shows)
-    elif recipient:
-        ask = templates.storefront_lead_email(*recipient)
     else:
         ask = templates.STOREFRONT_LEAD_ALL
     cost = fresh.delivery_cost or 0
@@ -548,6 +556,14 @@ async def _lead_with_cheapest(
     )
     await geo.note_shown(peer_id, keyboard, "storefront")
     return True
+
+
+def _same_person(recipient: tuple[str, str], last) -> bool:
+    """Получатель из формы — тот же, что в прошлом заказе: имя и телефон совпали."""
+    name = " ".join((recipient[0] or "").casefold().replace("ё", "е").split())
+    last_name = " ".join((last.name or "").casefold().replace("ё", "е").split())
+    same_phone = contacts.normalize_phone(recipient[1] or "") == contacts.normalize_phone(last.phone or "")
+    return bool(name) and same_phone and (name == last_name or set(name.split()) <= set(last_name.split()))
 
 
 async def _quote_both(draft: OrderDraft, city: str, street: str) -> list[dict]:
