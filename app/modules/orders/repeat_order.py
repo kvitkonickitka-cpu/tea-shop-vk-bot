@@ -117,11 +117,13 @@ async def repeat_order(peer_id: int, source_order_id: int):
         if recipient is not None and offer is not None and offer.recipient_ok:
             note += " " + repeat_delivery.recipient_suggestion(recipient)
         draft.details["repeat_note"] = note
+        draft.details["origin"] = "repeat"
         await state.set_draft(peer_id, draft)
         await funnel.record(peer_id, "draft_created", origin="repeat", repeat_of=order.id)
         return ToolExecution(note)
 
     offers.apply(draft, offer)
+    draft.details["origin"] = "repeat"
     await state.set_draft(peer_id, draft)
     await funnel.record(peer_id, "draft_created", origin="repeat", repeat_of=order.id)
     invoiced = await conversation._auto_invoice(peer_id, source="invoice_repeat")

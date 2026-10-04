@@ -710,7 +710,7 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         )
     was_draft = live is not None or await state.get_draft(peer_id) is not None
     upsell_line = _offer_upsell(draft, catalog)
-    await state.set_draft(peer_id, draft)
+    origin = None
     if not was_draft:
         # Откуда черновик: «беру» словами, «Взять», «Повторить», витрина —
         # источник ставит тот, кто вызвал (кнопка, повтор), иначе — текст.
@@ -718,6 +718,10 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         if origin is None:
             # Постоянный клиент — отдельный канал: у него свой короткий путь.
             origin = "returning" if await repeat_delivery.last_for(peer_id) is not None else funnel.current_source()
+        # В деталях — для канала заказа в аналитике: детали переходят в заказ.
+        draft.details["origin"] = origin
+    await state.set_draft(peer_id, draft)
+    if origin is not None:
         await funnel.record(peer_id, "draft_created", origin=origin)
     if draft.details.get("upsell_item"):
         await funnel.record(peer_id, "upsell_offered", source_=funnel.CODE, item=draft.details["upsell_item"])

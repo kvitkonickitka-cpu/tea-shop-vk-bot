@@ -172,3 +172,14 @@ async def init_models() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
+        return
+
+    # Схема для DataLens — отдельной транзакцией: если представления не
+    # пересоздались, бот работает как работал, а не уходит в резервный режим.
+    from app.modules.analytics import views as analytics_views
+
+    try:
+        async with _engine.begin() as conn:
+            await analytics_views.create(conn)
+    except Exception:
+        logger.exception("Не пересоздали схему analytics для DataLens")

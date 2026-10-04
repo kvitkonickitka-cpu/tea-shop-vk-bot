@@ -213,6 +213,7 @@ async def handle_new_order(order_event: dict[str, Any]) -> None:
     if address:
         draft.details["vk_order_address"] = address
     draft.details["vk_order_id"] = order_id
+    draft.details["origin"] = "storefront"
 
     await state.set_draft(user_id, draft)
     from app.messages import funnel
