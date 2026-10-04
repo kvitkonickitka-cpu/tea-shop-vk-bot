@@ -189,6 +189,7 @@ def invoice_summary(
     eta: str = "",
     button: bool = False,
     surcharge: bool = False,
+    point_note: bool = False,
 ) -> str:
     """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
 
@@ -200,7 +201,8 @@ def invoice_summary(
     почта полностью — опечатку в ней надо увидеть до оплаты, чек уйдёт туда.
     """
     head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
-    lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge)]
+    lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge,
+                                 point_note)]
     lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button)
     return "\n".join(lines)
 
@@ -213,7 +215,8 @@ def _delivery_cost_text(delivery_cost, surcharge: bool = False) -> str:
     return f"доплата {amount(delivery_cost)} ₽" if surcharge else f"{amount(delivery_cost)} ₽"
 
 
-def _order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge=False) -> list[str]:
+def _order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge=False,
+                 point_note=False) -> list[str]:
     """Состав, доставка и срок — первый абзац сводки со ссылкой."""
     lines = []
     for item in items:
@@ -224,6 +227,9 @@ def _order_block(items, delivery_method, delivery_label, delivery_cost, eta, sur
         )
     cost = _delivery_cost_text(delivery_cost, surcharge)
     lines.append(f"Доставка: {delivery_place(delivery_method, delivery_label)} — {cost}")
+    if point_note:
+        # Пункт записан без вопроса — единственный на улице: даём поменять.
+        lines.append(SINGLE_POINT_NOTE)
     if eta:
         lines.append(f"Срок: {eta}")
     return lines
@@ -669,6 +675,27 @@ def geo_points(*, carrier: str, shown: list[dict], per_point_prices: bool, deliv
     if hint:
         lines.append(hint)
     return "\n".join(lines)
+
+
+def single_point(*, street: str, carrier: str, address: str, delivery_cost, surcharge: bool, when: str,
+                 email_only: bool = False) -> str:
+    """На улице один пункт: записан, просим данные — и сразу счёт на него."""
+    cost = _delivery_cost_text(delivery_cost, surcharge)
+    data = "Пришлите почту" if email_only else "Пришлите почту (или ФИО, телефон и почту)"
+    return (
+        f"На улице {street} один пункт {carrier}: {points_short(address)} — {cost}"
+        + (f", {when}" if when else "") + f". {data} — сразу пришлю счёт на этот пункт. "
+        "Нужен другой — напишите улицу."
+    )
+
+
+def points_short(address: str) -> str:
+    from app.modules.orders import points
+
+    return points.short(address, 80)
+
+
+SINGLE_POINT_NOTE = "Если пункт не тот — напишите, поменяю."
 
 
 def geo_nothing_near(carrier: str, radius_km: float) -> str:

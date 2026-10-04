@@ -119,7 +119,9 @@ async def test_city_only_in_a_small_town_shows_all(clean, ozon, monkeypatch):
     assert len((await state.get_draft(PEER)).details["shown_points"]) == 3
 
 
-async def test_single_found_point_is_not_fixed(clean, ozon):
+async def test_single_found_point_is_not_fixed(clean, ozon, monkeypatch):
+    # Прежнее правило — при выключенном «один пункт на улице — сразу счёт».
+    monkeypatch.setattr(settings, "single_point_instant_enabled", False)
     await fresh_draft()
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Лузана 40"}

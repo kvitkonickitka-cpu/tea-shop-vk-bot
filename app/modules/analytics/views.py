@@ -139,6 +139,7 @@ EVENTS = [
     ("storefront_vk_delivery", "Способ доставки, выбранный в «Товарах»", None, "Заказ"),
     ("geo_button_shown", "Показана кнопка геопозиции", None, "Заказ"),
     ("geo_sent", "Геопозиция отправлена", None, "Заказ"),
+    ("invoice_single_point", "Счёт сразу: на улице один пункт", None, "Счёт"),
 ]
 
 CHANNELS = {
