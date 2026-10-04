@@ -17,7 +17,6 @@ priority,field,match_type,value,direction,amount_min,amount_max,article_id,activ
 40,counterparty_name,contains,юмани,in,,,cfo_in_yookassa,true,Выплаты ЮKassa приходят нетто
 41,counterparty_name,contains,юкасса,in,,,cfo_in_yookassa,true,
 42,purpose,contains,yookassa,in,,,cfo_in_yookassa,true,
-45,purpose,contains,YANDEX7372OBLAKO,in,,,cfo_in_direct,true,Оплаты покупателей через терминал Яндекс (SBP); при смене терминала поправить номер в value
 50,counterparty_name,contains,интернет решения,in,,,cfo_in_ozon,true,Юрлицо Ozon — проверьте на своей выписке
 51,counterparty_name,contains,озон,in,,,cfo_in_ozon,true,
 52,counterparty_name,contains,озон,out,,,cfo_out_ozon_services,true,Счета от Ozon за услуги
@@ -37,6 +36,8 @@ priority,field,match_type,value,direction,amount_min,amount_max,article_id,activ
 100,counterparty_name,contains,яндекс,out,,,cfo_out_services,true,Yandex Cloud
 101,counterparty_name,contains,anthropic,out,,,cfo_out_services,true,Claude API
 102,purpose,contains,подписка,out,,,cfo_out_services,true,
+103,purpose,contains,YANDEX7372OBLAKO,out,,,cfo_out_services,true,Карточная оплата Yandex Cloud без имени получателя в выписке
+104,purpose,contains,aeza,out,,,cfo_out_services,true,Хостинг Aeza — карточная оплата без имени получателя
 110,purpose,contains,возврат покупателю,out,,,cfo_out_refunds,true,
 111,purpose,contains,возврат денежных средств,out,,,cfo_out_refunds,true,
 200,counterparty_name,contains,ЗАПОЛНИТЬ ФИО НИКИТЫ,out,,,cff_owner_draw_nikita,false,Включите и впишите ФИО как оно приходит в выписке

@@ -208,6 +208,24 @@ def test_person_counterparty_is_masked_in_views(conn):
     assert inn is None
 
 
+def test_unknown_counterparty_is_not_mislabeled_as_person(conn):
+    """Карточный платёж без recipientName/recipientInn (counterparty_kind='unknown')
+    не должен подписываться как «Покупатель (физлицо)» — там нет физлица, просто
+    банк не прислал получателя. Полный purpose нужен, чтобы отличить такие платежи
+    от настоящих неизвестных покупателей."""
+    importer.import_all(conn, DATA_DIR)
+    add_operation(conn, "card-1", date(2025, 2, 3), "out", "975.58",
+                  purpose="Оплата в YANDEX0000TEST")
+    classify.run_classify(conn)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT counterparty_name, purpose FROM finance.v_unclassified "
+                    "WHERE operation_id = 'card-1'")
+        name, purpose = cur.fetchone()
+    assert name is None
+    assert purpose == "Оплата в YANDEX0000TEST"
+
+
 DATALENS_DSN = os.environ.get("CASHFLOW_TEST_DSN_RO", "")
 
 

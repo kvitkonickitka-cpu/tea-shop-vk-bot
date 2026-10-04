@@ -49,33 +49,51 @@ def _load_real_rules_and_articles() -> tuple[list[Rule], dict[str, Article]]:
     return rules, articles
 
 
-def test_yandex_terminal_payment_is_direct_customer_revenue():
-    """Оплаты физлиц через терминал Яндекс должны попадать в CFO-выручку, не в «Не разобрано»."""
+def test_yandex_cloud_card_payment_is_services_expense():
+    """Карточная оплата Yandex Cloud (без имени получателя в выписке) — расход на сервисы,
+    а не выручка: это списание со счёта (direction=out), хотя из-за отсутствия
+    recipientName/recipientInn она выглядит в сырых данных как «неизвестный контрагент».
+    """
     rules, articles = _load_real_rules_and_articles()
     op = make_operation(
         operation_id="yx-1",
-        direction="in",
-        amount=Decimal("5990.00"),
+        direction="out",
+        amount=Decimal("975.58"),
         operation_date=date(2026, 9, 25),
-        counterparty_name="Сидоров Пётр Иванович",
-        counterparty_inn="771234567890",
+        counterparty_name=None,
+        counterparty_inn=None,
         purpose="Оплата в YANDEX7372OBLAKO",
     )
     rows = classify_operation(op, rules, articles, {}, [])
     assert len(rows) == 1
-    assert rows[0].article_id == "cfo_in_direct"
+    assert rows[0].article_id == "cfo_out_services"
     assert rows[0].classified_by == "rule"
 
 
-def test_unrelated_yandex_cloud_expense_is_not_affected():
-    """Правило про YANDEX7372OBLAKO не должно задевать расходы на Yandex Cloud (другое направление)."""
+def test_aeza_hosting_card_payment_is_services_expense():
     rules, articles = _load_real_rules_and_articles()
     op = make_operation(
-        operation_id="yc-1",
+        operation_id="az-1",
         direction="out",
-        amount=Decimal("1200.00"),
-        counterparty_name='ООО "Яндекс.Облако"',
-        purpose="Подписка Yandex Cloud",
+        amount=Decimal("630.00"),
+        operation_date=date(2026, 10, 5),
+        counterparty_name=None,
+        counterparty_inn=None,
+        purpose="YM*aeza grupp",
     )
     rows = classify_operation(op, rules, articles, {}, [])
     assert rows[0].article_id == "cfo_out_services"
+
+
+def test_incoming_payment_with_same_text_is_not_guessed_as_revenue():
+    """На всякий случай: правила по purpose ограничены direction=out, входящую операцию
+    с тем же текстом назначения они не должны трогать (а не угадывать статью)."""
+    rules, articles = _load_real_rules_and_articles()
+    op = make_operation(
+        operation_id="in-1",
+        direction="in",
+        amount=Decimal("975.58"),
+        purpose="Оплата в YANDEX7372OBLAKO",
+    )
+    rows = classify_operation(op, rules, articles, {}, [])
+    assert rows[0].article_id == "tech_unclassified"
