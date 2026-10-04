@@ -122,3 +122,38 @@ async def test_canceling_a_storefront_order_names_it_and_tells_the_manager(clean
     await say("отмените заказ", 2)
     assert shop["sent"][-1][0].startswith("Отменила заказ №820826 — оплачивать его не нужно.")
     assert any("Отмените его в разделе «Заказы»" in card and "№820826" in card for card in shop["manager"])
+
+
+async def test_address_from_a_later_source_completes_the_order(clean, shop):
+    """04.10.2026: событие без города завело заказ, «Новый заказ» с адресом отбросили."""
+    from tests.test_storefront_vk_flow import labels as names
+
+    await keyboards.remember_client(PEER, FULL)
+    await orders_service.start_order(PEER, 820826, items=[{"name": "Дянь Хун // 100 грамм", "quantity": 1,
+                                                           "price": 1500.0}],
+                                     address="", recipient=None, source="market_order_new")
+    assert shop["sent"][-1][0].endswith("В какой город везём?")
+    await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
+    text, board = shop["sent"][-1]
+    assert "Дешевле всего — пункт выдачи Ozon: доставка 121 ₽" in text
+    assert "Получатель из заказа: Nikita Kvitko, +79214477622" in text
+    assert "Нужно быстрее — СДЭК" in names(board)
+    # Третий источник ничего не шлёт.
+    sent = len(shop["sent"])
+    await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
+    assert len(shop["sent"]) == sent
+
+
+async def test_late_address_is_ignored_once_the_client_answered(clean, shop):
+    from app.modules.orders import state
+
+    await keyboards.remember_client(PEER, FULL)
+    await orders_service.start_order(PEER, 820826, items=[{"name": "Дянь Хун // 100 грамм", "quantity": 1,
+                                                           "price": 1500.0}],
+                                     address="", recipient=None, source="market_order_new")
+    draft = await state.get_draft(PEER)
+    draft.delivery_method = "cdek_pvz"
+    await state.set_draft(PEER, draft)
+    sent = len(shop["sent"])
+    await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
+    assert len(shop["sent"]) == sent

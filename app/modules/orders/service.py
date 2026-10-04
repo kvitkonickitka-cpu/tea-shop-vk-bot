@@ -168,6 +168,10 @@ async def tell_manager_canceled(order_id: int, user_id: int) -> None:
 
 # Сколько ждать сообщения группе с корзиной, если в событии состава нет.
 _UNPARSED_WAIT_SECONDS = 5
+# Сколько источнику без адреса ждать соседей. 04.10.2026 заказ завело
+# событие без города, а «Новый заказ… Адрес доставки: Краснодар» пришло
+# вторым и было отброшено: клиент получил «В какой город везём?» без цены.
+_NO_ADDRESS_WAIT_SECONDS = 4
 
 
 async def handle_new_order(order_event: dict[str, Any]) -> None:
@@ -382,8 +386,16 @@ async def start_order(
     if not items:
         logger.info("Заказ витрины %s (%s): состава нет, ждём другой источник", order_id, source)
         return
+    if not address.strip():
+        # Источник без адреса уступает: соседний (уведомление «Новый заказ»
+        # с адресом) приходит почти одновременно и заведёт заказ полнее.
+        await asyncio.sleep(_NO_ADDRESS_WAIT_SECONDS)
     if not await client_messages.claim_once(f"vk_order:{order_id}", "storefront_started", peer_id):
-        logger.info("Заказ витрины %s уже заведён, источник %s не нужен", order_id, source)
+        if address.strip():
+            # Заказ уже завёл источник без адреса — достраиваем его городом.
+            await _complete_with_address(peer_id, order_id, address, recipient, source)
+        else:
+            logger.info("Заказ витрины %s уже заведён, источник %s не нужен", order_id, source)
         return
 
     from app.messages import funnel
@@ -464,9 +476,45 @@ async def start_order(
                         "Клиенту предложено выбрать доставку в диалоге.")
 
 
+async def _complete_with_address(
+    peer_id: int, order_id: int, address: str, recipient: tuple[str, str] | None, source: str,
+) -> None:
+    """Заказ завёл источник без адреса, а этот адрес принёс — сразу доставка по нему.
+
+    Только пока черновик ждёт ответа на «в какой город?»: если клиент уже
+    ответил или доставку выбрали, второе сообщение было бы лишним.
+    """
+    draft = await state.get_draft(peer_id)
+    details = (draft.details if draft is not None else {}) or {}
+    if (draft is None or details.get("vk_order_id") != order_id or draft.delivery_method
+            or details.get("storefront_city")):
+        logger.info("Заказ витрины %s уже заведён, источник %s не нужен", order_id, source)
+        return
+    parsed = address_parser.city_and_street(address)
+    if not parsed or not parsed[0]:
+        return
+    city, street = parsed
+    details.update({"vk_order_address": address, "storefront_city": city, "storefront_street": street})
+    if recipient and not details.get("storefront_recipient"):
+        from app.modules.orders import repeat_delivery
+
+        last = await repeat_delivery.last_recipient_for(peer_id)
+        if not (last is not None and last.email and _same_person(recipient, last)):
+            details["storefront_recipient"] = {"name": recipient[0], "phone": recipient[1]}
+    await state.set_draft(peer_id, draft)
+    logger.info("Заказ витрины %s: адрес пришёл из источника %s — досчитываем доставку", order_id, source)
+    options = await _quote_both(draft, city, street)
+    if options and await _lead_with_cheapest(
+        peer_id, order_id, draft.items, draft.items_total, city, street, options, recipient, "",
+        event_type=templates.STOREFRONT_ORDER_ADDRESS,
+    ):
+        await _tell_manager(order_id, peer_id, "Адрес пришёл вторым источником — клиенту отправлен расчёт доставки.")
+
+
 async def _lead_with_cheapest(
     peer_id: int, order_id: int, items: list[dict], items_total: float, city: str, street: str,
     options: list[dict], recipient: tuple[str, str] | None, vk_delivery: str,
+    event_type: str = templates.STOREFRONT_ORDER,
 ) -> bool:
     """Первое сообщение по заказу из «Товаров» — сразу по самому дешёвому варианту.
 
@@ -556,7 +604,7 @@ async def _lead_with_cheapest(
         hint=hint if shows and shown else "", geo=shows and geo.has_button(keyboard),
     )
     await client_messages.send(
-        peer_id=peer_id, ref=f"vk_order:{order_id}", event_type=templates.STOREFRONT_ORDER,
+        peer_id=peer_id, ref=f"vk_order:{order_id}", event_type=event_type,
         text=text, keyboard=keyboard,
     )
     await geo.note_shown(peer_id, keyboard, "storefront")
