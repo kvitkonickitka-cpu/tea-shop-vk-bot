@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import html
 import io
 import logging
 import re
@@ -63,6 +64,9 @@ _COLUMNS = {
     "описание": "description",
     "с чем советуем": "recommended",
     "синонимы": "synonyms",
+    "как заваривать": "brewing",
+    "заварка": "brewing",
+    "видео": "video",
     "другие названия": "synonyms",
 }
 _REQUIRED = ("name", "price")
@@ -75,6 +79,33 @@ _NO = {"нет", "0", "-", "no", "false", "нет в наличии"}
 class Parsed:
     items: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Ошибки в необязательных столбцах (заварка, видео): таблица применяется,
+    # строка — без этого поля, менеджеру предупреждение.
+    warnings: list[str] = field(default_factory=list)
+
+
+BREWING_MAX_CHARS = 300
+
+
+def _brewing(values: dict, where: str, warnings: list[str]) -> tuple[str, str]:
+    """«Как заваривать» и «Видео» строки — или пусто, если с ошибкой.
+
+    Заварка нужна только сообщению «вручено»; из-за длинного текста или
+    ссылки без https бот не должен откатываться на прошлую версию всей
+    таблицы — продажи важнее подсказки.
+    """
+    brewing = " ".join((values.get("brewing") or "").split())
+    video = (values.get("video") or "").strip()
+    if len(brewing) > BREWING_MAX_CHARS:
+        warnings.append(
+            f"{where}: «Как заваривать» — {len(brewing)} символов, а можно до "
+            f"{BREWING_MAX_CHARS}; строка применена без заварки"
+        )
+        brewing = ""
+    if video and not video.startswith("https://"):
+        warnings.append(f"{where}: «Видео» — ссылка должна начинаться с https://; применено без видео")
+        video = ""
+    return brewing, video
 
 
 def _price(raw: str) -> float | None:
@@ -170,6 +201,8 @@ def parse_csv(text: str) -> Parsed:
                 for part in values.get("recommended", "").split(",")
                 if part.strip()
             ],
+            # Как заваривать — для сообщения «вручено».
+            **dict(zip(("brewing", "video"), _brewing(values, where, result.warnings))),
             # Как ещё называют товар — чтобы кнопка «Взять» нашла его в
             # ответе модели, написанном не по таблице.
             "synonyms": [
@@ -314,9 +347,32 @@ async def refresh(*, force: bool = False) -> dict:
         await session.commit()
 
     _remember(parsed.items, source_hash)
-    return {
+    if parsed.warnings:
+        await _warn(parsed.warnings)
+    result = {
         "applied": True,
         "changed": changed,
         "товаров": len(parsed.items),
         "в наличии": sum(1 for item in parsed.items if item["in_stock"]),
     }
+    if parsed.warnings:
+        result["предупреждения"] = parsed.warnings
+    return result
+
+
+async def _warn(warnings: list[str]) -> None:
+    """⚠️ менеджеру — один раз на каждый новый набор предупреждений.
+
+    Отметка — в журнале «одно событие — одно сообщение»: тик читает таблицу
+    каждые пять минут, и без неё предупреждение приходило бы так же часто.
+    """
+    from app.messages import client as client_messages
+
+    if not await client_messages.claim_once(f"catalog_warning:{_hash('; '.join(warnings))}", "catalog_warning", 0):
+        return
+    await manager_messages.notify(
+        manager_messages.CATALOG_SHEET,
+        "⚠️ <b>Таблица каталога применена, но не целиком</b>\n"
+        + "\n".join(f"• {html.escape(warning)}" for warning in warnings[:15])
+        + ("\n…" if len(warnings) > 15 else ""),
+    )

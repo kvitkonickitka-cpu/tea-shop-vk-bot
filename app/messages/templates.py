@@ -381,11 +381,19 @@ def handed_over(order, *, carrier: str, number: str = "", tracking_url: str = ""
     return "\n".join(lines)
 
 
-def delivered(order, *, receipt_email: str = "") -> str:
+def delivered(
+    order, *, receipt_email: str = "", brewing: list[dict] | None = None,
+    guide_url: str = "", ask_feedback: bool = True,
+) -> str:
     """Посылка вручена.
 
     Про закрывающий чек предупреждаем заранее: второе письмо из ЮKassa по
     уже оплаченному заказу иначе выглядит как повторное списание.
+
+    `brewing` — как заваривать купленное (до двух товаров: название, текст,
+    видео). Блок заварки встаёт на место «напишите, как вам чай»: об этом
+    через несколько дней спросит оценка кнопками. Без заварки строка
+    остаётся, если отдельной оценки нет (`ask_feedback`).
     """
     lines = [f"Заказ №{order.id} вручён — спасибо, что выбрали нас! 🍵"]
     if receipt_email:
@@ -393,7 +401,17 @@ def delivered(order, *, receipt_email: str = "") -> str:
             f"На {receipt_email} придёт итоговый чек о получении товара. Это не "
             "новое списание, а закрывающий документ к уже оплаченному заказу."
         )
-    lines.append("Будет здорово, если напишете, как вам чай.")
+    if brewing:
+        lines.append("")
+        lines.append("Как заваривать:")
+        for block in brewing:
+            lines.append(f"• {block['name']}: {block['text']}")
+            if block.get("video"):
+                lines.append(f"  Видео: {block['video']}")
+        if guide_url:
+            lines.append(f"Все способы заварки: {guide_url}")
+    elif ask_feedback:
+        lines.append("Будет здорово, если напишете, как вам чай.")
     return "\n".join(lines)
 
 

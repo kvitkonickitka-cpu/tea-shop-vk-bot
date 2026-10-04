@@ -21,9 +21,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select, update
 
 from app.core import worktime
+from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages import client as client_messages, templates
-from app.modules.orders import order_chat, repository as orders_repository
+from app.modules.orders import order_chat, repository as orders_repository, take
 from app.modules.orders.models import Order
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,44 @@ def _latest_event(order: Order) -> str | None:
     return None
 
 
+_BREWING_ITEMS = 2
+
+
+def _brewing_for(order: Order) -> dict:
+    """Как заваривать купленное — из столбцов таблицы «Как заваривать» и «Видео».
+
+    Сервисная часть сообщения «вручено», а не продажа: отписка «стоп» на
+    неё не действует. До двух товаров с заполненной заваркой; в заказе
+    больше двух сортов — ещё ссылка на общий пост, если он задан.
+    """
+    if not settings.brewing_in_delivered_enabled:
+        return {}
+    from app.modules.catalog import service as catalog_service
+
+    try:
+        catalog = catalog_service.load_items()
+    except Exception:
+        logger.exception("Заказ %s: каталог для заварки не прочитан", order.id)
+        return {}
+    names = []
+    for item in order.items or []:
+        name = item.get("name")
+        if name and name not in names:
+            names.append(name)
+    blocks = []
+    for name in names:
+        match = catalog_service.find_item(name, catalog)
+        if match and match.get("brewing"):
+            blocks.append({"name": take.display_name(match["name"]), "text": match["brewing"],
+                           "video": match.get("video") or ""})
+        if len(blocks) == _BREWING_ITEMS:
+            break
+    if not blocks:
+        return {}
+    guide = settings.brewing_guide_url if len(names) > _BREWING_ITEMS else ""
+    return {"brewing": blocks, "guide_url": guide}
+
+
 async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
     """Сказать клиенту о последнем событии доставки. True — написали.
 
@@ -220,6 +259,7 @@ async def tell_client(order: Order, *, now: datetime | None = None) -> bool:
         text = templates.delivered(
             order,
             receipt_email=details.get("recipient_email", "") if settlement.was_sent(order) else "",
+            **_brewing_for(order),
         )
         event_type = templates.DELIVERED
     else:

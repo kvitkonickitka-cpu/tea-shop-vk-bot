@@ -203,6 +203,12 @@ class Settings(BaseSettings):
     repeat_nudge_shelf_days: int = 7
     repeat_nudge_enabled: bool = True
 
+    # «Как заваривать» в сообщении «вручено»: из столбцов таблицы «Как
+    # заваривать» и «Видео». Больше двух товаров в заказе — ещё ссылка на
+    # общий пост о заварке, если он задан.
+    brewing_in_delivered_enabled: bool = True
+    brewing_guide_url: str = ""
+
     # Повторные касания после вручения (`orders/retention.py`) — общие правила.
     # Пауза между любыми двумя продающими касаниями одному клиенту.
     marketing_min_gap_days: float = 3
