@@ -25,7 +25,11 @@ ORDER = NS(
 PAYMENT = NS(id="2f5c…a71", amount=NS(value="917.00"), status="succeeded")
 REFUND = NS(id="3a1b…c02", amount={"value": "917.00", "currency": "RUB"}, status="succeeded")
 
+_OPTION = {"method": "ozon_pvz", "carrier": "Ozon", "client_cost": 121, "eta_phrase": "≈ 7 дней"}
 SAMPLES = {
+    "option": _OPTION, "options": [_OPTION], "shown": [{"n": 1, "address": "Красная, 176"}],
+    "recipient": {"name": "Иванов Иван", "phone": "+79001234567"}, "asked": False,
+    "last": None, "button": True,
     "order": ORDER, "payment": PAYMENT, "refund": REFUND, "items": ORDER.items,
     "address": "Краснодар, Ставропольская, 230", "approximate": False, "carrier": "СДЭК",
     "carrier_status": "СДЭК: Не вручен (NOT_DELIVERED)", "cdek": False, "consent": "yes",

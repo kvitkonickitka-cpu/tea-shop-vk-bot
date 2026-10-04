@@ -14,7 +14,7 @@ from app import privacy
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_client, ozon_quote
-from app.messages import funnel, manager as manager_messages, marketing, templates
+from app.messages import client as client_messages, funnel, manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
     claude_client,
@@ -33,6 +33,7 @@ from app.modules.orders import points
 from app.modules.orders import purchases
 from app.modules.orders import repeat_delivery
 from app.modules.orders import repeat_order as repeat_one_tap
+from app.modules.orders import service as orders_service
 from app.modules.orders import shipping
 from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
@@ -571,6 +572,20 @@ def _describe_draft(draft: OrderDraft | None) -> str:
         when = eta.phrase(draft.details)
         if when:
             lines.append(f"Срок доставки (называй только так): {when}")
+
+    quotes = draft.details.get("storefront_quotes")
+    if quotes and not draft.delivery_method:
+        offered = "; ".join(
+            f"{q['carrier']} ({q['method']}) — {templates.amount(q['client_cost'])} ₽, {q.get('eta_phrase') or 'срок не известен'}"
+            for q in quotes
+        )
+        lines.append(
+            f"Заказ из «Товаров»: клиенту предложены кнопками варианты доставки в "
+            f"{draft.details.get('storefront_city')}: {offered}. Выберет словами — вызови "
+            f"set_delivery_method с этим method, address=«{draft.details.get('storefront_city')}»"
+            + (f", pickup_point=«{draft.details['storefront_street']}»" if draft.details.get("storefront_street") else "")
+            + ". Почту проси прямо: она нужна, чтобы отправить чек об оплате."
+        )
 
     candidate = draft.details.get("storefront_recipient")
     if candidate and not draft.details.get("recipient_name"):
@@ -2198,6 +2213,17 @@ _ATTACHMENT_PROMPT = (
 )
 
 
+# Шаблонный вопрос ВК «как оплатить заказ и когда сможете доставить?» пришёл,
+# а сам заказ из «Товаров» — нет (событие задержалось или не дошло).
+_STOREFRONT_PENDING = (
+    "Клиент прислал шаблонный вопрос ВКонтакте «как оплатить заказ и когда сможете "
+    "доставить?» — его отправляют, оформив заказ в разделе «Товары» сообщества. Сам "
+    "заказ к нам пока не пришёл. Скажи, что видишь заказ из «Товаров» и сейчас пришлёшь "
+    "варианты доставки; если в истории нет состава и города — попроси назвать номер заказа "
+    "или что заказано и город. Не говори, что заказа нет или он отменён."
+)
+
+
 # Метки вместо персональных данных (app/privacy). Модель не знает значений,
 # и это нормально: код подставит их сам — в ответ клиенту и в инструменты.
 _PII_PROMPT = (
@@ -2324,6 +2350,23 @@ async def _handle_turn(
 
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
+    storefront_note = ""
+    if (
+        (draft is None or draft.details.get("vk_order_id"))
+        and not (attached and attached.any)
+        and orders_service.looks_like_order_question(user_text)
+    ):
+        # Шаблонный вопрос ВК после заказа в «Товарах» приходит раньше самого
+        # заказа: ждём его, иначе модель ответит, не зная про заказ.
+        draft = await orders_service.wait_for_order(peer_id)
+        order_id = draft.details.get("vk_order_id") if draft else None
+        if order_id and await orders_service.offered_recently(order_id):
+            # Ответ на вопрос — предложение доставки — уже у клиента.
+            await dialog_history.append_message(peer_id, "user", user_text)
+            logger.info("peer_id=%s: шаблонный вопрос о заказе %s — ответ уже отправлен", peer_id, order_id)
+            return ""
+        if draft is None:
+            storefront_note = _STOREFRONT_PENDING
 
     system_prompt = _BASE_SYSTEM_PROMPT
     if privacy.is_enabled():
@@ -2391,6 +2434,8 @@ async def _handle_turn(
 
     if stop_note:
         system_prompt += f"\n\n{stop_note}"
+    if storefront_note:
+        system_prompt += f"\n\n{storefront_note}"
 
     escalation_note = await _describe_escalation(peer_id)
     if escalation_note:

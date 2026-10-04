@@ -50,15 +50,21 @@ def shop(world, monkeypatch):
     async def to_manager(text, chat_id=None):
         world["manager"].append(text)
 
-    async def get_order(order_id):
+    async def get_order(order_id, user_id=None):
         return world["order"]
 
-    async def get_items(order_id):
+    async def get_items(order_id, user_id=None):
         return [{"item": {"title": "Те Гуань Инь (тест)"}, "quantity": 1, "price": {"amount": "150000"}}]
 
     monkeypatch.setattr(manager_messages.telegram_client, "send_message", to_manager)
     monkeypatch.setattr(vk_orders_client, "get_order", get_order)
     monkeypatch.setattr(vk_orders_client, "get_order_items", get_items)
+
+    async def no_quotes(draft, city, street):
+        return []
+
+    # Пункты сразу — запасной путь, когда Ozon и СДЭК до города не посчитались.
+    monkeypatch.setattr(orders_service, "_quote_both", no_quotes)
     return world
 
 
@@ -96,7 +102,8 @@ async def test_recipient_from_the_order_asks_only_email(clean, shop):
     assert await privacy.detokenize(PEER, said) == text
     async with clean() as session:
         notices = (await session.execute(select(ClientNotice.event_type))).scalars().all()
-    assert notices == [templates.STOREFRONT_ORDER]
+    # Отметка «заказ заведён» — одна на заказ, сообщение клиенту — одно.
+    assert sorted(notices) == sorted(["storefront_started", templates.STOREFRONT_ORDER])
     assert shop["manager"] and "№77" in shop["manager"][-1]
 
     # Пункт — кнопкой: просим только почту.

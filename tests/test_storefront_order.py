@@ -24,7 +24,7 @@ def channels(monkeypatch):
     async def to_manager(text, chat_id=None):
         box["manager"].append(text)
 
-    async def get_order(order_id):
+    async def get_order(order_id, user_id=None):
         return {
             "id": order_id, "user_id": USER,
             "total_price": {"amount": 160000},
@@ -34,11 +34,18 @@ def channels(monkeypatch):
     monkeypatch.setattr(orders_service.vk_client, "send_message", to_client)
     monkeypatch.setattr(manager_messages.telegram_client, "send_message", to_manager)
     monkeypatch.setattr(vk_orders_client, "get_order", get_order)
+
+    async def no_quotes(draft, city, street):
+        return []
+
+    # Здесь — запасной путь: перевозчики до города не посчитались.
+    monkeypatch.setattr(orders_service, "_quote_both", no_quotes)
+    monkeypatch.setattr(orders_service, "_UNPARSED_WAIT_SECONDS", 0)
     return box
 
 
 async def test_storefront_order_becomes_a_draft(clean, channels, monkeypatch):
-    async def get_items(order_id):
+    async def get_items(order_id, user_id=None):
         return [
             {"item": {"title": "Те Гуань Инь", "price": {"amount": "80000"}},
              "quantity": 2, "price": {"amount": "160000"}},
@@ -51,7 +58,8 @@ async def test_storefront_order_becomes_a_draft(clean, channels, monkeypatch):
 
     draft = await state.get_draft(USER)
     assert draft is not None and draft.stage == "awaiting_delivery"
-    assert draft.items == [{"name": "Те Гуань Инь", "quantity": 2, "price": 800.0}]
+    # Название из ВК узнано в каталоге — в заказ идёт каталожное: по нему GTIN и чек.
+    assert draft.items == [{"name": "Те Гуань Инь (тест)", "quantity": 2, "price": 800.0}]
     assert draft.items_total == 1600.0
     assert draft.details["vk_order_id"] == 41
     assert "Ставропольская" in draft.details["vk_order_address"]
@@ -78,7 +86,7 @@ async def test_unparsed_items_do_not_lose_the_order(clean, channels, monkeypatch
 
 
 async def test_unit_price_falls_back_to_the_line_total(clean, channels, monkeypatch):
-    async def get_items(order_id):
+    async def get_items(order_id, user_id=None):
         return [{"item": {"title": "Да Хун Пао"}, "quantity": 2, "price": {"amount": "220000"}}]
 
     monkeypatch.setattr(vk_orders_client, "get_order_items", get_items)

@@ -649,6 +649,62 @@ def storefront_ask_point(*, order_id, items: list[dict], items_total, city: str,
     ])
 
 
+def storefront_carriers(*, order_id, items: list[dict], items_total, city: str, options: list[dict],
+                        button: bool) -> str:
+    """Заказ из «Товаров»: два перевозчика до города клиента — выбор кнопкой.
+
+    Отвечает и на шаблонный вопрос ВК «как оплатить заказ и когда сможете
+    доставить?»: сроки — здесь, оплата — ссылкой после выбора доставки.
+    """
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    lines = [f"Заказ №{order_id} принят: {listed} — {amount(items_total)} ₽.", "", f"Доставка в {city}:"]
+    for option in options:
+        cost = "бесплатно" if not option["client_cost"] else f"{amount(option['client_cost'])} ₽"
+        when = f", {option['eta_phrase']}" if option.get("eta_phrase") else ""
+        lines.append(f"• {option['carrier']}, пункт выдачи — {cost}{when}")
+    lines += [
+        "",
+        "Оплата — онлайн по ссылке: выберите доставку и пункт, пришлите почту для чека, "
+        "и я сразу пришлю ссылку на оплату.",
+        "Выберите доставку кнопкой ниже 👇" if button else "Напишите, какую доставку выбираете: Ozon или СДЭК.",
+    ]
+    return "\n".join(lines)
+
+
+def carrier_button(option: dict) -> str:
+    cost = "бесплатно" if not option["client_cost"] else f"{amount(option['client_cost'])} ₽"
+    return f"{option['carrier']} — {cost}"
+
+
+def storefront_carrier_chosen(*, carrier: str, city: str, delivery_cost, eta: str, shown: list[dict],
+                              asked: bool, recipient: dict | None, hint: str = "",
+                              last: tuple[str, str, str] | None = None, button: bool = True) -> str:
+    """Перевозчик выбран: пункт и почта для чека — и сразу счёт."""
+    cost = "бесплатно" if not delivery_cost else f"{amount(delivery_cost)} ₽"
+    lines = [f"{carrier}, пункт выдачи — {cost}" + (f", {eta}." if eta else ".")]
+    if asked:
+        lines += ["", ask_point_address(carrier)]
+    else:
+        lines += ["", f"Пункты выдачи {carrier} в городе {city}:"]
+        lines += [f"{point['n']}) {point['address']}" for point in shown]
+    lines.append("")
+    if last:
+        lines.append(ask_last_recipient(*last, button=button))
+    elif recipient:
+        lines.append(
+            f"Получатель из заказа: {recipient['name']}, {recipient['phone']}. Пришлите, пожалуйста, "
+            "почту — на неё придёт чек об оплате. Как только будут пункт и почта, сразу пришлю ссылку на оплату."
+        )
+    else:
+        lines.append(
+            "Пришлите ФИО и телефон получателя и почту — она нужна, чтобы отправить чек об оплате. "
+            "Как только будут пункт и данные, сразу пришлю ссылку на оплату."
+        )
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
+
+
 STOREFRONT_WITH_POINT_ALL = "Вместе с пунктом пришлите ФИО, телефон и почту — сразу пришлю счёт."
 
 

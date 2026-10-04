@@ -135,7 +135,8 @@ async def respond(
         from app.modules.orders import buttons
 
         markup = buttons.take_ready(peer_id)
-        await vk_client.send_message(peer_id, reply, **({"keyboard": markup} if markup else {}))
+        if reply:
+            await vk_client.send_message(peer_id, reply, **({"keyboard": markup} if markup else {}))
         stage = "готово"
         # Замер для мониторинга — только для ответа, который дошёл до ВК.
         ops_journal.finish_turn(started, llm)
@@ -167,7 +168,14 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
     # admin_author_id проверено вживую, хватает идентификаторов.
     logger.info("message_reply: peer_id=%s admin_author_id=%s", peer_id, admin_author_id)
 
-    if not admin_author_id or peer_id is None:
+    if peer_id is None:
+        return
+    if not admin_author_id:
+        # От имени группы без автора-админа пишет сам бот — и ВК: «Ваш заказ
+        # № N оформлен», «Новый заказ N». Это заказ из «Товаров» — заводим.
+        from app.modules.orders import service as orders_service
+
+        await orders_service.handle_notice(peer_id, message)
         return
 
     # Записываем сам текст ответа менеджера в историю переписки — иначе
