@@ -161,6 +161,11 @@ async def _tell_manager(order_id: int, user_id: int, text: str) -> None:
     )
 
 
+async def tell_manager_canceled(order_id: int, user_id: int) -> None:
+    """Клиент отменил заказ из «Товаров» до оплаты — снять его в разделе «Заказы» ВК."""
+    await _tell_manager(order_id, user_id, templates.manager_storefront_canceled())
+
+
 # Сколько ждать сообщения группе с корзиной, если в событии состава нет.
 _UNPARSED_WAIT_SECONDS = 5
 

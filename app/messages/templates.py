@@ -881,6 +881,18 @@ def storefront_cheaper_button(carrier: str) -> str:
     return f"Дешевле — {carrier}"
 
 
+def storefront_canceled(order_id) -> str:
+    """Клиент отменил заказ из «Товаров» до счёта."""
+    return (
+        f"Отменила заказ №{order_id} — оплачивать его не нужно. В разделе «Заказы» ВКонтакте "
+        "его закроет менеджер. Захотите заказать снова — напишите 🙂"
+    )
+
+
+def manager_storefront_canceled() -> str:
+    return "Клиент отменил заказ до оплаты. Отмените его в разделе «Заказы» сообщества ВК."
+
+
 def carrier_button(option: dict) -> str:
     cost = "бесплатно" if not option["client_cost"] else f"{amount(option['client_cost'])} ₽"
     return f"{option['carrier']} — {cost}"

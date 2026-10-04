@@ -2285,6 +2285,12 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
             "заказать снова — напишите 🙂"
         )
         return ToolExecution(reply, client_reply=reply)
+    if outcome.draft_dropped and outcome.vk_order_id:
+        # Заказ из «Товаров» живёт и в разделе «Заказы» сообщества: там его
+        # снимает менеджер — бот статусы заказов ВК не меняет.
+        await orders_service.tell_manager_canceled(outcome.vk_order_id, peer_id)
+        reply = templates.storefront_canceled(outcome.vk_order_id)
+        return ToolExecution(reply, client_reply=reply)
     if outcome.draft_dropped:
         reply = "Хорошо, заказ не оформляю. Если передумаете — напишите 🙂"
         return ToolExecution(reply, client_reply=reply)

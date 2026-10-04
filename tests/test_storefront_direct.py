@@ -111,3 +111,14 @@ async def test_lead_asks_email_for_the_form_recipient_not_the_past_one(clean, sh
     text, board = shop["sent"][-1]
     assert "Получатель из заказа: Nikita Kvitko, +79214477622. Пришлите почту для чека" in text
     assert "Да, на эти данные" not in labels(board)
+
+
+async def test_canceling_a_storefront_order_names_it_and_tells_the_manager(clean, shop):
+    from tests.test_auto_invoice import tool_use
+
+    await keyboards.remember_client(PEER, FULL)
+    await dialog_service.handle_message_reply({"peer_id": PEER, "text": ADMIN})
+    shop["script"] = [tool_use("cancel_order")]
+    await say("отмените заказ", 2)
+    assert shop["sent"][-1][0].startswith("Отменила заказ №820826 — оплачивать его не нужно.")
+    assert any("Отмените его в разделе «Заказы»" in card and "№820826" in card for card in shop["manager"])

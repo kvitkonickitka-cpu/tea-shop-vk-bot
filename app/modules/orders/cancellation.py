@@ -52,6 +52,8 @@ _LOOK_BACK = timedelta(days=30)
 class Outcome:
     canceled: list[int] = field(default_factory=list)
     draft_dropped: bool = False
+    # Снятый черновик был заказом из «Товаров» — его номер в ВК.
+    vk_order_id: int | None = None
     # Оплаченные и ещё не завершённые — их бот не отменяет.
     paid: list[int] = field(default_factory=list)
 
@@ -59,7 +61,9 @@ class Outcome:
 async def cancel_for_client(peer_id: int) -> Outcome:
     outcome = Outcome()
 
-    if await state.get_draft(peer_id) is not None:
+    draft = await state.get_draft(peer_id)
+    if draft is not None:
+        outcome.vk_order_id = (draft.details or {}).get("vk_order_id")
         await state.clear_draft(peer_id)
         outcome.draft_dropped = True
 
