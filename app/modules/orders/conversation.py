@@ -801,6 +801,17 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         last.remember(draft.details)
         await state.set_draft(peer_id, draft)
         return result + "\n" + repeat_delivery.suggestion(last)
+    if delivery_hint:
+        # Город назван вместе с товаром («две пачки, Москва»): модель по этой
+        # инструкции снова спрашивала «город и улицу» — без цены и даты, хотя
+        # посчитать их уже можно (05.10.2026). Пусть считает сразу: на одно
+        # «Москва» инструмент сам назовёт цену «около» и попросит улицу.
+        return result + (
+            f"\nКлиент уже назвал, куда везти: «{delivery_hint}». Город не переспрашивай — "
+            "в этом же ходу вызови set_delivery_method с method=ozon_pvz, городом в address "
+            "и улицей или пунктом в pickup_point, если он их назвал. Ответ клиенту — по "
+            "результату этого вызова, с ценой и датой."
+        )
     from app.modules.orders import geo
 
     with_geo = await geo.offer_for(peer_id)
@@ -937,6 +948,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         # Выбор из показанного списка — номером, кнопкой или адресом — кодом,
         # а не по памяти модели.
         chosen = points.choose(hint, points.shown_for(draft.details, method, address)) if hint else None
+        if chosen is None and hint:
+            chosen = _kept_point(draft, method, hint)
+            if chosen is None and points.is_number(hint):
+                hint = ""
         try:
             tariff, total = await _cdek_delivery(
                 draft, method, address, delivery_point=chosen["id"] if chosen else None
@@ -1027,6 +1042,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
 
         hint = (tool_input.get("pickup_point") or "").strip()
         chosen = points.choose(hint, points.shown_for(draft.details, method, city)) if hint else None
+        if chosen is None and hint:
+            chosen = _kept_point(draft, method, hint)
+            if chosen is None and points.is_number(hint):
+                hint = ""
         if chosen:
             try:
                 quote = await _ozon_price(draft, int(chosen["id"]))
@@ -1257,7 +1276,9 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
         )
     if shown:
         return ToolExecution(
-            head + "Назови клиенту состав заказа и эти суммы. " + not_found_note
+            head + "Назови клиенту состав заказа и эти суммы. "
+            + _price_first(draft, method, has_options=bool(upgrade.options_note(draft)), listing=True)
+            + not_found_note
             + _points_instruction(method, city, shown, per_point_prices, recipient_ask,
                                   free=_threshold_gap(draft.items_total) is None
                                   and free_delivery_threshold() is not None,
@@ -1318,6 +1339,25 @@ async def _ask_for_words(messages: list[dict], system_prompt: str, response, spe
     return claude_client.extract_text(again, default="").strip() or None
 
 
+def _kept_point(draft: OrderDraft, method: str, hint: str) -> dict | None:
+    """Номер пункта без показанного списка — это уже записанный пункт.
+
+    Пункт записан — список забыт. Модель на следующем сообщении клиента
+    («89990000000, test@test.ru») снова передала «1», поиск искал дома под
+    номером 1 по всей Москве, и клиент вместо своего пункта получил Усиевича,
+    Кадырова и Вертолётчиков (05.10.2026). Номер без списка либо повторяет
+    записанный пункт, либо ничего не значит — искать по нему нельзя.
+    """
+    if not points.is_number(hint) or draft.delivery_method != method:
+        return None
+    if method == "ozon_pvz" and draft.details.get("ozon_point_id"):
+        return {"id": draft.details["ozon_point_id"], "address": draft.details.get("ozon_point_address", "")}
+    if method == "cdek_pvz" and draft.details.get("delivery_point"):
+        label = draft.delivery_label or ""
+        return {"id": draft.details["delivery_point"], "address": label.split(": ", 1)[1] if ": " in label else ""}
+    return None
+
+
 def _single_on_street(narrowed: bool, total: int, found: list) -> bool:
     """На названной улице ровно один пункт — и правило включено."""
     return bool(settings.single_point_instant_enabled and narrowed and total == 1 and len(found) == 1)
@@ -1334,7 +1374,7 @@ async def _geo_ok(peer_id: int, method: str) -> bool:
     return await geo.offer_for(peer_id, method)
 
 
-def _price_first(draft: OrderDraft, method: str, *, has_options: bool) -> str:
+def _price_first(draft: OrderDraft, method: str, *, has_options: bool, listing: bool = False) -> str:
     """Цена и дата — обязательно, до просьбы об адресе пункта.
 
     Когда город приходил вместе с товаром, модель в том же ходу оформляла и
@@ -1342,7 +1382,13 @@ def _price_first(draft: OrderDraft, method: str, *, has_options: bool) -> str:
     только «напишите улицу пункта» (05.10.2026).
     """
     if has_options:
-        return "ОБЯЗАТЕЛЬНО начни с вариантов доставки фразой выше — с ценой и датой, до просьбы об адресе. "
+        # Список пунктов модель выдавала с ценой, но без даты и без строки про
+        # быстрый вариант (05.10.2026, 09:48) — та же беда, что с вопросом об улице.
+        before = "до списка пунктов" if listing else "до просьбы об адресе"
+        return f"ОБЯЗАТЕЛЬНО начни с вариантов доставки фразой выше — с ценой и датой, {before}. "
+    if listing:
+        when = eta.receive(draft.details.get(eta.KEY))
+        return f"ОБЯЗАТЕЛЬНО назови дату рядом с ценой: «{when}». " if when else ""
     carrier = "Ozon" if method == "ozon_pvz" else "СДЭК"
     cost = "бесплатно" if not draft.delivery_cost else f"около {templates.amount(draft.delivery_cost)} ₽"
     when = eta.receive(draft.details.get(eta.KEY))

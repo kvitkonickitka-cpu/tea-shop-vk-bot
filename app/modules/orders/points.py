@@ -49,6 +49,11 @@ def _number(text: str) -> int | None:
     return None
 
 
+def is_number(answer: str) -> bool:
+    """Ответ — номер из списка («1», «второй»), а не адрес."""
+    return _number(answer) is not None
+
+
 def choose(answer: str, shown: list[dict]) -> dict | None:
     """Пункт из показанного списка по ответу клиента — или None.
 
