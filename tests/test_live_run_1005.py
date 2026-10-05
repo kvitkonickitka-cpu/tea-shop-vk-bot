@@ -157,3 +157,48 @@ async def test_points_list_demands_price_and_date(clean, world):
     result = await conversation._execute_set_delivery_method(
         PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"})
     assert "ОБЯЗАТЕЛЬНО" in result.tool_result and "получите" in result.tool_result
+
+
+# --- Прогон 05.10.2026 на ревизии a817965 ---
+
+
+async def test_street_answer_is_not_a_recipient_name():
+    """14:39–14:41: «улица Баумана», «Невский проспект» становились [NAME_1]."""
+    from app.privacy import detect
+
+    stop = detect.stop_list([])
+    for street in ("улица Баумана", "Невский проспект", "пр-т Мира", "Ленинский проспект"):
+        assert detect.recipient_names(street, stop) == [], street
+    assert [f.value for f in detect.recipient_names("Тестов Тест", stop)] == ["Тестов Тест"]
+
+
+async def test_other_carrier_reuses_the_named_street(clean, world, monkeypatch):
+    """14:37: после «давайте СДЭК» бот снова спрашивал улицу."""
+    seen = []
+
+    async def cdek(draft, method, address, delivery_point=None):
+        return NS(code=136, period_min=2, period_max=3), 404.12
+
+    async def city_points(city):
+        seen.append(city)
+        return [cdek_client.DeliveryPoint(code="MSK1", address="Москва, ул. Тверская, 9", work_time="")]
+
+    monkeypatch.setattr(conversation, "_cdek_delivery", cdek)
+    monkeypatch.setattr(conversation.cdek_client, "city_points", city_points)
+    await listing()
+    result = await conversation._execute_set_delivery_method(PEER, {"method": "cdek_pvz", "address": "Краснодар"})
+    draft = await state.get_draft(PEER)
+    # Улица «Ставропольская» — та же, что для Ozon: пункт не просят назвать заново.
+    assert not draft.details.get("point_asked") and "Пункт «Ставропольская»" in result.tool_result
+
+
+async def test_reset_reply_names_the_current_mode(clean, world, monkeypatch):
+    from app.core.config import settings
+    from app.modules.analytics import service as analytics
+    from app.modules.dialog import test_mode
+
+    monkeypatch.setattr(settings, "test_vk_ids", str(PEER))
+    monkeypatch.setattr(analytics, "_test_ids", None)
+    assert (await test_mode.handle(PEER, "/сброс")).endswith("Режим: постоянный клиент — прошлые заказы учитываются.")
+    await test_mode.handle(PEER, "/новый")
+    assert (await test_mode.handle(PEER, "/сброс")).endswith("Режим: новый клиент. Вернуть обычный — /постоянный.")

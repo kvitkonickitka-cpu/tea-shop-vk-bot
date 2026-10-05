@@ -129,4 +129,6 @@ async def handle(peer_id: int, text: str | None) -> str | None:
     logger.info("Тестовый режим peer_id=%s: %s, отменено %s, сообщений истории %s",
                 peer_id, command, done["canceled"], done["messages"])
     canceled = ", ".join(f"№{n}" for n in done["canceled"])
-    return templates.test_reset(fresh=command == FRESH, canceled=canceled)
+    return templates.test_reset(
+        fresh=command == FRESH, canceled=canceled, new_mode=await fresh_since(peer_id) is not None,
+    )
