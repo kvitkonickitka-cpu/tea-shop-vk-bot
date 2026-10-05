@@ -202,3 +202,46 @@ async def test_reset_reply_names_the_current_mode(clean, world, monkeypatch):
     assert (await test_mode.handle(PEER, "/сброс")).endswith("Режим: постоянный клиент — прошлые заказы учитываются.")
     await test_mode.handle(PEER, "/новый")
     assert (await test_mode.handle(PEER, "/сброс")).endswith("Режим: новый клиент. Вернуть обычный — /постоянный.")
+
+
+# --- Короткий прогон 05.10.2026 на ревизии 50523b5 ---
+
+
+def test_street_saved_as_name_earlier_is_not_substituted():
+    """21:46: «Невский проспект» остался ФИО в хранилище с прошлого прогона."""
+    from app import privacy
+    from app.privacy import vault
+
+    book = vault.Book(values={"NAME_1": ("NAME", "Невский Проспект"), "NAME_2": ("NAME", "Тестов Тест")})
+    pattern = privacy._known_pattern(book)
+    assert pattern.search("Тестов Тест") and not pattern.search("Невский проспект")
+
+
+async def test_street_is_not_recorded_as_recipient(clean, world):
+    await listing(recipient=False)
+    result = await conversation._execute_set_recipient(
+        PEER, {"name": "Невский проспект", "phone": "+79990000000", "email": "k@gmail.com"})
+    assert "это улица, а не ФИО" in result
+    assert not (await state.get_draft(PEER)).details.get("recipient_name")
+
+
+async def test_switch_to_cdek_forgets_the_ozon_point(clean, world, monkeypatch):
+    """21:49: пункт Ozon остался в черновике СДЭКа — кнопки геопозиции не было."""
+    async def cdek(draft, method, address, delivery_point=None):
+        return NS(code=136, period_min=2, period_max=3), 465.0
+
+    async def city_points(city):
+        return [cdek_client.DeliveryPoint(code=f"K{i}", address=f"Краснодар, ул. Северная, {i}", work_time="")
+                for i in range(1, 7)]
+
+    monkeypatch.setattr(conversation, "_cdek_delivery", cdek)
+    monkeypatch.setattr(conversation.cdek_client, "city_points", city_points)
+    await listing()
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "1"})
+    assert (await state.get_draft(PEER)).details.get("ozon_point_id")
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "cdek_pvz", "address": "Краснодар", "pickup_point": "Пушкина"})
+    draft = await state.get_draft(PEER)
+    assert draft.delivery_method == "cdek_pvz" and not draft.details.get("ozon_point_id")
+    assert draft.details.get("point_asked")
