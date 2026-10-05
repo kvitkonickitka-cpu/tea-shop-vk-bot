@@ -100,3 +100,60 @@ def test_cdek_address_without_repeats_and_hours_on_buttons():
         "Россия, Москва, ул. Тверская, 9, стр.7"
     )
     assert points.short("Москва, ул. Тверская, 9, стр.7 (Пн-Пт 08:00-20:00)", 34) == "ул. Тверская, 9, стр.7"
+
+
+# --- Перепроверка 05.10.2026 на ревизии 8e1e28b ---
+
+
+async def test_repeated_number_keeps_the_recorded_point(clean, world, monkeypatch):
+    """09:56: пункт записан, модель снова передала «1» — бот искал дома № 1 по Москве."""
+    searches = []
+    real = conversation._ozon_points
+
+    async def counting(draft, city, hint=""):
+        searches.append(hint)
+        return await real(draft, city, hint)
+
+    await listing(recipient=False)
+    monkeypatch.setattr(conversation, "_ozon_points", counting)
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "1"})
+    chosen = (await state.get_draft(PEER)).details["ozon_point_id"]
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "1"})
+    draft = await state.get_draft(PEER)
+    assert draft.details["ozon_point_id"] == chosen and searches == []
+
+
+async def test_number_without_list_or_point_is_not_a_street(clean, world, monkeypatch):
+    hints = []
+
+    async def picked(draft, city, hint=""):
+        hints.append(hint)
+        return ozon_quote.Picked(KRD, len(KRD), len(KRD), True)
+
+    monkeypatch.setattr(conversation, "_ozon_points", picked)
+    await state.set_draft(PEER, OrderDraft(
+        items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 1500}], items_total=1500,
+        stage="awaiting_delivery"))
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "второй"})
+    assert hints == [""]
+
+
+async def test_city_named_with_the_product_is_priced_right_away(clean, world):
+    """09:52: «Хочу две пачки Да Хун Пао, Москва» — бот просил улицу без цены и даты."""
+    result = await conversation._execute_propose_order(
+        PEER, {"items": [{"name": "Да Хун Пао", "quantity": 2}], "delivery_hint": "Москва"})
+    text = result if isinstance(result, str) else result.tool_result
+    assert "вызови set_delivery_method" in text and "Город не переспрашивай" in text
+
+
+async def test_points_list_demands_price_and_date(clean, world):
+    """09:48: список на «Тверская» — с ценой, но без даты."""
+    await state.set_draft(PEER, OrderDraft(
+        items=[{"name": "Те Гуань Инь (тест)", "quantity": 1, "price": 1500}], items_total=1500,
+        stage="awaiting_delivery"))
+    result = await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"})
+    assert "ОБЯЗАТЕЛЬНО" in result.tool_result and "получите" in result.tool_result
