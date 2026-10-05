@@ -98,7 +98,7 @@ async def test_feedback_only_for_recent_delivery(clean, outbox):
 async def test_feedback_tool_and_prompt_only_after_delivery(clean, outbox, monkeypatch):
     seen = []
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         seen.append((system_prompt, [t["name"] for t in tools]))
         return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="Спасибо!")])
 

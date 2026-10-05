@@ -124,7 +124,7 @@ async def test_admin_fallback_is_plain_and_telegram_keeps_html(monkeypatch):
 def model(monkeypatch):
     calls = []
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         calls.append(messages[-1]["content"])
         return NS(stop_reason="end_turn", content=[NS(type="text", text="Хорошо, заказ сохранён 🙂")])
 
@@ -170,7 +170,7 @@ def test_pause_rule_in_prompt():
 async def test_unsubscribe_mid_order_is_answered_by_model_and_silences_reminders(clean, model, monkeypatch):
     prompts = []
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         prompts.append(system_prompt)
         return NS(stop_reason="end_turn", content=[NS(type="text", text="Поняла, больше писать не буду 🙂")])
 

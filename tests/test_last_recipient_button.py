@@ -69,7 +69,7 @@ async def test_button_next_to_points_asks_only_for_point(clean, world):
         stage="awaiting_delivery"))
     await conversation._execute_set_delivery_method(
         PEER, {"method": "ozon_pvz", "address": "Краснодар", "pickup_point": "Ставропольская"})
-    world["script"] = [said("Пункты: 1) … 2) … Оформить на прошлого получателя?")]
+    world["script"] = [said("Пункты: 1) Ставропольская, 230 2) … Оформить на прошлого получателя?")]
     await say("какие пункты?", 1)
     rows = world["sent"][-1][1]["buttons"]
     assert rows[-1][0]["action"]["label"] == "Да, на эти данные" and len(rows) == 5  # 4 пункта + получатель

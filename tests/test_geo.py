@@ -145,7 +145,7 @@ async def test_geo_in_dialog_shows_nearest_points_without_the_model(catalog, wor
     # Выбор из списка дальше — обычным путём; в запросе к модели координат нет.
     seen = []
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         seen.append(json.dumps([system_prompt, messages], ensure_ascii=False))
         return said("Записала первый пункт.")
 

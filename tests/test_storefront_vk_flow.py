@@ -115,7 +115,7 @@ async def test_template_question_waits_for_the_order_and_stays_silent(clean, sho
 async def test_template_question_without_an_order_tells_the_model(clean, shop, monkeypatch):
     prompts = []
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         prompts.append(system_prompt)
         return said("Вижу ваш заказ, сейчас пришлю варианты доставки.")
 

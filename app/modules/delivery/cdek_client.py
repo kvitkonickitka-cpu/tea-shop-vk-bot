@@ -206,7 +206,24 @@ class DeliveryPoint:
 
     def describe(self) -> str:
         hours = f" ({self.work_time})" if self.work_time else ""
-        return f"{self.address}{hours}"
+        return f"{tidy_address(self.address)}{hours}"
+
+
+def tidy_address(address: str) -> str:
+    """Адрес без повторов: «Москва, Москва», «стр.7, 7» приходят от СДЭКа как есть."""
+    parts: list[str] = []
+    for part in (piece.strip() for piece in (address or "").split(",")):
+        if not part:
+            continue
+        if parts:
+            previous = parts[-1]
+            if part.casefold() == previous.casefold():
+                continue
+            # «стр.7, 7»: номер повторяет хвост предыдущей части.
+            if part.isdigit() and previous.rstrip().endswith(part) and not previous[-len(part) - 1:-len(part)].isdigit():
+                continue
+        parts.append(part)
+    return ", ".join(parts)
 
 
 # Список пунктов по городу живёт в памяти контейнера: в Москве их тысячи, и

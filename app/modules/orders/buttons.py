@@ -44,8 +44,14 @@ def pay_keyboard(total, link: str) -> dict | None:
     return keyboards.inline([[keyboards.link_button(f"Оплатить {templates.amount(total)} ₽", link)]])
 
 
-async def for_reply(peer_id: int) -> tuple[dict | None, str]:
-    """Клавиатура под ответом хода и подсказка к ней — по состоянию черновика."""
+async def for_reply(peer_id: int, *, with_points: bool = True, reply: str = "") -> tuple[dict | None, str]:
+    """Клавиатура под ответом хода и подсказка к ней — по состоянию черновика.
+
+    `with_points=False` — ход списка пунктов не показывал (модель спросила
+    «пункт или курьер?», ответила на «не пишите мне»): кнопки пунктов под
+    таким ответом не к месту, а под вопросом про СДЭК — ещё и чужие (Ozon).
+    Исключение — ответ сам называет пункты из списка (`reply`).
+    """
     kept = _stashed.pop(peer_id, None)
     if kept is not None:
         return kept, ""
@@ -88,7 +94,7 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
     if wants_geo and await geo.offer_for(peer_id, draft.delivery_method):
         geo_row = [geo.button(version)]
 
-    if shown and not fixed and draft.delivery_method:
+    if shown and not fixed and draft.delivery_method and (with_points or points.mentioned(reply, shown)):
         rows = [
             [keyboards.text_button(
                 f"{point['n']}. {points.short(point['address'], 34)}",
@@ -103,7 +109,9 @@ async def for_reply(peer_id: int) -> tuple[dict | None, str]:
 
     if details.get("email_suggestion") and details.get("pending_recipient"):
         return keyboards.inline([[
-            keyboards.text_button(f"Да, {details['email_suggestion']}", {"a": "email_yes", "v": version}, "positive"),
+            # Подпись — только домен: целиком адрес ВК обрезает («Да, kvitko…@gma…»).
+            keyboards.text_button(f"Да, @{details['email_suggestion'].rpartition('@')[2]}",
+                                  {"a": "email_yes", "v": version}, "positive"),
             keyboards.text_button("Нет", {"a": "email_no", "v": version}),
         ]]), templates.EMAIL_HINT
 
@@ -160,7 +168,7 @@ async def _consult_keyboard(peer_id: int, reply: str) -> tuple[dict | None, list
     return keyboards.inline(rows), names
 
 
-async def prepare(peer_id: int, reply: str, *, consult: bool = False) -> str:
+async def prepare(peer_id: int, reply: str, *, consult: bool = False, with_points: bool = True) -> str:
     """Решить, пойдёт ли под ответом клавиатура; вернуть ответ с подсказкой.
 
     Подсказку дописываем, только когда кнопки клиент действительно увидит,
@@ -170,7 +178,7 @@ async def prepare(peer_id: int, reply: str, *, consult: bool = False) -> str:
     """
     names = None
     try:
-        keyboard, hint = await for_reply(peer_id)
+        keyboard, hint = await for_reply(peer_id, with_points=with_points, reply=reply)
         if keyboard is None and consult:
             keyboard, names = await _consult_keyboard(peer_id, reply)
         markup = await keyboards.for_peer(peer_id, keyboard)
@@ -197,7 +205,14 @@ class Press:
     to_model: bool = False
 
 
-STALE = Press(reply=templates.button_stale(), to_model=True)
+# Старая кнопка — модели не отдаём. Подпись «Да, …@gmail.com» после правки
+# заказа модель прочла как согласие на последнюю правку и повторила её:
+# в заказе стало три пачки вместо двух (05.10.2026). Код отвечает сам —
+# «неактуальна» и что нужно дальше по текущему черновику.
+STALE = Press(reply=templates.button_stale())
+# Старая «Взять <сорт>» / «Добавить <сорт>» — намерение ясно из подписи:
+# такую модели отдать можно, она добавит сорт или скажет, что он уже есть.
+STALE_TO_MODEL = Press(reply=templates.button_stale(), to_model=True)
 TO_MODEL = Press(to_model=True)
 
 
@@ -224,9 +239,25 @@ async def handle(peer_id: int, message: dict) -> Press:
     except Exception:
         logger.exception("Нажатие %s у peer_id=%s не обработалось, отдаём модели", action, peer_id)
         return TO_MODEL
-    if press is STALE:
+    if press is STALE or press is STALE_TO_MODEL:
         await funnel.record(peer_id, "button_stale", order_id=order_id, source_=funnel.BUTTON, action=action)
+    if press is STALE:
+        return await _stale_reply(peer_id)
     return press
+
+
+async def _stale_reply(peer_id: int) -> Press:
+    """«Неактуальна» — и что нужно дальше по заказу, с теми кнопками, что актуальны."""
+    try:
+        draft = await state.get_draft(peer_id)
+        if draft is not None:
+            keyboard, _ = await for_reply(peer_id)
+            return Press(reply=templates.button_stale(_missing(draft)), keyboard=keyboard)
+        if await orders_repository.live_invoice_order(peer_id) is not None:
+            return Press(reply=templates.button_stale(templates.STALE_LIVE_INVOICE))
+    except Exception:
+        logger.exception("Не собрали ответ на старую кнопку для peer_id=%s", peer_id)
+    return Press(reply=templates.button_stale())
 
 
 async def _draft_at(peer_id: int, payload: dict):
@@ -531,7 +562,7 @@ async def _on_take(peer_id: int, payload: dict) -> Press:
     if match is None:
         return STALE
     if await state.get_draft(peer_id) is not None or await orders_repository.live_invoice_order(peer_id) is not None:
-        return STALE
+        return STALE_TO_MODEL
     token = conversation._draft_origin.set("take")
     try:
         result = await conversation._execute_propose_order(
@@ -575,10 +606,10 @@ async def _on_add_item(peer_id: int, payload: dict) -> Press:
 
     draft = await _draft_at(peer_id, payload)
     match = _catalog_item(payload.get("n"))
-    if draft is None or match is None or draft.stage != "awaiting_delivery":
+    if match is None or (draft is not None and match["name"] in {row["name"] for row in draft.items}):
         return STALE
-    if match["name"] in {row["name"] for row in draft.items}:
-        return STALE
+    if draft is None or draft.stage != "awaiting_delivery":
+        return STALE_TO_MODEL
     await conversation._execute_add_to_order(peer_id, {"items": [{"name": match["name"], "quantity": 1}]})
     fresh = await state.get_draft(peer_id)
     if fresh is None or match["name"] not in {row["name"] for row in fresh.items}:

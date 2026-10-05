@@ -47,7 +47,7 @@ async def test_block_reaches_the_model(clean, monkeypatch):
     await make_order(clean, delivered_days_ago=30)
     seen = {}
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         seen["prompt"] = system_prompt
         return said("Подберу!")
 

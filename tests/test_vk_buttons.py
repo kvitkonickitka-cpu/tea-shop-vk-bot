@@ -61,7 +61,7 @@ def world(monkeypatch):
             receipt_registration="", test=False, amount=draft.items_total + (draft.delivery_cost or 0),
         )
 
-    async def converse(messages, system_prompt, tools):
+    async def converse(messages, system_prompt, tools, **_):
         box["model"].append(messages[-1]["content"])
         return box["script"].pop(0) if box["script"] else said("Хорошо 🙂")
 
@@ -106,7 +106,7 @@ async def listing(recipient: bool = True):
 
 async def test_points_get_buttons_and_a_hint(clean, world):
     await listing()
-    world["script"] = [said("Пункты: 1) … 2) … Какой удобнее?")]
+    world["script"] = [said("Пункты: 1) Ставропольская, 230 2) Ставропольская, 159 … Какой удобнее?")]
     await say("а какие пункты?", 1)
     text, board = world["sent"][-1]
     assert text.endswith(templates.POINTS_HINT)
@@ -154,11 +154,15 @@ async def test_point_button_without_recipient_asks_for_data(clean, world):
     )
 
 
-async def test_stale_button_goes_to_model(clean, world):
+async def test_stale_button_is_answered_by_code(clean, world):
+    """05.10.2026: старую «Да, …@gmail.com» модель прочла как согласие и повторила правку."""
     await listing()
     await say("1. Ставропольская улица, 230", 1, {"a": "pt", "n": 1, "v": 1})
-    assert world["sent"][0][0] == "Эта кнопка уже неактуальна."
-    assert world["model"] == ["1. Ставропольская улица, 230"]
+    text, board = world["sent"][0]
+    # Что дальше по черновику — и актуальные кнопки пунктов.
+    assert text == "Эта кнопка уже неактуальна. Выберите пункт выдачи — сразу пришлю счёт."
+    assert board["buttons"][0][0]["action"]["label"].startswith("1. ")
+    assert world["model"] == []
     async with clean() as session:
         events = (await session.execute(select(FunnelEvent.event).where(OWN_EVENTS))).scalars().all()
     assert "button_stale" in events
@@ -181,7 +185,7 @@ async def test_email_typo_yes_button(clean, world):
     text, board = world["sent"][-1]
     assert text.endswith(templates.EMAIL_HINT)
     yes = board["buttons"][0][0]["action"]
-    assert yes["label"] == "Да, ivanov@yandex.ru"
+    assert yes["label"] == "Да, @yandex.ru"
     await say(yes["label"], 2, json.loads(yes["payload"]))
     assert world["payments"] == [1] and "Получатель: Иванов Иван, +79001234567, ivanov@yandex.ru" in world["sent"][-1][0]
 

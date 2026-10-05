@@ -99,12 +99,28 @@ async def generate_dialog_report(transcript: str) -> str:
     raise ValueError("Claude response contained no text block")
 
 
+def _well_formed(messages: list[dict]) -> list[dict]:
+    """История без пустых реплик: строку из одних пробелов API не принимает (400),
+    и клиент получал «техническую заминку» вместо ответа."""
+    return [
+        message for message in messages
+        if not (isinstance(message.get("content"), str) and not message["content"].strip())
+    ]
+
+
 @watch("claude", "ход диалога")
-async def converse(messages: list[dict], system_prompt: str, tools: list[dict]):
-    # Пустой список инструментов не передаём вовсе: так вызывается последний
-    # круг хода, когда модель обязана ответить словами, а не просить ещё
-    # одно действие.
-    extra = {"tools": tools} if tools else {}
+async def converse(messages: list[dict], system_prompt: str, tools: list[dict], *, words_only: bool = False):
+    # `words_only` — модель обязана ответить словами (последний круг хода).
+    # Инструменты при этом остаются в запросе, вызывать их запрещает
+    # tool_choice: убрать их нельзя, если в истории хода уже есть вызовы
+    # инструментов, — API отвечает 400, и клиент получал «техническую
+    # заминку» вместо ответа (05.10.2026).
+    extra: dict = {}
+    if tools:
+        extra["tools"] = tools
+        if words_only:
+            extra["tool_choice"] = {"type": "none"}
+    messages = _well_formed(messages)
     system_prompt, messages = guard("ход диалога", system_prompt, messages)
     response = await _client.messages.create(
         model=settings.anthropic_model,
