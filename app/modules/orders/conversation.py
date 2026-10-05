@@ -916,6 +916,18 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
             "и предложи пункт выдачи Ozon или СДЭК."
         )
 
+    # Улица, названная для этого города, — и для другого перевозчика. На
+    # «давайте СДЭК» модель передавала один город, и бот заново спрашивал
+    # улицу, хотя клиент её уже назвал (05.10.2026).
+    named_point = (tool_input.get("pickup_point") or "").strip()
+    named_city = (tool_input.get("address") or "").strip().casefold()
+    street = draft.details.get("street") or {}
+    if (
+        not named_point and not tool_input.get("_near") and method in ("ozon_pvz", "cdek_pvz")
+        and street.get("city") == named_city and street.get("hint")
+    ):
+        tool_input = {**tool_input, "pickup_point": street["hint"]}
+
     # Настоящая цена прошлого перевозчика к новому расчёту отношения не
     # имеет: раньше её снимал только Ozon, и СДЭК после Ozon выше порога
     # записывал себе цену Ozon.
@@ -1211,6 +1223,9 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     # Когда посчитана цена и какой итог клиент от нас услышал: перед счётом
     # старая цена пересчитывается, а изменившийся итог без вопроса не
     # выставляется.
+    if named_point and not points.is_number(named_point) and method in ("ozon_pvz", "cdek_pvz") \
+            and not tool_input.get("_near"):
+        draft.details["street"] = {"city": named_city, "hint": named_point}
     draft.details["quoted_at"] = time.time()
     draft.details["seen_total"] = total
     await state.set_draft(peer_id, draft)
