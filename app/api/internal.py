@@ -761,6 +761,12 @@ async def trigger_entrypoint(request: Request):
     «Данные», у очереди мы кладём его в сообщение сами, — так что проверка
     доступа одна на оба случая.
     """
+    from app.core import database
+
+    # Таймеры и очередь приходят в любую копию контейнера — копия, оставшаяся
+    # без базы, через них же и переподключается (не чаще раза в 30 с).
+    await database.recover()
+
     raw = (await request.body()).decode("utf-8", errors="replace")
     if not await _authorized(request, raw):
         # Громко, с именем: отказ на этом адресе означает, что расписание не

@@ -128,7 +128,15 @@ async def _quietly(what: str, coro):
 
 async def run() -> dict:
     """Один пульс. Никогда не бросает: пульс, упавший с ошибкой, — не пульс."""
+    from app.core import database
+
     flushed = await journal.flush()
+    try:
+        # Копия без базы — сначала попытка подключиться: иначе пульс так и
+        # твердил бы «база не отвечает» до перезапуска копии.
+        await asyncio.wait_for(database.recover(), 10)
+    except Exception as error:
+        logger.warning("Пульс: повторное подключение к базе — %s", type(error).__name__)
     try:
         db_up, stats = await asyncio.wait_for(_collect(), _DB_TIMEOUT_SECONDS)
     except Exception as error:

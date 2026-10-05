@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 
 from app.core import heartbeat
 from app.core.config import settings
-from app.core.database import is_available
+from app.core import database
 
 router = APIRouter(tags=["health"])
 
@@ -44,10 +44,16 @@ async def health_check(request: Request) -> dict:
     # Кроме «жив», отвечаем какая ревизия крутится и видна ли база. Без
     # первого невозможно понять, доехал ли деплой: свежий эндпоинт отвечает
     # 404 и когда его нет в коде, и когда контейнер ещё на старой ревизии.
+    # Копия без базы пробует подключиться и отсюда: /health дёргают руками
+    # как раз тогда, когда с базой что-то не так.
+    await database.recover()
+    down = database.down_for()
     return {
         "status": "ok",
         "revision": settings.app_revision or "не задана",
-        "database": "ok" if is_available() else "резервный режим",
+        "database": "ok" if database.is_available() else (
+            f"резервный режим, {int(down // 60)} мин" if down is not None else "резервный режим"
+        ),
         "token": _token_fingerprint(),
         # Что дошло до приложения в заголовке. Отпечатки токена в ревизии и в
         # .env сошлись, а доступ всё равно закрывался — значит вопрос не к
