@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -14,6 +16,12 @@ logger = logging.getLogger(__name__)
 # умереть раньше, чем мы поймём, что база недоступна, и перейдём в резервный
 # режим. Пять секунд достаточно для живой базы в той же зоне.
 _CONNECT_TIMEOUT_SECONDS = 5
+# Как часто копия без базы пробует подключиться снова.
+_RETRY_SECONDS = 30
+# Соединения в пуле старше получаса открываем заново: сетевой путь до ВМ
+# (NAT Yandex Cloud) молча рвёт долгоживущие соединения, и запрос на таком
+# висел бы до таймаута. pre_ping проверяет соединение перед выдачей.
+_POOL_RECYCLE_SECONDS = 1800
 
 
 class Base(DeclarativeBase):
@@ -30,15 +38,24 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-_engine: AsyncEngine | None = (
-    create_async_engine(
+def _create_engine() -> AsyncEngine:
+    return create_async_engine(
         _normalize_url(settings.database_url),
         connect_args={"timeout": _CONNECT_TIMEOUT_SECONDS},
+        pool_pre_ping=True,
+        pool_recycle=_POOL_RECYCLE_SECONDS,
     )
-    if settings.database_url
-    else None
-)
+
+
+_engine: AsyncEngine | None = _create_engine() if settings.database_url else None
 _session_factory = async_sessionmaker(_engine, expire_on_commit=False) if _engine else None
+
+# Без базы с какого момента (monotonic) и когда пробовать снова. Состояние —
+# в памяти копии: у каждой копии контейнера своё подключение.
+_down_since: float | None = None
+_next_try: float = 0.0
+_lock = asyncio.Lock()
+_recovery: asyncio.Task | None = None
 
 
 def get_session_factory():
@@ -50,6 +67,11 @@ def get_session_factory():
 def is_available() -> bool:
     # False означает, что модули работают на резервном хранении в памяти.
     return _session_factory is not None
+
+
+def down_for() -> float | None:
+    """Сколько секунд эта копия работает без базы — или None."""
+    return None if _down_since is None else time.monotonic() - _down_since
 
 
 # Бедняцкие миграции: create_all создаёт недостающие таблицы, но не добавляет
@@ -137,14 +159,8 @@ async def _add_missing_columns(conn) -> None:
             logger.exception("Не удалось выполнить миграцию: %s", statement)
 
 
-async def init_models() -> None:
-    global _engine, _session_factory
-
-    if _engine is None:
-        logger.warning("DATABASE_URL is not set, skipping database initialization")
-        return
-
-    # Модели должны быть импортированы до вызова, чтобы попасть в metadata.
+def _import_models() -> None:
+    # Модели должны быть импортированы до create_all, чтобы попасть в metadata.
     from app.modules.dialog import models as dialog_models  # noqa: F401
     from app.modules.orders import models as orders_models  # noqa: F401
     from app.modules.delivery import models as delivery_models  # noqa: F401
@@ -156,8 +172,14 @@ async def init_models() -> None:
     from app.modules.analytics import models as analytics_models  # noqa: F401
     from app.privacy import models as privacy_models  # noqa: F401
 
+
+async def _connect() -> bool:
+    """Подключиться и привести схему в порядок. False — база не ответила."""
+    global _engine, _session_factory, _down_since
+
+    engine = _engine or _create_engine()
     try:
-        async with _engine.begin() as conn:
+        async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await _add_missing_columns(conn)
     except Exception:
@@ -168,22 +190,77 @@ async def init_models() -> None:
         # хранение в памяти, уже написанное в history/state/service, включится
         # само, без изменений в этих модулях.
         logger.exception(
-            "База недоступна — запускаемся в резервном режиме. История диалогов "
-            "и черновики заказов будут жить только в памяти процесса и пропадут "
-            "при перезапуске. Подключение восстановится при следующем запуске, "
-            "когда база снова станет доступна."
+            "База недоступна — работаем в резервном режиме: история диалогов и "
+            "черновики заказов живут только в памяти. Пробуем подключиться снова "
+            "каждые %s с.", _RETRY_SECONDS,
         )
-        await _engine.dispose()
+        await engine.dispose()
         _engine = None
         _session_factory = None
-        return
+        if _down_since is None:
+            _down_since = time.monotonic()
+        return False
+
+    _engine = engine
+    _session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    if _down_since is not None:
+        logger.warning("База снова доступна — резервный режим длился %.0f с", time.monotonic() - _down_since)
+    _down_since = None
 
     # Схема для DataLens — отдельной транзакцией: если представления не
     # пересоздались, бот работает как работал, а не уходит в резервный режим.
     from app.modules.analytics import views as analytics_views
 
     try:
-        async with _engine.begin() as conn:
+        async with engine.begin() as conn:
             await analytics_views.create(conn)
     except Exception:
         logger.exception("Не пересоздали схему analytics для DataLens")
+    return True
+
+
+async def init_models() -> None:
+    if not settings.database_url:
+        logger.warning("DATABASE_URL is not set, skipping database initialization")
+        return
+    _import_models()
+    if not await _connect():
+        _start_recovery()
+
+
+async def recover() -> bool:
+    """Копия без базы — попробовать подключиться снова. True — база есть.
+
+    05.10.2026 копия контейнера, стартовавшая в минуту сетевого сбоя, ушла в
+    резервный режим и осталась в нём навсегда: прежний код подключался один
+    раз, при старте. Почти час история и заказы жили только в памяти, хотя
+    база давно ответила бы, — и «снова отвечает» в Ops не пришло. Теперь
+    попытка идёт не чаще раза в `_RETRY_SECONDS`: из фонового цикла, пульса,
+    тика расписания и /health. Когда база есть — это одна проверка флага.
+    """
+    global _next_try
+    if _session_factory is not None or not settings.database_url:
+        return _session_factory is not None
+    if time.monotonic() < _next_try:
+        return False
+    async with _lock:
+        if _session_factory is not None:
+            return True
+        _next_try = time.monotonic() + _RETRY_SECONDS
+        _import_models()
+        return await _connect()
+
+
+async def _recovery_loop() -> None:
+    while _session_factory is None and settings.database_url:
+        await asyncio.sleep(_RETRY_SECONDS)
+        try:
+            await recover()
+        except Exception:
+            logger.exception("Повторное подключение к базе упало")
+
+
+def _start_recovery() -> None:
+    global _recovery
+    if _recovery is None or _recovery.done():
+        _recovery = asyncio.get_running_loop().create_task(_recovery_loop())
