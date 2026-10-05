@@ -956,6 +956,10 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 "(для курьера — полный адрес). Спроси и вызови инструмент ещё раз."
             )
         city = address
+        # Пункт Ozon к СДЭКу не относится: оставшись в черновике, он делал вид,
+        # что пункт уже выбран, — и кнопка геопозиции не ставилась (05.10.2026).
+        draft.details.pop("ozon_point_id", None)
+        draft.details.pop("ozon_point_address", None)
         hint = (tool_input.get("pickup_point") or "").strip() if method == "cdek_pvz" else ""
         # Выбор из показанного списка — номером, кнопкой или адресом — кодом,
         # а не по памяти модели.
@@ -1052,6 +1056,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 "СДЭК или курьера СДЭК."
             )
 
+        draft.details.pop("delivery_point", None)
         hint = (tool_input.get("pickup_point") or "").strip()
         chosen = points.choose(hint, points.shown_for(draft.details, method, city)) if hint else None
         if chosen is None and hint:
@@ -1537,6 +1542,15 @@ async def _execute_set_recipient(peer_id: int, tool_input: dict) -> str:
         return "Нет черновика заказа. Уточни у клиента, что он хочет заказать."
 
     name = (tool_input.get("name") or "").strip()
+    from app.privacy import detect as pii_detect
+
+    if pii_detect.is_street(name):
+        # Бот спрашивает улицу и ФИО одним сообщением — и модель записывала
+        # «Невский проспект» получателем (05.10.2026).
+        return (
+            f"«{name}» — это улица, а не ФИО. Получателя не записывай: передай эту улицу "
+            "в set_delivery_method (pickup_point) с тем же городом, а ФИО спроси отдельно."
+        )
     phone = (tool_input.get("phone") or "").strip()
     email = (tool_input.get("email") or "").strip()
     if not name or not phone:

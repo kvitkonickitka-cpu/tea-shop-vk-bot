@@ -99,7 +99,12 @@ def stages(draft, last_bot_text: str = "") -> frozenset[str]:
 
 def _known_pattern(book: vault.Book) -> re.Pattern | None:
     values = sorted(
-        {value for kind, value in book.values.values() if kind in ("NAME", "ADDR", "EMAIL") and len(value) >= 3},
+        {value for kind, value in book.values.values()
+         if kind in ("NAME", "ADDR", "EMAIL") and len(value) >= 3
+         # Улица, однажды ошибочно принятая за ФИО, лежит в хранилище и
+         # подменялась бы меткой в каждом следующем сообщении — «Невский
+         # проспект» снова становился «получателем» (05.10.2026).
+         and not (kind == "NAME" and detect.is_street(value))},
         key=len, reverse=True,
     )
     if not values:

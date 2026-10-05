@@ -51,11 +51,18 @@ _PLACE_MARKERS = {
     "станция", "метро", "м", "им", "имени", "р-н", "район", "область", "обл", "край",
 }
 # Слова-улицы в любом падеже: кусок с таким словом — адрес, а не ФИО.
-_STREET_WORDS = _PLACE_MARKERS | {
+# Только слова длиннее двух букв: «д», «с», «м» из _PLACE_MARKERS — это и
+# инициалы в «Иванов И. С.», а ФИО с инициалами не должно стать улицей.
+_STREET_WORDS = {word for word in _PLACE_MARKERS if len(word) > 2} | {
     "улицы", "улицей", "проспекта", "проспекте", "переулка", "переулке", "проезд", "проезда",
     "аллея", "аллеи", "тупик", "линия", "линии", "набережной", "площади", "бульвара", "бульваре",
-    "шоссе", "пл", "наб", "мкрн",
+    "шоссе", "наб", "мкрн",
 }
+def is_street(text: str) -> bool:
+    """Есть ли в тексте слово-улица: «Невский проспект», «улица Баумана»."""
+    return any(_key(part) in _STREET_WORDS for part in _ANY_WORD.findall(text or ""))
+
+
 # «во Владимир», «из Королёва» — город.
 _PLACE_PREPOSITIONS = {"в", "во", "из", "до", "под"}
 
@@ -296,7 +303,7 @@ def recipient_names(text: str, stop: StopList) -> list[Found]:
         # Бот спрашивает улицу и ФИО одним сообщением, и такой ответ раньше
         # становился [NAME_1]: модель записывала улицу в ФИО, а пункт не искала
         # (05.10.2026, Казань и Петербург).
-        if any(_key(t) in _STREET_WORDS for t in texts):
+        if is_street(stripped):
             continue
         features = [word(t) for t in texts]
         evidence = any(f.name >= 0.3 or f.surname >= 0.3 or f.patronymic >= 0.3 for f in features)
