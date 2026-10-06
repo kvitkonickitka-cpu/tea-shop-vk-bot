@@ -38,6 +38,11 @@ SCOPES = [
 ]
 
 _TIMEOUT_SECONDS = 10
+# Чтение каталога пунктов — фоновое, клиент его не ждёт, а Ozon на нём
+# иногда отвечает дольше десяти секунд (06.10 22:21 оба захода подряд ушли в
+# таймаут). С повтором худший случай — 2 × 20 с: в минуту контейнера, но
+# после тика ещё работают отчёты, поэтому дольше не поднимаем.
+_CATALOG_TIMEOUT_SECONDS = 20
 # Только чтение каталога пунктов: повтор после таймаута ничего не создаст.
 _RETRY_ON_TIMEOUT = frozenset({"/v1/delivery-point/list", "/v1/delivery-point/info"})
 _MAX_REDIRECTS = 3
@@ -176,7 +181,13 @@ def _describe_failure(response: httpx.Response) -> str:
     return "; ".join(parts)
 
 
-async def _post(client: httpx.AsyncClient, url: str, payload: dict, headers: dict) -> httpx.Response:
+async def _post(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+    headers: dict,
+    timeout: float | httpx.Timeout | None = httpx.USE_CLIENT_DEFAULT,
+) -> httpx.Response:
     """POST с ручной обработкой редиректа от защиты Ozon.
 
     Автоматическое следование за редиректом не подходит: httpx на 302
@@ -184,7 +195,9 @@ async def _post(client: httpx.AsyncClient, url: str, payload: dict, headers: dic
     адресу. Поэтому повторяем сами, забрав куку.
     """
     for attempt in range(_MAX_REDIRECTS):
-        response = await client.post(url, json=payload, headers=headers, cookies=_cookies)
+        response = await client.post(
+            url, json=payload, headers=headers, cookies=_cookies, timeout=timeout
+        )
         if response.status_code not in (301, 302, 303, 307, 308):
             return response
 
@@ -237,6 +250,7 @@ async def _post_authorized(client: httpx.AsyncClient, path: str, payload: dict) 
         f"{settings.ozon_api_base_url}{path}",
         payload,
         {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        _CATALOG_TIMEOUT_SECONDS if path in _RETRY_ON_TIMEOUT else httpx.USE_CLIENT_DEFAULT,
     )
 
 
