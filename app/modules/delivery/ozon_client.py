@@ -45,6 +45,8 @@ _TIMEOUT_SECONDS = 10
 _CATALOG_TIMEOUT_SECONDS = 20
 # Только чтение каталога пунктов: повтор после таймаута ничего не создаст.
 _RETRY_ON_TIMEOUT = frozenset({"/v1/delivery-point/list", "/v1/delivery-point/info"})
+# Ответы шлюза, после которых чтение каталога стоит повторить.
+_RETRY_STATUSES = frozenset({502, 503, 504})
 _MAX_REDIRECTS = 3
 # Проверено живым запросом: Ozon отвечает «размер страницы должен быть от 1
 # до 100», хотя в спецификации ограничения нет.
@@ -261,6 +263,7 @@ async def call(path: str, payload: dict) -> dict:
         raise OzonError("OZON_CLIENT_ID/OZON_CLIENT_SECRET не заданы")
 
     client = _shared_client()
+    retried = False
     try:
         response = await _post_authorized(client, path, payload)
     except httpx.TransportError:
@@ -274,6 +277,13 @@ async def call(path: str, payload: dict) -> dict:
         if path not in _RETRY_ON_TIMEOUT:
             raise
         logger.info("Связь с Ozon на %s оборвалась — повторяем один раз", path)
+        retried = True
+        response = await _post_authorized(client, path, payload)
+    if not retried and path in _RETRY_ON_TIMEOUT and response.status_code in _RETRY_STATUSES:
+        # Шлюз Ozon изредка отвечает 502 на чтение каталога (06.10 22:55) и
+        # через секунды отвечает нормально. Читает только каталог, поэтому
+        # повтор ничего не создаст.
+        logger.info("Ozon ответил %s на %s — повторяем один раз", response.status_code, path)
         response = await _post_authorized(client, path, payload)
     if response.status_code == 401:
         # Токен по часам ещё жив, а Ozon его уже не принимает: похоже,
