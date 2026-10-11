@@ -1,0 +1,6 @@
+# Замена таймерных триггеров Yandex: тик расписания раз в 5 минут и пульс раз
+# в минуту. Токен — в /etc/teashop/internal_token (chmod 600), тот же
+# INTERNAL_API_TOKEN, что в .env.bot. Ставится: sudo cp teashop-bot.cron /etc/cron.d/teashop-bot
+SHELL=/bin/sh
+* * * * * root curl -fsS -m 50 -o /dev/null -X POST -H "x-internal-token: $(cat /etc/teashop/internal_token)" --data 'ops-pulse' http://127.0.0.1:8080/
+*/5 * * * * root curl -fsS -m 280 -o /dev/null -X POST -H "x-internal-token: $(cat /etc/teashop/internal_token)" http://127.0.0.1:8080/

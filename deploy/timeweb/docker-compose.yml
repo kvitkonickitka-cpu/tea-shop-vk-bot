@@ -1,0 +1,37 @@
+# Бот на своей ВМ (Timeweb) — запасной путь, когда Yandex Serverless лежит.
+# Сборка из этого же репозитория, HTTPS — Caddy с сертификатом Let's Encrypt.
+#   cd deploy/timeweb && docker compose up -d --build
+services:
+  bot:
+    build: ../..
+    env_file: .env.bot
+    environment:
+      PORT: "8080"
+      # Очереди Yandex здесь нет: без неё бот обрабатывает событие сразу.
+      YMQ_QUEUE_URL: ""
+      # Monitoring берёт токен из метаданных ВМ Yandex — здесь их нет.
+      YC_FOLDER_ID: ""
+    # Только для cron на этой же машине — снаружи бот виден через Caddy.
+    ports:
+      - "127.0.0.1:8080:8080"
+    extra_hosts:
+      # Postgres на этой же ВМ: из контейнера он — host.docker.internal.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    environment:
+      BOT_DOMAIN: ${BOT_DOMAIN:?задайте BOT_DOMAIN в .env рядом с этим файлом}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - bot
+    restart: unless-stopped
+
+volumes:
+  caddy_data: {}
