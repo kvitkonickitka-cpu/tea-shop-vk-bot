@@ -3,3 +3,8 @@
 {$BOT_DOMAIN} {
 	reverse_proxy bot:8080
 }
+
+# Дашборды Metabase (deploy/timeweb/metabase).
+stats.{$BOT_DOMAIN} {
+	reverse_proxy metabase:3000
+}

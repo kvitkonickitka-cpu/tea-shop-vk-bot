@@ -1,0 +1,21 @@
+# Metabase для дашбордов. Читает схему analytics ролью metabase_ro (подключение
+# заводится в интерфейсе Metabase). Свои настройки хранит в базе metabase.
+# Память ограничена: при нехватке система остановит Metabase, а не бота и базу.
+services:
+  metabase:
+    image: metabase/metabase:latest
+    env_file: .env
+    environment:
+      JAVA_OPTS: "-Xmx512m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:+UseSerialGC"
+      JAVA_TIMEZONE: Europe/Moscow
+      MB_SITE_URL: https://stats.201-24-120-144.sslip.io
+      MB_ANON_TRACKING_ENABLED: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 1200m
+    memswap_limit: 1600m
+    restart: unless-stopped
+    networks: [timeweb_default]
+networks:
+  timeweb_default:
+    external: true

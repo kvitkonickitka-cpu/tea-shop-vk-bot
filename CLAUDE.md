@@ -6,6 +6,11 @@
 
 ## Деплой
 
+**С 13.10.2026 бот, база, Metabase и cashflow работают на ВМ Timeweb** —
+`deploy/timeweb/README.md`. Yandex остановлен; workflow `deploy-yandex` при
+мерже в `main` развернул бы его снова, поэтому, пока workflow не отключён в
+Actions, в `main` не мержить. Ниже — как было устроено в Yandex.
+
 **Мерж в `main` = деплой**: workflow запускается на каждый push в `main`.
 Каждый деплой собирает и загружает Docker-образ в Yandex Cloud. Одно время
 образ при загрузке сканировался на уязвимости, это стоило около 15 долларов
@@ -566,16 +571,18 @@ Ozon в каталоге есть координаты. Скриншоты бо�
 неоплаченные заказы и переписка для модели; `/постоянный` — обычный режим.
 У остальных клиентов это обычный текст.
 
-## Аналитика: DataLens
+## Аналитика: Metabase
 
-Чарты читают только схему `analytics` (`app/modules/analytics/views.py`).
+Дашборды (Metabase на ВМ Timeweb, `https://stats.201-24-120-144.sslip.io`)
+читают только схему `analytics` (`app/modules/analytics/views.py`).
 **Столбцы только добавляются в конец** — и в `views.py`, и в
 `analytics/contract.yaml`, иначе падает тест договора. Персональных данных
 в схеме нет: клиент — `client_key` (`app/core/client_key.py`), тестовые
 аккаунты (`TEST_VK_IDS`) и тестовые заказы (`orders.is_test`) исключены.
 Новое событие воронки — `funnel.record` с источником и строка в
-`views.EVENTS` (тест проверит, что у всех событий есть подпись). Подключение
-и роль `datalens_reader` — `docs/infrastructure.md`, «Аналитика: DataLens».
+`views.EVENTS` (тест проверит, что у всех событий есть подпись). Подключение,
+роль `metabase_ro` и дашборды как код (`analytics/metabase/`) —
+`docs/infrastructure.md`, «Аналитика: Metabase».
 
 ## Мониторинг
 
@@ -638,7 +645,7 @@ runbook, где логи. **В чат Ops пишем только о реаль�
   Ops, клиент Monitoring; `app/core/logs.py` — JSON-логи и маскировка;
   `ops/vm/` — отметки задач на ВМ с базой
 - `app/privacy/` — метки вместо персональных данных: распознавание, хранилище, перенос истории
-- `app/modules/analytics/` — клиенты, тестовые данные, схема `analytics` для DataLens
+- `app/modules/analytics/` — клиенты, тестовые данные, схема `analytics` для Metabase
 - `app/core/database.py` — подключение к базе и резервный режим
 - `app/core/diagnostics.py` — диагностика сети при недоступной базе
 

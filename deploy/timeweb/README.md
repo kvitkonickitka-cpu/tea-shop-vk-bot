@@ -1,6 +1,11 @@
 # Бот на своей ВМ (Timeweb)
 
-Запасной путь на случай, когда Yandex Serverless Containers не принимает
+**С 13.10.2026 это основной и единственный путь**: ВМ `teashop-db`
+(Москва MSK-1, `201.24.120.144`, 1 CPU / 2 ГБ — увеличить нельзя, регион
+«Распродано»). Здесь же Postgres, Metabase и cashflow. Yandex остановлен —
+раздел «Yandex остановлен» ниже.
+
+Появился как запасной путь, когда Yandex Serverless Containers не принимал
 запросы (11.10.2026: шлюз `*.containers.yandexcloud.net` рвал соединение на
 TLS, бот молчал). Бот тот же, из этого репозитория; отличия от Yandex:
 
@@ -29,9 +34,51 @@ sudo cp teashop-bot.cron /etc/cron.d/teashop-bot
 ```
 
 В `.env.bot`:
-- `DATABASE_URL` — Postgres на этой же ВМ: хост `host.docker.internal`;
+- `DATABASE_URL` — Postgres на этой же ВМ: хост `host.docker.internal`,
+  `?ssl=require`;
 - `PUBLIC_BASE_URL` — `https://<BOT_DOMAIN>` (ссылки на страницу сборки);
+- `YOOKASSA_RETURN_URL` — `https://<BOT_DOMAIN>/payments/yookassa`: сюда
+  браузер клиента возвращается после оплаты. Адрес Yandex здесь — мёртвая
+  страница после оплаты;
 - остальное — те же значения, что в секретах GitHub.
+
+## Postgres
+
+`postgres/setup_pg.sh` — контейнер `teashop-postgres` (Postgres 18, том
+`pgdata`, SSL обязателен). Порт опубликован только на `172.17.0.1` (мост
+`docker0`): снаружи базы не видно, бот и Metabase ходят через
+`host.docker.internal`. **Закрывать порт правилом `ufw` бесполезно**: Docker
+публикует порты в обход ufw — только адресом в `-p`. Копия перед правками:
+`docker exec teashop-postgres pg_dump -U teashop -d teashop -Fc > /root/backups/…`.
+
+## Metabase
+
+Дашборды — `https://stats.<BOT_DOMAIN>` (блок в `Caddyfile`), контейнер из
+`metabase/docker-compose.yml` в `/opt/metabase`, свои настройки хранит в базе
+`metabase`. Памяти мало, поэтому лимит контейнера 1200 МБ и куча Java 512 МБ:
+при нехватке система останавливает Metabase, а не бота и базу. С
+`-XX:MaxMetaspaceSize=200m` Metabase не стартует (`OutOfMemoryError: Metaspace`).
+
+```
+mkdir -p /opt/metabase && cp metabase/docker-compose.yml /opt/metabase/
+cp metabase/env.example /opt/metabase/.env && chmod 600 /opt/metabase/.env   # пароль metabase_app
+cd /opt/metabase && docker compose up -d
+docker exec timeweb-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+Роли — `analytics/metabase_roles.sql`, дашборды — `analytics/metabase/`.
+`Caddyfile` смонтирован в контейнер файлом: правка через `sed -i` меняет
+inode, и Caddy видит старую версию — дописывать или пересоздавать контейнер.
+
+## Yandex остановлен
+
+С 13.10.2026: у контейнера `tea-shop-vk-bot` закрыт публичный вызов и стоит
+пустая ревизия `bbaf4t4cti6c985ed4s6` (без секретов, `min-instances 0`);
+рабочая — `bballgouqka68btvgutr`. Таймерных триггеров нет. Старая ВМ с базой
+`epd61hgvour5kh6dc2tg` остановлена, Yandex не даёт её запустить
+(`Resource allocation is restricted`). **Workflow `deploy-yandex` при пуше в
+`main` развернёт контейнер снова** — пока его не отключили в Actions, в `main`
+не мержить.
 
 Порты 80 и 443 должны быть открыты в файрволе Timeweb: на 80 Caddy получает
 сертификат.
@@ -50,8 +97,10 @@ sudo cp teashop-bot.cron /etc/cron.d/teashop-bot
 
 ## Вернуться на Yandex
 
-Когда `https://bba42jg9t25oajtl255q.containers.yandexcloud.net/health`
-снова отвечает:
+Сейчас не планируется. Если понадобится — откатить контейнер на рабочую
+ревизию (`yc serverless container rollback`), разрешить публичный вызов,
+вернуть таймерные триггеры, открыть базу контейнеру (порт сейчас только
+внутри ВМ) и:
 
 1. Вернуть адреса ВК и ЮКассы на Yandex.
 2. `sudo rm /etc/cron.d/teashop-bot` и `docker compose down` — иначе тик
