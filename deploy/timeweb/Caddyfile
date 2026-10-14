@@ -8,5 +8,15 @@
 
 # Дашборды Metabase (deploy/timeweb/metabase).
 stats.{$BOT_DOMAIN}, stats.teapotwice.ru {
+	# Вход только через Google (с двухфакторкой аккаунта Google). Отключить
+	# пароль в бесплатном Metabase нельзя — это платная функция, — поэтому
+	# режем вход по паролю, сброс и «забыл пароль» здесь. Google идёт через
+	# /api/session/google_auth, ключ API — заголовком, их это не трогает.
+	# Аварийный вход паролем — в обход Caddy, deploy/timeweb/README.md.
+	@password_login {
+		method POST
+		path /api/session /api/session/forgot_password /api/session/reset_password
+	}
+	respond @password_login "Вход по паролю отключён — войдите через Google" 403
 	reverse_proxy metabase:3000
 }

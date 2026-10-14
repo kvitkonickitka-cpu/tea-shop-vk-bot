@@ -117,6 +117,21 @@ docker exec timeweb-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter
 `Caddyfile` смонтирован в контейнер файлом: правка через `sed -i` меняет
 inode, и Caddy видит старую версию — дописывать или пересоздавать контейнер.
 
+**Вход — только через Google** (с 15.10.2026): проект Google Cloud
+`teapotwice-metabase` (аккаунт nikitakvitkochina@gmail.com), OAuth-клиент
+«Metabase» с источником `https://stats.teapotwice.ru`. Приложение в режиме
+«Testing» — войти может только почта из списка Audience → Test users, новому
+сотруднику её туда добавить (и завести в Metabase на ту же почту). Пароль
+бесплатный Metabase отключать не умеет, поэтому вход паролем, сброс и «забыл
+пароль» режет `Caddyfile` (403). **Аварийный вход паролем** — в обход Caddy:
+
+```
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' metabase-metabase-1   # на ВМ
+ssh -L 3000:<этот IP>:3000 root@201.24.120.144                                                       # с ноутбука
+```
+
+и открыть `http://localhost:3000`.
+
 ## Копия вне ВМ (S3)
 
 Каждую ночь в 05:15 МСК `teashop-offsite-backup.timer` кладёт в бакет
