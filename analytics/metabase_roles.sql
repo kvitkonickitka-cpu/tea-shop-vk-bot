@@ -30,7 +30,8 @@ alter default privileges for role teashop in schema analytics grant select on ta
 -- Витрины finance создаёт cashflow (ветка claude/great-darwin-dfl2tn); до неё блок пропускается.
 select 'grant usage on schema finance to metabase_ro'
  where exists (select from pg_namespace where nspname = 'finance') \gexec
-select 'grant select on finance.v_cash_summary, finance.v_metrics, finance.v_ddc, finance.v_unclassified, finance.v_channel_mix to metabase_ro'
+-- v_daily_balance_total — остаток по дням для кривой на «Сводке» (15.10.2026): только день и сумма.
+select 'grant select on finance.v_cash_summary, finance.v_metrics, finance.v_ddc, finance.v_unclassified, finance.v_channel_mix, finance.v_daily_balance_total to metabase_ro'
  where exists (select from pg_namespace where nspname = 'finance') \gexec
 
 select format('create role metabase_app login password %L', :'app_pw')

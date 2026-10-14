@@ -13,13 +13,15 @@ F = {
     "unclassified.operation_date": 235,
     "funnel.created_date_msk": 96, "orders.created_date_msk": 135, "orders.paid_date_msk": 137,
     "items.created_date_msk": 127, "touches.sent_date_msk": 175, "clients.first_contact_date_msk": 81,
-    "cash.period_type": 182, "metrics.period_type": 219,
+    "cash.period_type": 182, "metrics.period_type": 219, "daily.day": 246,
 }
 # Поля для вопросов-конструкторов (mbql): v_cash_summary, v_metrics, v_orders.
 CASH_CLOSING, CASH_CFO, CASH_FCF, METRICS_RUNWAY = 186, 190, 192, 225
 ORDERS_TOTAL, ORDERS_IS_PAID, ORDERS_IS_REFUNDED = 154, 142, 143
 
 RUB = {"suffix": " ₽", "decimals": 0}
+# Плавная кривая вместо ломаной у дневных графиков.
+SMOOTH = {"line.interpolate": "cardinal"}
 
 
 def tag_period():
@@ -96,6 +98,13 @@ mbql("cfo", coll, "Операционный поток", 16, ["sum", ["field", C
 mbql("runway", coll, "На сколько хватит денег, мес.", 19, ["max", ["field", METRICS_RUNWAY, None]],
      "metrics.period_start", {"decimals": 1}, period_field="metrics.period_type",
      description="Остаток денег, делённый на средний операционный отток за последние месяцы. Пусто — оттока нет.")
+card("daily_bal", coll, "Деньги на счетах по дням",
+     # До первого дня с деньгами витрина тянет нули с начала года — ровная линия на полграфика.
+     'select day as "День", balance as "Остаток" from finance.v_daily_balance_total\n'
+     "where day >= (select min(day) from finance.v_daily_balance_total where balance <> 0)\n"
+     "[[and {{dates}}]] order by 1",
+     "line", {"graph.dimensions": ["День"], "graph.metrics": ["Остаток"], **SMOOTH, **colfmt(**{"Остаток": RUB})},
+     "daily.day", description="Остаток на всех счетах на конец каждого дня (выписка Т-Банка).")
 card("fcf_chart", coll, "FCF по периодам",
      f"select period_start as \"Период\", fcf as \"FCF\", fcf_rolling_3m as \"FCF, среднее за 3 мес.\" {CS} order by 1",
      "combo", {"graph.dimensions": ["Период"], "graph.metrics": ["FCF", "FCF, среднее за 3 мес."],
@@ -165,7 +174,7 @@ card("daily", coll, "Диалоги, счета и оплаты по дням",
      f"  count(*) filter (where {INVOICE}) as \"Счетов\",\n"
      "  count(*) filter (where event = 'payment_succeeded') as \"Оплат\"\n"
      "from analytics.v_funnel_events where true [[and {{dates}}]] group by 1 order by 1",
-     "line", {"graph.dimensions": ["День"], "graph.metrics": ["Диалогов", "Счетов", "Оплат"]}, "funnel.created_date_msk")
+     "line", {"graph.dimensions": ["День"], "graph.metrics": ["Диалогов", "Счетов", "Оплат"], **SMOOTH}, "funnel.created_date_msk")
 card("losses", coll, "Где теряем",
      "select event_label as \"Что случилось\", count(*) as \"Раз\" from analytics.v_funnel_events\n"
      "where event in ('invoice_expired', 'payment_declined', 'invoice_canceled', 'canceled_by_client', 'button_stale')\n"
@@ -190,7 +199,7 @@ card("subsidy", coll, "Доставка за наш счёт",
      description="Цена перевозчика по заказам с бесплатной для клиента доставкой.")
 card("rev_daily", coll, "Выручка по дням",
      f"select paid_date_msk as \"День\", sum(total) as \"Выручка\", count(*) as \"Заказов\" {PAID} group by 1 order by 1",
-     "bar", {"graph.dimensions": ["День"], "graph.metrics": ["Выручка"]}, "orders.paid_date_msk")
+     "line", {"graph.dimensions": ["День"], "graph.metrics": ["Выручка"], **SMOOTH}, "orders.paid_date_msk")
 card("channels", coll, "Заказы по каналам",
      f"select channel_label as \"Канал\", count(*) as \"Заказов\", sum(total) as \"Выручка\" {PAID} group by 1 order by 3 desc",
      "row", {"graph.dimensions": ["Канал"], "graph.metrics": ["Выручка"]}, "orders.paid_date_msk")
@@ -305,15 +314,17 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     # Обзор
     dc("bal", 0, 0, 4, 3, T["Обзор"]), dc("runway", 0, 4, 4, 3, T["Обзор"]), dc("rev", 0, 8, 4, 3, T["Обзор"]),
     dc("ord_cnt", 0, 12, 4, 3, T["Обзор"]), dc("avg", 0, 16, 4, 3, T["Обзор"]), dc("conv", 0, 20, 4, 3, T["Обзор"]),
-    dc("fcf_chart", 3, 0, 12, 6, T["Обзор"]), dc("rev_daily", 3, 12, 12, 6, T["Обзор"]),
-    dc("funnel", 9, 0, 12, 7, T["Обзор"]), dc("costs", 9, 12, 12, 7, T["Обзор"]),
+    dc("daily_bal", 3, 0, 24, 6, T["Обзор"]),
+    dc("fcf_chart", 9, 0, 12, 6, T["Обзор"]), dc("rev_daily", 9, 12, 12, 6, T["Обзор"]),
+    dc("funnel", 15, 0, 12, 7, T["Обзор"]), dc("costs", 15, 12, 12, 7, T["Обзор"]),
     # Деньги
     dc("bal", 0, 0, 6, 3, T["Деньги"]), dc("fcf", 0, 6, 6, 3, T["Деньги"]), dc("cfo", 0, 12, 6, 3, T["Деньги"]),
     dc("runway", 0, 18, 6, 3, T["Деньги"]),
-    dc("fcf_chart", 3, 0, 12, 6, T["Деньги"]), dc("waterfall", 3, 12, 12, 6, T["Деньги"]),
-    dc("costs", 9, 0, 12, 6, T["Деньги"]), dc("income", 9, 12, 12, 6, T["Деньги"]),
-    dc("ddc", 15, 0, 24, 7, T["Деньги"]),
-    dc("uncl_share", 22, 0, 6, 3, T["Деньги"]), dc("check", 25, 0, 6, 4, T["Деньги"]), dc("uncl", 22, 6, 18, 7, T["Деньги"]),
+    dc("daily_bal", 3, 0, 24, 6, T["Деньги"]),
+    dc("fcf_chart", 9, 0, 12, 6, T["Деньги"]), dc("waterfall", 9, 12, 12, 6, T["Деньги"]),
+    dc("costs", 15, 0, 12, 6, T["Деньги"]), dc("income", 15, 12, 12, 6, T["Деньги"]),
+    dc("ddc", 21, 0, 24, 7, T["Деньги"]),
+    dc("uncl_share", 28, 0, 6, 3, T["Деньги"]), dc("check", 31, 0, 6, 4, T["Деньги"]), dc("uncl", 28, 6, 18, 7, T["Деньги"]),
     # Воронка
     dc("funnel", 0, 0, 12, 8, T["Воронка"]), dc("conv", 0, 12, 6, 3, T["Воронка"]),
     dc("losses", 3, 12, 12, 5, T["Воронка"]), dc("daily", 8, 0, 24, 6, T["Воронка"]),
