@@ -165,6 +165,24 @@ docker exec -i teashop-postgres pg_restore -U teashop -d teashop --clean --if-ex
 Проверка: `curl https://<BOT_DOMAIN>/health` — `"database": "ok"`; через
 5 минут в «по расписанию» появится отметка тика.
 
+## Адреса: teapotwice.ru
+
+С 15.10.2026 у магазина свой домен `teapotwice.ru` (Timeweb, автопродление
+включено). A-записи `teapotwice.ru`, `bot.` и `stats.` в панели Timeweb
+привязаны к ВМ `teashop-db`, а не вписаны IP-адресом: сменится IP — записи
+переедут сами. `bot.teapotwice.ru` — бот (ВК Callback API, уведомления
+ЮKassa, `PUBLIC_BASE_URL`, `YOOKASSA_RETURN_URL`), `stats.teapotwice.ru` —
+Metabase. Сертификаты Let's Encrypt получает и продлевает Caddy; платный
+SSL Timeweb не нужен. Прежние `*.sslip.io` в `Caddyfile` ещё отвечают —
+на них смотрит сторож на Aeza; переведём его — убрать.
+
+**Строка подтверждения ВК меняется.** При смене адреса сервера в Callback
+API ВК шлёт `confirmation` и ждёт строку со страницы «Работа с API» —
+она должна совпадать с `VK_CONFIRMATION_TOKEN` в `.env.bot`. 15.10.2026 в
+`.env.bot` лежала старая, и ВК ответил «Сервер вернул неправильный ответ»;
+до подтверждения новый адрес событий не получает. Править `.env.bot` и
+`docker compose up -d bot`, потом снова «Подтвердить».
+
 ## Переключить трафик
 
 1. **ВК**: сообщество → Управление → Работа с API → Callback API → адрес
