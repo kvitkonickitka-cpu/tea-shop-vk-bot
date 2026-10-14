@@ -133,8 +133,10 @@ yc serverless container revision get --id <ID> | grep DATABASE_URL
 
 ## Деплой
 
-`.github/workflows/deploy-yandex.yml` — на каждый push в `main` и вручную
-(`workflow_dispatch`, кнопка Run workflow во вкладке Actions).
+**С 14.10.2026 деплой — на ВМ Timeweb кнопкой «Deploy to Timeweb»**
+(`deploy/timeweb/README.md`), а `deploy-yandex.yml` удалён. Ниже — как
+было в Yandex: `.github/workflows/deploy-yandex.yml` — на каждый push в
+`main` и вручную (`workflow_dispatch`, кнопка Run workflow во вкладке Actions).
 
 25.09.2026 ненадолго деплоили только вручную: образ при каждой загрузке в
 реестр сканировался на уязвимости, и сканирование списывало деньги — около
@@ -711,9 +713,9 @@ GitHub `VK_USER_TOKEN` и ревизия контейнера (переменн�
 **Подключение.** В таблице «Файл → Поделиться → Опубликовать в интернете»,
 лист с каталогом, формат «CSV» → ссылку в переменную репозитория
 `CATALOG_SHEET_CSV_URL` (Settings → Secrets and variables → Actions →
-Variables) и передеплой. Пока переменной нет, деплой берёт ссылку на
-таблицу «Каталог чая — бот ВК», вписанную в `deploy-yandex.yml` значением
-по умолчанию: она не секретная, CSV и так открыт по ней любому. Ссылка из адресной строки браузера не годится: по
+Variables) и передеплой. На ВМ Timeweb ссылка задаётся в `deploy/timeweb/.env.bot`
+(`CATALOG_SHEET_CSV_URL`); прежде её подставлял `deploy-yandex.yml`. Она не
+секретная, CSV и так открыт по ней любому. Ссылка из адресной строки браузера не годится: по
 ней отдаётся веб-страница, и бот скажет об этом прямо.
 
 **Столбцы** (первая строка, регистр не важен): `Название`, `Цена` —

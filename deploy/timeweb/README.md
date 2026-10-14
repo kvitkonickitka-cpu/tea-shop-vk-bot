@@ -97,8 +97,8 @@ inode, и Caddy видит старую версию — дописывать и
 пустая ревизия `bbaf4t4cti6c985ed4s6` (без секретов, `min-instances 0`);
 рабочая — `bballgouqka68btvgutr`. Таймерных триггеров нет. Старая ВМ с базой
 `epd61hgvour5kh6dc2tg` остановлена, Yandex не даёт её запустить
-(`Resource allocation is restricted`). Workflow «Deploy to Yandex Cloud» отключён
-в Actions — не включать.
+(`Resource allocation is restricted`). Workflow деплоя в Yandex
+(`deploy-yandex.yml`) удалён 14.10.2026, в истории git он есть.
 
 Порты 80 и 443 должны быть открыты в файрволе Timeweb: на 80 Caddy получает
 сертификат.
