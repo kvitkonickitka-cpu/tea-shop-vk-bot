@@ -14,6 +14,7 @@ from app import privacy
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.delivery import cdek_client, ozon_catalog, ozon_client, ozon_quote
+from app.modules.delivery import pricing as delivery_pricing
 from app.messages import client as client_messages, funnel, manager as manager_messages, marketing, templates
 from app.modules.dialog import (
     attachments as vk_attachments,
@@ -863,7 +864,9 @@ async def _cdek_delivery(
         declared_value=draft.items_total,
         delivery_point=delivery_point,
     )
-    return tariff, total
+    # Цена для клиента — с надбавкой на эквайринг: дальше по коду её только
+    # сравнивают и показывают (app/modules/delivery/pricing.py).
+    return tariff, delivery_pricing.for_client(total)
 
 
 async def _ozon_points(
@@ -889,11 +892,17 @@ async def _ozon_price(draft: OrderDraft, point_id: int) -> ozon_client.Quote:
     (01.10.2026), хотя из контейнера тот же пункт считался. Настоящий телефон
     уходит в Ozon только при создании отправления — и там он нормализуется.
     """
-    return await ozon_quote.price_for(
+    found = await ozon_quote.price_for(
         point_id,
         phone="",
         weight_grams=_draft_weight_grams(draft),
         declared_value=draft.items_total,
+    )
+    # Цена для клиента — с надбавкой на эквайринг (app/modules/delivery/pricing.py).
+    # Страховка входит в сумму: надбавка с неё такая же, а отдельно её дальше
+    # никто не читает.
+    return ozon_client.Quote(
+        delivery_cost=delivery_pricing.for_client(found.total), insurance_cost=0, days=found.days
     )
 
 
@@ -1204,7 +1213,7 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
                 f"Неизвестный способ доставки: {method}. Предложи клиенту выбрать из вариантов ещё раз."
             )
         draft.delivery_label = tariff["label"]
-        draft.delivery_cost = tariff["price"]
+        draft.delivery_cost = delivery_pricing.for_client(tariff["price"])
         eta.forget(draft.details)
 
     if ask_point:

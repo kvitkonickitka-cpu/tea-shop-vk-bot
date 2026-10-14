@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from app.core.config import settings
 from app.modules.delivery import cdek_client, ozon_client
+from app.modules.delivery import pricing as delivery_pricing
 from app.messages import manager as manager_messages, templates
 from app.modules.dialog import vk_client
 from app.modules.orders import contacts
@@ -147,10 +148,13 @@ async def _in_ozon(
 
     # Цену сверяем с тем, что назвали клиенту: Ozon считает заново на
     # создании, и разойтись она может — например, если пункт выбрали другой.
-    if delivery_cost is not None and abs(posting.total - delivery_cost) > 1:
+    # Клиенту называли цену с надбавкой на эквайринг — сверяем без неё,
+    # иначе «расхождение» было бы на каждом заказе.
+    expected = delivery_pricing.carrier_part(delivery_cost)
+    if expected is not None and abs(posting.total - expected) > 1:
         logger.warning(
-            "Ozon посчитал доставку иначе, чем мы назвали клиенту: %s против %s (отправление %s)",
-            posting.total, delivery_cost, posting.posting_number,
+            "Ozon посчитал доставку иначе, чем мы назвали клиенту: %s против %s без надбавки (отправление %s)",
+            posting.total, expected, posting.posting_number,
         )
 
     logger.info(

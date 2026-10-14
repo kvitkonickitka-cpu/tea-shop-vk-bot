@@ -32,6 +32,9 @@ os.environ.setdefault("PAYMENTS_ENABLED", "true")
 # проверяют, что с ними всё работает как раньше. Ключи — только тестовые.
 os.environ.setdefault("CLIENT_KEY_SECRET", "test-client-key-secret")
 os.environ.setdefault("PII_ENCRYPTION_KEY", "dGVzdC1waWkta2V5LXRlc3QtcGlpLWtleS10ZXN0LTMyYg==")
+# Сценарии сверяют суммы с ценой, которую вернул подменённый перевозчик.
+# Надбавку на эквайринг проверяет отдельно tests/test_delivery_acquiring.py.
+os.environ.setdefault("DELIVERY_ACQUIRING_PERCENT", "0")
 
 
 @pytest.fixture(scope="session")
