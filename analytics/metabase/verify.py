@@ -1,5 +1,7 @@
+"""Проверка дашбордов: python3 verify.py <id дашборда> [...]."""
+import sys
 from mbapi import call
-for did in (2, 3):
+for did in map(int, sys.argv[1:]):
     d = call("GET", f"/dashboard/{did}")
     tabs = {t["id"]: t["name"] for t in d.get("tabs", [])}
     by_tab = {}
