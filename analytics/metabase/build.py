@@ -130,7 +130,8 @@ card("funnel", coll, "Воронка: от диалога до вручения"
 card("conv", coll, "Конверсия диалог → оплата, %",
      "select round(100.0 * count(distinct client_key) filter (where event = 'payment_succeeded')\n"
      "  / nullif(count(distinct client_key) filter (where event = 'dialog_start'), 0), 1) as \"Конверсия, %\"\n"
-     "from analytics.v_funnel_events where true [[and {{dates}}]]",
+     "from analytics.v_funnel_events where true [[and {{dates}}]]\n"
+     "having count(distinct client_key) filter (where event = 'dialog_start') > 0",
      "scalar", colfmt(**{"Конверсия, %": {"suffix": " %"}}), "funnel.created_date_msk")
 card("daily", coll, "Диалоги, счета и оплаты по дням",
      "select created_date_msk as \"День\",\n"
@@ -195,7 +196,7 @@ card("new_rep", coll, "Первые и повторные покупки",
      "bar", {"graph.dimensions": ["Месяц", "Покупка"], "graph.metrics": ["Заказов"], "stackable.stack_type": "stacked"},
      "orders.paid_date_msk")
 card("rep_share", coll, "Доля повторных покупок, %",
-     f"select round(100.0 * count(*) filter (where client_paid_order_number > 1) / nullif(count(*), 0), 1) as \"Повторные, %\" {PAID}",
+     f"select round(100.0 * count(*) filter (where client_paid_order_number > 1) / nullif(count(*), 0), 1) as \"Повторные, %\" {PAID} having count(*) > 0",
      "scalar", colfmt(**{"Повторные, %": {"suffix": " %"}}), "orders.paid_date_msk")
 card("touches", coll, "Касания после покупки",
      "select touch_label as \"Касание\", count(*) as \"Отправлено\",\n"
@@ -228,7 +229,8 @@ card("assort_tbl", coll, "Сорта и фасовки",
      "table", {}, "items.created_date_msk")
 card("upsell", coll, "Допродажа принята, %",
      "select round(100.0 * count(*) filter (where upsell_accepted) / nullif(count(*) filter (where upsell_offered), 0), 1)\n"
-     "  as \"Принята, %\" from analytics.v_orders where true [[and {{dates}}]]",
+     "  as \"Принята, %\" from analytics.v_orders where true [[and {{dates}}]]\n"
+     "having count(*) filter (where upsell_offered) > 0",
      "scalar", colfmt(**{"Принята, %": {"suffix": " %"}}), "orders.created_date_msk",
      description="Из заказов, где предлагали товар из «С чем советуем».")
 

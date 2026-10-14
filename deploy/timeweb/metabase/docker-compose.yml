@@ -10,6 +10,8 @@ services:
       JAVA_TIMEZONE: Europe/Moscow
       MB_SITE_URL: https://stats.201-24-120-144.sslip.io
       MB_ANON_TRACKING_ENABLED: "false"
+      # Не больше 8 подключений к витринам: у роли metabase_ro лимит 10, лишние запросы ждут в очереди.
+      MB_JDBC_DATA_WAREHOUSE_MAX_CONNECTION_POOL_SIZE: "8"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     mem_limit: 1200m

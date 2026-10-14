@@ -19,7 +19,9 @@ select format('create role metabase_ro login password %L', :'ro_pw')
 select format('alter role metabase_ro login password %L', :'ro_pw') \gexec
 alter role metabase_ro set default_transaction_read_only = on;
 alter role metabase_ro set statement_timeout = '60s';
-alter role metabase_ro connection limit 5;
+-- Дашборд шлёт десяток запросов разом; Metabase держит не больше 8 подключений
+-- (MB_JDBC_DATA_WAREHOUSE_MAX_CONNECTION_POOL_SIZE), с лимитом 5 карточки падали.
+alter role metabase_ro connection limit 10;
 revoke create on schema public from metabase_ro;
 grant usage on schema analytics to metabase_ro;
 grant select on all tables in schema analytics to metabase_ro;
