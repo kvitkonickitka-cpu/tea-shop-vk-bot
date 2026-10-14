@@ -34,8 +34,6 @@ services:
 
   caddy:
     image: caddy:2
-    environment:
-      BOT_DOMAIN: ${BOT_DOMAIN:?задайте BOT_DOMAIN в .env рядом с этим файлом}
     ports:
       - "80:80"
       - "443:443"

@@ -25,7 +25,6 @@ Claude и Telegram ходят через прокси на Aeza — от Yandex 
 git clone https://github.com/kvitkonickitka-cpu/tea-shop-vk-bot.git /opt/tea-shop-vk-bot
 cd /opt/tea-shop-vk-bot/deploy/timeweb
 cp env.example .env.bot && chmod 600 .env.bot      # заполнить значения
-echo "BOT_DOMAIN=<ip-через-дефисы>.sslip.io" > .env  # запасной адрес; основной — bot.teapotwice.ru в Caddyfile
 docker compose up -d --build
 sudo install -d -m 700 /etc/teashop
 sudo sh -c 'grep ^INTERNAL_API_TOKEN= .env.bot | cut -d= -f2- > /etc/teashop/internal_token'
@@ -36,8 +35,8 @@ sudo cp teashop-bot.cron /etc/cron.d/teashop-bot
 В `.env.bot`:
 - `DATABASE_URL` — Postgres на этой же ВМ: хост `host.docker.internal`,
   `?ssl=require`;
-- `PUBLIC_BASE_URL` — `https://<BOT_DOMAIN>` (ссылки на страницу сборки);
-- `YOOKASSA_RETURN_URL` — `https://<BOT_DOMAIN>/payments/yookassa`: сюда
+- `PUBLIC_BASE_URL` — `https://bot.teapotwice.ru` (ссылки на страницу сборки);
+- `YOOKASSA_RETURN_URL` — `https://bot.teapotwice.ru/payments/yookassa`: сюда
   браузер клиента возвращается после оплаты. Адрес Yandex здесь — мёртвая
   страница после оплаты;
 - остальное — те же значения, что в секретах GitHub.
@@ -97,7 +96,7 @@ restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-act
 
 ## Metabase
 
-Дашборды — `https://stats.<BOT_DOMAIN>` (блок в `Caddyfile`), контейнер из
+Дашборды — `https://stats.teapotwice.ru` (блок в `Caddyfile`), контейнер из
 `metabase/docker-compose.yml` в `/opt/metabase`, свои настройки хранит в базе
 `metabase`. Памяти мало, поэтому лимит контейнера 1200 МБ и куча Java 512 МБ:
 при нехватке система останавливает Metabase, а не бота и базу. **Версия
@@ -177,7 +176,7 @@ docker exec -i teashop-postgres pg_restore -U teashop -d teashop --clean --if-ex
 Порты 80 и 443 должны быть открыты в файрволе Timeweb: на 80 Caddy получает
 сертификат.
 
-Проверка: `curl https://<BOT_DOMAIN>/health` — `"database": "ok"`; через
+Проверка: `curl https://bot.teapotwice.ru/health` — `"database": "ok"`; через
 5 минут в «по расписанию» появится отметка тика.
 
 ## Адреса: teapotwice.ru
@@ -188,8 +187,8 @@ docker exec -i teashop-postgres pg_restore -U teashop -d teashop --clean --if-ex
 переедут сами. `bot.teapotwice.ru` — бот (ВК Callback API, уведомления
 ЮKassa, `PUBLIC_BASE_URL`, `YOOKASSA_RETURN_URL`), `stats.teapotwice.ru` —
 Metabase. Сертификаты Let's Encrypt получает и продлевает Caddy; платный
-SSL Timeweb не нужен. Прежние `*.sslip.io` в `Caddyfile` ещё отвечают —
-на них смотрит сторож на Aeza; переведём его — убрать.
+SSL Timeweb не нужен. Прежние `*.sslip.io` убраны 15.10.2026, вместе с
+монитором Timeweb на них.
 
 **Строка подтверждения ВК меняется.** При смене адреса сервера в Callback
 API ВК шлёт `confirmation` и ждёт строку со страницы «Работа с API» —
@@ -201,10 +200,10 @@ API ВК шлёт `confirmation` и ждёт строку со страницы 
 ## Переключить трафик
 
 1. **ВК**: сообщество → Управление → Работа с API → Callback API → адрес
-   `https://<BOT_DOMAIN>/vk/callback`, «Подтвердить» (строка подтверждения —
+   `https://bot.teapotwice.ru/vk/callback`, «Подтвердить» (строка подтверждения —
    `VK_CONFIRMATION_TOKEN`, секретный ключ — `VK_SECRET_KEY`, те же).
 2. **ЮKassa**: личный кабинет → Интеграция → HTTP-уведомления →
-   `https://<BOT_DOMAIN>/payments/yookassa`. Если не поменять, оплату всё
+   `https://bot.teapotwice.ru/payments/yookassa`. Если не поменять, оплату всё
    равно подхватит сверка в тике, но с задержкой до 5 минут.
 
 ## Вернуться на Yandex

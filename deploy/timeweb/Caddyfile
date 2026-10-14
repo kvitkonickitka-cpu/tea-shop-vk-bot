@@ -1,13 +1,13 @@
 # Сертификаты Let's Encrypt Caddy получает и продлевает сам.
 # Свой домен — teapotwice.ru (с 15.10.2026, A-записи привязаны к ВМ в панели
-# Timeweb). BOT_DOMAIN — прежний <ip-через-дефисы>.sslip.io: оставлен, пока ВК,
-# ЮKassa и сторож на Aeza не переведены на новые адреса, потом убрать.
-{$BOT_DOMAIN}, bot.teapotwice.ru {
+# Timeweb). Прежние адреса *.sslip.io убраны 15.10.2026, когда ВК, ЮKassa и
+# сторож на Aeza перешли на новые.
+bot.teapotwice.ru {
 	reverse_proxy bot:8080
 }
 
 # Дашборды Metabase (deploy/timeweb/metabase).
-stats.{$BOT_DOMAIN}, stats.teapotwice.ru {
+stats.teapotwice.ru {
 	# Вход только через Google (с двухфакторкой аккаунта Google). Отключить
 	# пароль в бесплатном Metabase нельзя — это платная функция, — поэтому
 	# режем вход по паролю, сброс и «забыл пароль» здесь. Google идёт через
