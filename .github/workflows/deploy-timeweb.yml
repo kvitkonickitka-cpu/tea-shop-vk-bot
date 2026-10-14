@@ -1,0 +1,38 @@
+# Кнопка «Deploy to Timeweb»: Actions → Deploy to Timeweb → Run workflow.
+# Выкатывает main на ВМ Timeweb (бот, Caddy, Metabase). Сам по пушу не запускается.
+#
+# Ключ TIMEWEB_DEPLOY_KEY (секрет репозитория) на ВМ может только одно —
+# запустить /usr/local/sbin/teashop-deploy (forced command в authorized_keys).
+# Скрипт делает копию базы, собирает бота, ждёт /health и при сбое откатывается.
+name: Deploy to Timeweb
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-timeweb
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Deploy main to the Timeweb VM
+        env:
+          DEPLOY_KEY: ${{ secrets.TIMEWEB_DEPLOY_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Ключ хоста ВМ teashop-db — подмену сервера ssh не пропустит.
+          echo "201.24.120.144 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBWsvsHCY7NYb1QMiUUJF/H72pJzcIzPfb7+Zxy82oMw" > ~/.ssh/known_hosts
+          # Повторяем только если не удалось подключиться (код 255); ошибку деплоя не повторяем.
+          for attempt in 1 2 3; do
+            rc=0
+            ssh -i ~/.ssh/deploy_key -o ConnectTimeout=20 -o ServerAliveInterval=15 -o BatchMode=yes root@201.24.120.144 || rc=$?
+            [ "$rc" -ne 255 ] && exit "$rc"
+            echo "Не подключились к ВМ (попытка $attempt), ждём 15 с"
+            sleep 15
+          done
+          exit 255

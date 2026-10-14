@@ -7,9 +7,12 @@
 ## Деплой
 
 **С 13.10.2026 бот, база, Metabase и cashflow работают на ВМ Timeweb** —
-`deploy/timeweb/README.md`. Yandex остановлен; workflow `deploy-yandex` при
-мерже в `main` развернул бы его снова, поэтому, пока workflow не отключён в
-Actions, в `main` не мержить. Ниже — как было устроено в Yandex.
+`deploy/timeweb/README.md`. **Деплой — кнопкой**: Actions → «Deploy to
+Timeweb» → Run workflow (`.github/workflows/deploy-timeweb.yml` →
+`deploy/timeweb/deploy.sh` на ВМ: копия базы, сборка, `/health`, откат при
+сбое). Мерж в `main` сам ничего не выкатывает. Workflow «Deploy to Yandex
+Cloud» отключён в Actions (14.10.2026) — не включать: он поднимет
+остановленный контейнер в Yandex. Ниже — как было устроено в Yandex.
 
 **Мерж в `main` = деплой**: workflow запускается на каждый push в `main`.
 Каждый деплой собирает и загружает Docker-образ в Yandex Cloud. Одно время

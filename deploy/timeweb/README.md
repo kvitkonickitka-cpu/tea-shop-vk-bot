@@ -42,6 +42,27 @@ sudo cp teashop-bot.cron /etc/cron.d/teashop-bot
   страница после оплаты;
 - остальное — те же значения, что в секретах GitHub.
 
+## Деплой кнопкой
+
+Actions → **Deploy to Timeweb** → Run workflow. Выкатывается `main`:
+`deploy.sh` делает копию базы (`/root/backups/teashop_predeploy_*.dump`, 7
+последних), забирает `main`, собирает и перезапускает бота, пересоздаёт Caddy,
+если менялся `Caddyfile`, обновляет cron и Metabase, если менялись их файлы, и
+ждёт `/health` с `"database": "ok"`. Нет ответа за 90 с — откат на прежний
+коммит, кнопка краснеет. Вручную на ВМ: `sudo teashop-deploy`.
+
+Ключ кнопки — секрет репозитория `TIMEWEB_DEPLOY_KEY`. Его публичная часть в
+`/root/.ssh/authorized_keys` ограничена одной командой:
+
+```
+restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-actions-deploy
+```
+
+`/usr/local/sbin/teashop-deploy` — копия `deploy.sh`, ставится руками
+(`install -m 750 deploy.sh /usr/local/sbin/teashop-deploy`): так коммит в
+репозиторий не меняет то, что выполняется по ключу. Поменяли `deploy.sh` —
+переустановить копию.
+
 ## Postgres
 
 `postgres/setup_pg.sh` — контейнер `teashop-postgres` (Postgres 18, том
@@ -76,9 +97,8 @@ inode, и Caddy видит старую версию — дописывать и
 пустая ревизия `bbaf4t4cti6c985ed4s6` (без секретов, `min-instances 0`);
 рабочая — `bballgouqka68btvgutr`. Таймерных триггеров нет. Старая ВМ с базой
 `epd61hgvour5kh6dc2tg` остановлена, Yandex не даёт её запустить
-(`Resource allocation is restricted`). **Workflow `deploy-yandex` при пуше в
-`main` развернёт контейнер снова** — пока его не отключили в Actions, в `main`
-не мержить.
+(`Resource allocation is restricted`). Workflow «Deploy to Yandex Cloud» отключён
+в Actions — не включать.
 
 Порты 80 и 443 должны быть открыты в файрволе Timeweb: на 80 Caddy получает
 сертификат.
