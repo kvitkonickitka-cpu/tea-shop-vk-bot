@@ -3,7 +3,10 @@
 # Память ограничена: при нехватке система остановит Metabase, а не бота и базу.
 services:
   metabase:
-    image: metabase/metabase:latest
+    # Версия закреплена: `latest` при пересоздании подтянул бы новую мажорную
+    # версию, а Metabase мигрирует свою базу при старте без пути назад.
+    # Обновлять осознанно: новый тег, копия базы metabase, деплой.
+    image: metabase/metabase:v0.64.2@sha256:038b47779d234dbf6462444639346e86b12fab13110dce783e4dcd22d7c0c14c
     env_file: .env
     environment:
       JAVA_OPTS: "-Xmx512m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:+UseSerialGC"
@@ -16,7 +19,14 @@ services:
       - "host.docker.internal:host-gateway"
     mem_limit: 1200m
     memswap_limit: 1600m
+    # Первым под нож при нехватке памяти — дашборды подождут, бот и база нет.
+    oom_score_adj: 800
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks: [timeweb_default]
 networks:
   timeweb_default:

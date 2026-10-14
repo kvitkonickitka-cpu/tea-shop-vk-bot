@@ -14,7 +14,7 @@ TLS, бот молчал). Бот тот же, из этого репозито�
 | Serverless Container | `docker compose`: контейнер бота + Caddy (HTTPS) |
 | Очередь YMQ и склейка сообщений | без очереди: событие обрабатывается сразу, склейки нет |
 | Таймерные триггеры `dialog-reports`, `ops-pulse` | `cron`: тик раз в 5 минут, пульс раз в минуту |
-| Метрики в Yandex Monitoring | не пишутся: алерт «бот не работает» в Monitoring будет гореть — это ожидаемо |
+| Метрики в Yandex Monitoring | не пишутся; «бот не работает» сообщает внешний сторож на Aeza (`deploy/watchdog`) — это ожидаемо |
 | Секреты в GitHub → ревизия | файл `.env.bot` на ВМ (chmod 600, в git не кладётся) |
 
 Claude и Telegram ходят через прокси на Aeza — от Yandex они не зависят.
@@ -48,8 +48,9 @@ Actions → **Deploy to Timeweb** → Run workflow. Выкатывается `ma
 `deploy.sh` делает копию базы (`/root/backups/teashop_predeploy_*.dump`, 7
 последних), забирает `main`, собирает и перезапускает бота, пересоздаёт Caddy,
 если менялся `Caddyfile`, обновляет cron и Metabase, если менялись их файлы, и
-ждёт `/health` с `"database": "ok"`. Нет ответа за 90 с — откат на прежний
-коммит, кнопка краснеет. Вручную на ВМ: `sudo teashop-deploy`.
+ждёт `/health` с `"database": "ok"`. Не собралось, не поднялось или нет
+ответа за 90 с — откат на прежний коммит, кнопка краснеет. Вручную на ВМ:
+`sudo teashop-deploy`.
 
 Ключ кнопки — секрет репозитория `TIMEWEB_DEPLOY_KEY`. Его публичная часть в
 `/root/.ssh/authorized_keys` ограничена одной командой:
@@ -62,6 +63,25 @@ restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-act
 (`install -m 750 deploy.sh /usr/local/sbin/teashop-deploy`): так коммит в
 репозиторий не меняет то, что выполняется по ключу. Поменяли `deploy.sh` —
 переустановить копию.
+
+## Память, логи, копии
+
+**Память — 2 ГБ на всё** (бот, Postgres, Caddy, Metabase), swap 1 ГБ. Кто
+первым идёт под нож при нехватке, решает `oom_score_adj`: Metabase `800`,
+бот, Caddy и Postgres `-500`. Тот же смысл у `vm.swappiness=10`
+(`/etc/sysctl.d/99-teashop.conf`): ядро сначала отдаёт кэш, а не
+выталкивает в swap бота, которому на ответ ВК даёт 8 секунд.
+
+**Логи Docker ротируются**: 10 МБ × 5 файлов у бота, Caddy и Postgres, 10 МБ
+× 3 у Metabase (`logging` в compose-файлах, `--log-opt` в `setup_pg.sh`). По
+умолчанию Docker журнал не режет, и пульс раз в минуту вместе со сканерами
+рано или поздно съел бы диск. У Postgres лимит вступает в силу при следующем
+пересоздании контейнера (`setup_pg.sh`).
+
+**Копии базы**: перед каждым деплоем (`teashop_predeploy_*`, 7 последних) и
+каждую ночь в 03:15 МСК (`teashop_nightly_*`, 7 последних, строка в
+`teashop-bot.cron`) — в `/root/backups`. Это тот же диск; наружу их уносят
+бэкапы сервера в панели Timeweb, поэтому они должны быть включены.
 
 ## Postgres
 
@@ -77,7 +97,10 @@ restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-act
 Дашборды — `https://stats.<BOT_DOMAIN>` (блок в `Caddyfile`), контейнер из
 `metabase/docker-compose.yml` в `/opt/metabase`, свои настройки хранит в базе
 `metabase`. Памяти мало, поэтому лимит контейнера 1200 МБ и куча Java 512 МБ:
-при нехватке система останавливает Metabase, а не бота и базу. С
+при нехватке система останавливает Metabase, а не бота и базу. **Версия
+закреплена** (`v0.64.2` с digest): `latest` при пересоздании подтянул бы новую
+мажорную версию, а Metabase мигрирует свою базу без пути назад. Обновлять —
+сменить тег, сделать копию базы `metabase`, задеплоить. С
 `-XX:MaxMetaspaceSize=200m` Metabase не стартует (`OutOfMemoryError: Metaspace`).
 
 ```

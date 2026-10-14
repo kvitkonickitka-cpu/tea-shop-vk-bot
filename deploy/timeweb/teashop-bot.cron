@@ -4,3 +4,8 @@
 SHELL=/bin/sh
 * * * * * root curl -fsS -m 50 -o /dev/null -X POST -H "x-internal-token: $(cat /etc/teashop/internal_token)" --data 'ops-pulse' http://127.0.0.1:8080/
 */5 * * * * root curl -fsS -m 280 -o /dev/null -X POST -H "x-internal-token: $(cat /etc/teashop/internal_token)" http://127.0.0.1:8080/
+# Копия базы каждую ночь в 03:15 по Москве (00:15 UTC), 7 последних. Лежит на
+# этом же диске, а наружу её уносят бэкапы сервера Timeweb: дисковый снимок
+# работающей базы может оказаться несогласованным, а pg_dump — нет.
+# Сначала во временный файл: упавший pg_dump не оставит обрывка под видом копии.
+15 0 * * * root mkdir -p /root/backups && docker exec teashop-postgres pg_dump -U teashop -d teashop -Fc > /root/backups/.teashop_nightly.part && mv /root/backups/.teashop_nightly.part /root/backups/teashop_nightly_$(date -u +\%Y\%m\%d).dump && ls -1t /root/backups/teashop_nightly_*.dump | tail -n +8 | xargs -r rm -f

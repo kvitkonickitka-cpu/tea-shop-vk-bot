@@ -1,6 +1,15 @@
 # Бот на своей ВМ (Timeweb) — запасной путь, когда Yandex Serverless лежит.
 # Сборка из этого же репозитория, HTTPS — Caddy с сертификатом Let's Encrypt.
 #   cd deploy/timeweb && docker compose up -d --build
+
+# Логи Docker по умолчанию не ротируются: бот пишет пульс каждую минуту, а
+# снаружи ходят сканеры — без лимита журнал рано или поздно съест диск ВМ.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   bot:
     build: ../..
@@ -18,6 +27,10 @@ services:
       # Postgres на этой же ВМ: из контейнера он — host.docker.internal.
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    logging: *logging
+    # Памяти на ВМ впритык (2 ГБ, увеличить нельзя): при нехватке ядро должно
+    # выбрать Metabase, а не бота, который отвечает клиентам.
+    oom_score_adj: -500
 
   caddy:
     image: caddy:2
@@ -32,6 +45,8 @@ services:
     depends_on:
       - bot
     restart: unless-stopped
+    logging: *logging
+    oom_score_adj: -500
 
 volumes:
   caddy_data: {}

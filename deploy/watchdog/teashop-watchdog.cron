@@ -1,0 +1,5 @@
+# Внешний сторож бота (deploy/watchdog). Ставится на VPS Aeza:
+#   install -m 755 teashop-watchdog.sh /usr/local/bin/teashop-watchdog
+#   cp teashop-watchdog.cron /etc/cron.d/teashop-watchdog
+SHELL=/bin/sh
+* * * * * root /usr/local/bin/teashop-watchdog

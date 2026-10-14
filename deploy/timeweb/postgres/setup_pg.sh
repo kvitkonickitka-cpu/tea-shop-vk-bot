@@ -22,7 +22,9 @@ host all all ::/0 reject
 H
 chown 999:999 /opt/pg/pg_hba.conf
 log "postgres"; docker rm -f teashop-postgres >/dev/null 2>&1 || true
+# Лимит логов и приоритет при нехватке памяти — как у бота в docker-compose.yml.
 docker run -d --name teashop-postgres --restart unless-stopped \
+  --log-opt max-size=10m --log-opt max-file=5 --oom-score-adj=-500 \
   -e POSTGRES_USER=teashop -e POSTGRES_DB=teashop --env-file /root/.pg_env \
   -p 172.17.0.1:5432:5432 -v pgdata:/var/lib/postgresql \
   -v /opt/pg/certs:/certs:ro -v /opt/pg/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro \
