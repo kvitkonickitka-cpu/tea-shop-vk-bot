@@ -145,6 +145,56 @@ async def test_number_picks_from_shown_list(clean, ozon):
     assert "shown_points" not in draft.details
 
 
+@pytest.mark.parametrize("given", [
+    "Краснодар", "г. Краснодар", "Краснодар, Ставропольская улица",
+    "Россия, Краснодарский край, Краснодар, ул. Красная, 124", " краснодар ",
+])
+def test_city_key_ignores_street_and_prefix(given):
+    assert points.city_key(given) == "краснодар"
+
+
+@pytest.mark.parametrize("shown_at, chosen_at", [
+    ("Краснодар", "Краснодар, Ставропольская улица"),
+    ("Краснодар, Ставропольская улица", "Краснодар"),
+])
+async def test_number_picks_when_address_comes_with_street(clean, ozon, shown_at, chosen_at):
+    # 15.10.2026: на «1, ФИО, телефон, почта» модель передала адрес вместе с
+    # улицей, список, показанный для одного города, не нашёлся — номер
+    # отбросился, клиент услышал «пунктов много», кнопки стали неактуальны.
+    await fresh_draft()
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": shown_at, "pickup_point": "Ставропольская"}
+    )
+    searches = len(ozon["search"])
+    result = await conversation._execute_set_delivery_method(
+        PEER, {"method": "ozon_pvz", "address": chosen_at, "pickup_point": "2"}
+    )
+    draft = await state.get_draft(PEER)
+    assert draft.details["ozon_point_id"] == 12 and len(ozon["search"]) == searches
+    assert "Способ доставки зафиксирован: Ozon, пункт выдачи: Краснодар, Ставропольская улица, 159" in result.tool_result
+
+
+async def test_cdek_number_picks_when_address_comes_with_street(clean, monkeypatch):
+    city = [cdek_client.DeliveryPoint(code=f"KSD{i}", address=f"ул. Красная, {i}", work_time="") for i in range(1, 7)]
+
+    async def city_points(name):
+        return city
+
+    async def delivery(draft, method, address, delivery_point=None):
+        return NS(code=136, period_min=3, period_max=4), 397.0
+
+    monkeypatch.setattr(cdek_client, "city_points", city_points)
+    monkeypatch.setattr(conversation, "_cdek_delivery", delivery)
+    await fresh_draft()
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "cdek_pvz", "address": "Краснодар", "pickup_point": "Красная"}
+    )
+    await conversation._execute_set_delivery_method(
+        PEER, {"method": "cdek_pvz", "address": "Краснодар, улица Красная", "pickup_point": "3"}
+    )
+    assert (await state.get_draft(PEER)).details["delivery_point"] == "KSD3"
+
+
 async def test_unknown_address_is_not_accepted(clean, ozon):
     await fresh_draft()
     await conversation._execute_set_delivery_method(PEER, {"method": "ozon_pvz", "address": "Краснодар"})

@@ -49,6 +49,23 @@ def _number(text: str) -> int | None:
     return None
 
 
+def city_key(text: str | None) -> str:
+    """Город для сравнения: «Москва», «г. Москва» и «Москва, Тверская улица» — один.
+
+    Модель передаёт город от вызова к вызову по-разному: то одним словом, то
+    вместе с улицей. Показанный список искался по строке как есть, и на
+    «1, ФИО, телефон, почта» — ровно то, что бот сам просит прислать, — с
+    адресом «Москва, Тверская улица» не находился: номер отбрасывался,
+    клиент слышал «пунктов много», а кнопки пунктов становились
+    неактуальными (15.10.2026, Москва и Краснодар).
+    """
+    from app.modules.orders import address
+
+    raw = (text or "").strip()
+    parsed = address.city_and_street(raw)
+    return (parsed[0] if parsed else raw).strip().casefold()
+
+
 def is_number(answer: str) -> bool:
     """Ответ — номер из списка («1», «второй»), а не адрес."""
     return _number(answer) is not None
@@ -104,7 +121,7 @@ def remember(details: dict, method: str, city: str, points: list[dict], *,
     """
     shown = [{"n": i, **point} for i, point in enumerate(points[:MAX_SHOWN], start=1)]
     details["shown_points"] = shown
-    details["shown_for"] = f"{method}:{city.strip().lower()}"
+    details["shown_for"] = f"{method}:{city_key(city)}"
     details.pop("shown_query", None)
     details.pop("shown_quote", None)
     if query is not None and quote is not None:
@@ -138,7 +155,9 @@ def kept_quote(details: dict):
 
 def shown_for(details: dict, method: str, city: str) -> list[dict]:
     """Список, показанный для этого способа и города, — или пустой."""
-    if details.get("shown_for") != f"{method}:{(city or '').strip().lower()}":
+    stored_method, _, stored_city = (details.get("shown_for") or "").partition(":")
+    # Сравниваем ключи, а не строки: и сохранённый город мог прийти с улицей.
+    if stored_method != method or city_key(stored_city) != city_key(city):
         return []
     return list(details.get("shown_points") or [])
 

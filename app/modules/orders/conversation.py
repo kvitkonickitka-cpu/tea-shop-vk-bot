@@ -929,11 +929,11 @@ async def _execute_set_delivery_method(peer_id: int, tool_input: dict) -> ToolEx
     # «давайте СДЭК» модель передавала один город, и бот заново спрашивал
     # улицу, хотя клиент её уже назвал (05.10.2026).
     named_point = (tool_input.get("pickup_point") or "").strip()
-    named_city = (tool_input.get("address") or "").strip().casefold()
+    named_city = points.city_key(tool_input.get("address"))
     street = draft.details.get("street") or {}
     if (
         not named_point and not tool_input.get("_near") and method in ("ozon_pvz", "cdek_pvz")
-        and street.get("city") == named_city and street.get("hint")
+        and points.city_key(street.get("city")) == named_city and street.get("hint")
     ):
         tool_input = {**tool_input, "pickup_point": street["hint"]}
 
