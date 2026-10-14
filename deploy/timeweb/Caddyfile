@@ -1,10 +1,12 @@
-# Сертификат Caddy получает сам. Своего домена нет — подойдёт
-# <публичный-ip-через-дефисы>.sslip.io: он всегда указывает на этот адрес.
-{$BOT_DOMAIN} {
+# Сертификаты Let's Encrypt Caddy получает и продлевает сам.
+# Свой домен — teapotwice.ru (с 15.10.2026, A-записи привязаны к ВМ в панели
+# Timeweb). BOT_DOMAIN — прежний <ip-через-дефисы>.sslip.io: оставлен, пока ВК,
+# ЮKassa и сторож на Aeza не переведены на новые адреса, потом убрать.
+{$BOT_DOMAIN}, bot.teapotwice.ru {
 	reverse_proxy bot:8080
 }
 
 # Дашборды Metabase (deploy/timeweb/metabase).
-stats.{$BOT_DOMAIN} {
+stats.{$BOT_DOMAIN}, stats.teapotwice.ru {
 	reverse_proxy metabase:3000
 }

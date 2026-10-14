@@ -592,7 +592,7 @@ Ozon в каталоге есть координаты. Скриншоты бо�
 
 ## Аналитика: Metabase
 
-Дашборды (Metabase на ВМ Timeweb, `https://stats.201-24-120-144.sslip.io`)
+Дашборды (Metabase на ВМ Timeweb, `https://stats.teapotwice.ru`)
 читают только схему `analytics` (`app/modules/analytics/views.py`).
 **Столбцы только добавляются в конец** — и в `views.py`, и в
 `analytics/contract.yaml`, иначе падает тест договора. Персональных данных

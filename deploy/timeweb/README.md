@@ -25,7 +25,7 @@ Claude и Telegram ходят через прокси на Aeza — от Yandex 
 git clone https://github.com/kvitkonickitka-cpu/tea-shop-vk-bot.git /opt/tea-shop-vk-bot
 cd /opt/tea-shop-vk-bot/deploy/timeweb
 cp env.example .env.bot && chmod 600 .env.bot      # заполнить значения
-echo "BOT_DOMAIN=<ip-через-дефисы>.sslip.io" > .env  # или свой домен с A-записью на ВМ
+echo "BOT_DOMAIN=<ip-через-дефисы>.sslip.io" > .env  # запасной адрес; основной — bot.teapotwice.ru в Caddyfile
 docker compose up -d --build
 sudo install -d -m 700 /etc/teashop
 sudo sh -c 'grep ^INTERNAL_API_TOKEN= .env.bot | cut -d= -f2- > /etc/teashop/internal_token'

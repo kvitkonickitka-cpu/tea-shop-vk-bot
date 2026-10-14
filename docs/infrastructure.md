@@ -2459,7 +2459,7 @@ Claude уже не помещалось в восемь секунд, поэто
 
 ### Подключение
 
-С 13.10.2026 дашборды — в Metabase на ВМ Timeweb: `https://stats.201-24-120-144.sslip.io`
+С 13.10.2026 дашборды — в Metabase на ВМ Timeweb: `https://stats.teapotwice.ru`
 (установка — `deploy/timeweb/README.md`, «Metabase»). DataLens больше не используется:
 он ходил к базе в Yandex Cloud, а та недоступна.
 

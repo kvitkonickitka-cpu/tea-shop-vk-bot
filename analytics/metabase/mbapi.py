@@ -1,6 +1,6 @@
 """Мини-клиент Metabase API. Ключ — из /etc/teashop/metabase_api_key, никуда не выводится."""
 import json, time, urllib.request, urllib.error
-BASE = "https://stats.201-24-120-144.sslip.io/api"
+BASE = "https://stats.teapotwice.ru/api"
 KEY = open("/etc/teashop/metabase_api_key").read().strip()
 
 def call(method, path, body=None):

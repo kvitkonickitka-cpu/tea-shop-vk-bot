@@ -11,7 +11,7 @@ services:
     environment:
       JAVA_OPTS: "-Xmx512m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:+UseSerialGC"
       JAVA_TIMEZONE: Europe/Moscow
-      MB_SITE_URL: https://stats.201-24-120-144.sslip.io
+      MB_SITE_URL: https://stats.teapotwice.ru
       MB_ANON_TRACKING_ENABLED: "false"
       # Не больше 8 подключений к витринам: у роли metabase_ro лимит 10, лишние запросы ждут в очереди.
       MB_JDBC_DATA_WAREHOUSE_MAX_CONNECTION_POOL_SIZE: "8"
