@@ -103,7 +103,9 @@ card("daily_bal", coll, "Деньги на счетах по дням",
      'select day as "День", balance as "Остаток" from finance.v_daily_balance_total\n'
      "where day >= (select min(day) from finance.v_daily_balance_total where balance <> 0)\n"
      "[[and {{dates}}]] order by 1",
-     "line", {"graph.dimensions": ["День"], "graph.metrics": ["Остаток"], **SMOOTH, **colfmt(**{"Остаток": RUB})},
+     "line", {"graph.dimensions": ["День"], "graph.metrics": ["Остаток"], **SMOOTH, **colfmt(**{"Остаток": RUB}),
+             # Без точек на каждый день и ось не от нуля: иначе спуски остатка теряются.
+             "line.marker_enabled": False, "graph.y_axis.unpin_from_zero": True},
      "daily.day", description="Остаток на всех счетах на конец каждого дня (выписка Т-Банка).")
 card("fcf_chart", coll, "FCF по периодам",
      f"select period_start as \"Период\", fcf as \"FCF\", fcf_rolling_3m as \"FCF, среднее за 3 мес.\" {CS} order by 1",
