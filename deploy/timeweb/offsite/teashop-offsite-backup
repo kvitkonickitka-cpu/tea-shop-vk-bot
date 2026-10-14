@@ -1,0 +1,35 @@
+#!/bin/bash
+# Ночная копия всего, что нужно поднять магазин с нуля, в S3 Timeweb (Санкт-Петербург,
+# другой дата-центр): база бота (с analytics и finance), база Metabase и настройки ВМ.
+# Шифруется открытым ключом age: закрытый — только у владельца (менеджер паролей),
+# на ВМ его нет. Хранение: daily/ — 30 дней, monthly/ (копия 1-го числа) — 400 дней.
+set -euo pipefail
+S3ENV=/etc/teashop/s3.env
+PUB=/etc/teashop/offsite_age.pub
+[ -r "$S3ENV" ] || { echo "Нет $S3ENV — ключи S3 не вписаны"; exit 1; }
+set -a; . "$S3ENV"; set +a
+export RCLONE_CONFIG_OFFSITE_TYPE=s3 RCLONE_CONFIG_OFFSITE_PROVIDER=Other \
+       RCLONE_CONFIG_OFFSITE_ENDPOINT=https://s3.twcstorage.ru RCLONE_CONFIG_OFFSITE_REGION=ru-1 \
+       RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="$S3_ACCESS_KEY" RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+       RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET=true  # у пользователя бакета нет прав проверять или создавать бакет
+BUCKET=offsite:teashop-offsite-backups
+DAY=$(date -u +%F)
+W=$(mktemp -d /root/offsite.XXXXXX); trap 'rm -rf "$W"' EXIT
+docker exec teashop-postgres pg_dump -U teashop -d teashop -Fc > "$W/teashop.dump"
+docker exec teashop-postgres pg_dump -U teashop -d metabase -Fc > "$W/metabase.dump"
+# Настройки: без них дамп не поднять (ключ PII_ENCRYPTION_KEY, токены, сертификаты).
+tar -C / --ignore-failed-read -czf "$W/config.tar.gz" \
+  opt/tea-shop-vk-bot/deploy/timeweb/.env.bot opt/tea-shop-vk-bot/deploy/timeweb/.env \
+  opt/metabase/.env opt/metabase/docker-compose.yml etc/teashop etc/cashflow root/.pg_env opt/pg \
+  etc/cron.d/teashop-bot root/.ssh/authorized_keys usr/local/sbin \
+  etc/systemd/system/cashflow.service etc/systemd/system/cashflow.timer \
+  etc/systemd/system/cashflow-backup.service etc/systemd/system/cashflow-backup.timer \
+  etc/systemd/system/ops-heartbeat@.service etc/systemd/system/teashop-offsite-backup.service \
+  etc/systemd/system/teashop-offsite-backup.timer 2>/dev/null
+tar -C "$W" -cf - teashop.dump metabase.dump config.tar.gz | age -R "$PUB" > "$W/teashop-$DAY.tar.age"
+SIZE=$(du -h "$W/teashop-$DAY.tar.age" | cut -f1)
+rclone copyto -q "$W/teashop-$DAY.tar.age" "$BUCKET/daily/teashop-$DAY.tar.age"
+[ "$(date -u +%d)" = 01 ] && rclone copyto -q "$W/teashop-$DAY.tar.age" "$BUCKET/monthly/teashop-$DAY.tar.age"
+rclone delete -q --min-age 30d "$BUCKET/daily"
+rclone delete -q --min-age 400d "$BUCKET/monthly"
+echo "$(date -Is) копия teashop-$DAY.tar.age ($SIZE) в S3; в daily/: $(rclone lsf "$BUCKET/daily" | wc -l) шт."

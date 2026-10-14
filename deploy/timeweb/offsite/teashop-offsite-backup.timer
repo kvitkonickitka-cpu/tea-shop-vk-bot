@@ -1,0 +1,10 @@
+[Unit]
+Description=Копия в S3 каждую ночь в 05:15 по Москве
+
+[Timer]
+OnCalendar=*-*-* 05:15:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

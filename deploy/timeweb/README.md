@@ -82,7 +82,9 @@ restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-act
 каждую ночь в 23:45 МСК (`teashop_nightly_*`, 7 последних, строка в
 `teashop-bot.cron`) — в `/root/backups`. Это тот же диск; наружу их уносят
 бэкапы сервера в панели Timeweb (ежедневно с 00:15 МСК, поэтому копия —
-за полчаса до них), поэтому они должны быть включены.
+за полчаса до них), поэтому они должны быть включены. На них одних не
+полагаемся: 13–14.10.2026 они не делались из-за сбоя у Timeweb, поэтому есть
+ещё зашифрованная копия в S3 в другом дата-центре — «Копия вне ВМ (S3)».
 
 ## Postgres
 
@@ -114,6 +116,39 @@ docker exec timeweb-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter
 Роли — `analytics/metabase_roles.sql`, дашборды — `analytics/metabase/`.
 `Caddyfile` смонтирован в контейнер файлом: правка через `sed -i` меняет
 inode, и Caddy видит старую версию — дописывать или пересоздавать контейнер.
+
+## Копия вне ВМ (S3)
+
+Каждую ночь в 05:15 МСК `teashop-offsite-backup.timer` кладёт в бакет
+`teashop-offsite-backups` (S3 Timeweb, Санкт-Петербург — другой дата-центр,
+приватный, 10 ГБ) один архив: дамп базы бота (с `analytics` и `finance`), дамп
+базы `metabase` и настройки ВМ (`.env` бота с `PII_ENCRYPTION_KEY`, `.env`
+Metabase и cashflow, `/etc/teashop`, пароль Postgres, сертификаты, cron,
+таймеры). По нему ВМ поднимается с нуля. `daily/` хранится 30 дней,
+`monthly/` (копия 1-го числа) — 400 дней. Отметка `offsite-backup` в
+`heartbeats` — в ежедневном отчёте Ops.
+
+Архив зашифрован открытым ключом age (`/etc/teashop/offsite_age.pub`).
+**Закрытый ключ — только в менеджере паролей владельца**, на ВМ его нет:
+без него копии не открыть. Ключи S3 — пользователь бакета `teashop-backup`
+(чтение и запись), в `/etc/teashop/s3.env`; вписывает владелец
+`offsite/offsite_set_s3.sh`. У такого пользователя нет прав проверять или
+создавать бакет, поэтому rclone идёт с `NO_CHECK_BUCKET=true`, иначе запись —
+`AccessDenied`.
+
+Установка: `offsite/` → `/usr/local/sbin/teashop-offsite-backup` и
+`/etc/systemd/system/`, `apt install rclone age`, `systemctl enable --now
+teashop-offsite-backup.timer`. Запустить сейчас: `systemctl start
+teashop-offsite-backup.service`, лог — `/var/log/teashop-offsite-backup.log`.
+
+Восстановить (ключ age — в файл `key.txt`):
+
+```
+rclone copyto offsite:teashop-offsite-backups/daily/teashop-<дата>.tar.age b.age
+age -d -i key.txt b.age | tar -xf -        # teashop.dump, metabase.dump, config.tar.gz
+tar -C / -xzf config.tar.gz                # настройки на место
+docker exec -i teashop-postgres pg_restore -U teashop -d teashop --clean --if-exists < teashop.dump
+```
 
 ## Yandex остановлен
 

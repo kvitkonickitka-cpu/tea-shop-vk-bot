@@ -1,0 +1,12 @@
+# Ночная зашифрованная копия в S3 Timeweb. Скрипт: /usr/local/sbin/teashop-offsite-backup.
+[Unit]
+Description=Копия базы и настроек в S3 (вне этой ВМ)
+After=docker.service network-online.target
+Wants=network-online.target
+OnSuccess=ops-heartbeat@offsite-backup.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/teashop-offsite-backup
+StandardOutput=append:/var/log/teashop-offsite-backup.log
+StandardError=append:/var/log/teashop-offsite-backup.log
