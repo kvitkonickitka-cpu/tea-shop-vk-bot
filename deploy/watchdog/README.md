@@ -1,7 +1,7 @@
 # Внешний сторож бота
 
 Раз в минуту с VPS Aeza (`94.228.170.170`, там же прокси для Anthropic и
-Telegram) спрашивает `https://201-24-120-144.sslip.io/health`. Три неудачи
+Telegram) спрашивает `https://bot.teapotwice.ru/health`. Три неудачи
 подряд — 🔴 в чат Ops, повтор раз в час, починилось — 🟢.
 
 Зачем: бот пишет в Ops о сбоях сам, но только пока жив. Если лягут ВМ
@@ -29,7 +29,7 @@ cp teashop-watchdog.cron /etc/cron.d/teashop-watchdog
 ```
 export WATCHDOG_STATE=/tmp/wd-test WATCHDOG_URL=https://127.0.0.1:1/
 teashop-watchdog; teashop-watchdog; teashop-watchdog      # 🔴 в чат Ops
-WATCHDOG_URL=https://201-24-120-144.sslip.io/health teashop-watchdog   # 🟢
+WATCHDOG_URL=https://bot.teapotwice.ru/health teashop-watchdog   # 🟢
 ```
 
 Боевое состояние — `/var/lib/teashop-watchdog`.

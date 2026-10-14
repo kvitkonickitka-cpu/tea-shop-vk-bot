@@ -16,7 +16,7 @@ set -u
 
 ENV_FILE=/etc/teashop-watchdog.env
 STATE=${WATCHDOG_STATE:-/var/lib/teashop-watchdog}
-URL=${WATCHDOG_URL:-https://201-24-120-144.sslip.io/health}
+URL=${WATCHDOG_URL:-https://bot.teapotwice.ru/health}
 FAILS_TO_ALERT=3
 REPEAT_MINUTES=60
 
