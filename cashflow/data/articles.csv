@@ -1,0 +1,29 @@
+article_id,article,section,direction,grp,is_capex,comment
+cfo_in_yookassa,Поступления ЮKassa,CFO,in,Выручка,false,Нетто-реестры после удержания комиссии эквайринга
+cfo_in_ozon,Поступления Ozon,CFO,in,Выручка,false,Выплаты нетто после удержания услуг Ozon
+cfo_in_direct,Прямые оплаты покупателей,CFO,in,Выручка,false,Переводы от физлиц напрямую на счёт
+cfo_in_other,Прочие операционные поступления,CFO,in,Выручка,false,
+cfo_out_goods,Закупка чая,CFO,out,Товар,false,Российский оптовик
+cfo_out_packaging,Упаковка и расходники,CFO,out,Упаковка,false,
+cfo_out_marking,Маркировка и ЭДО,CFO,out,Маркировка,false,Честный знак и оператор ЭДО
+cfo_out_cdek,Доставка СДЭК,CFO,out,Логистика,false,
+cfo_out_ozon_services,Логистика и услуги Ozon,CFO,out,Логистика,false,Если Ozon выставляет счета отдельно от удержаний
+cfo_out_vk_ads,Реклама VK Ads,CFO,out,Маркетинг,false,
+cfo_out_ads_contractor,Подрядчик по рекламе,CFO,out,Маркетинг,false,Таргетолог
+cfo_out_services,Сервисы и подписки,CFO,out,Сервисы,false,Рассылки Yandex Cloud Claude API и прочее
+cfo_out_bank_fees,Комиссии банка,CFO,out,Банк,false,РКО переводы
+cfo_out_acquiring_fees,Комиссии эквайринга,CFO,out,Банк,false,Только если списываются отдельной операцией
+cfo_out_taxes,Налоги и взносы (ЕНП),CFO,out,Налоги,false,Единый налоговый платёж без разбивки
+cfo_out_loan_interest,Проценты по кредиту,CFO,out,Кредит,false,Заполняется автоматически по графику кредита
+cfo_out_refunds,Возвраты покупателям,CFO,out,Возвраты,false,
+cfo_out_other,Прочие операционные расходы,CFO,out,Прочее,false,
+cfi_equipment,Оборудование,CFI,out,Инвестиции,true,Покупки дороже порога CAPEX со сроком пользы более 12 месяцев
+cfi_digital,Разработка цифровых активов,CFI,out,Инвестиции,true,Только по решению владельца
+cff_loan_received,Получение кредита,CFF,in,Кредит,false,
+cff_loan_principal,Погашение тела кредита,CFF,out,Кредит,false,Заполняется автоматически по графику кредита
+cff_owner_contribution,Взнос собственника,CFF,in,Собственники,false,Пополнение с личной карты
+cff_owner_draw_nikita,Вывод собственнику — Никита,CFF,out,Собственники,false,
+cff_owner_draw_ilya,Вывод собственнику — Илья,CFF,out,Собственники,false,
+tech_internal_transfer,Перевод между своими счетами,TECH,any,Технические,false,Основной счёт копилка депозит
+tech_loan_payment,Платёж по кредиту (делится по графику),TECH,out,Кредит,false,Служебная статья: операция разбивается на проценты и тело и в отчёты не попадает
+tech_unclassified,Не разобрано,TECH,any,Технические,false,Всё что не совпало ни с одним правилом

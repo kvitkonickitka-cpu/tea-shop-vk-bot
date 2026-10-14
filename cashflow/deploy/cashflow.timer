@@ -1,0 +1,12 @@
+[Unit]
+Description=Ежедневная выгрузка выписки Т-Бизнеса в 07:00 по Москве
+
+[Timer]
+# Ежедневный запуск заодно продлевает жизнь токену: он действует
+# 90 дней с момента последнего использования.
+OnCalendar=*-*-* 07:00:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

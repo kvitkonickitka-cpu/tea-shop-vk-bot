@@ -6,3 +6,4 @@ __pycache__/
 .claude/
 .pytest_cache/
 .env.bot
+.claude/settings.local.json
