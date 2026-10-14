@@ -13,7 +13,11 @@ F = {
     "unclassified.operation_date": 235,
     "funnel.created_date_msk": 96, "orders.created_date_msk": 135, "orders.paid_date_msk": 137,
     "items.created_date_msk": 127, "touches.sent_date_msk": 175, "clients.first_contact_date_msk": 81,
+    "cash.period_type": 182, "metrics.period_type": 219,
 }
+# Поля для вопросов-конструкторов (mbql): v_cash_summary, v_metrics, v_orders.
+CASH_CLOSING, CASH_CFO, CASH_FCF, METRICS_RUNWAY = 186, 190, 192, 225
+ORDERS_TOTAL, ORDERS_IS_PAID, ORDERS_IS_REFUNDED = 154, 142, 143
 
 RUB = {"suffix": " ₽", "decimals": 0}
 
@@ -32,7 +36,7 @@ def colfmt(**cols):
     return {"column_settings": {f'["name","{name}"]': fmt for name, fmt in cols.items()}}
 
 
-CARDS = {}  # ключ -> (id, есть period_type, есть dates)
+CARDS = {}  # ключ -> (id, цель фильтра «Даты», цель фильтра «Период»); None — фильтр не привязан
 
 
 def card(key, coll, name, sql, display, viz=None, date_field=None, period=False, description=None):
@@ -46,7 +50,31 @@ def card(key, coll, name, sql, display, viz=None, date_field=None, period=False,
             "dataset_query": {"type": "native", "database": DB,
                               "native": {"query": sql.strip(), "template-tags": tags}}}
     cid = call("POST", "/card", body)["id"]
-    CARDS[key] = (cid, period, bool(date_field))
+    CARDS[key] = (cid,
+                  ["dimension", ["template-tag", "dates"], {"stage-number": 0}] if date_field else None,
+                  ["variable", ["template-tag", "period_type"]] if period else None)
+    return cid
+
+
+def mbql(key, coll, name, table, aggregation, date_field, fmt=None, filter_=None, period_field=None, description=None):
+    """Число с динамикой к прошлому месяцу — вопросом-конструктором, а не SQL.
+
+    Группировка по месяцу у конструктора даёт подпись «окт. 2026»; у SQL-вопроса
+    Metabase пишет «октябрь 1, 2026» и формат даты у smartscalar не применяет.
+    Фильтр «Период» здесь — по полю period_type, поэтому сам вопрос вне дашборда
+    смешивает месяцы, кварталы и годы: смотреть его на «Сводке», где Период = M.
+    """
+    query = {"source-table": table, "aggregation": [aggregation],
+             "breakout": [["field", F[date_field], {"temporal-unit": "month"}]]}
+    if filter_:
+        query["filter"] = filter_
+    viz = {"column_settings": {f'["name","{aggregation[0]}"]': fmt}} if fmt else {}
+    body = {"name": name, "display": "smartscalar", "visualization_settings": viz, "collection_id": coll,
+            "description": description, "dataset_query": {"type": "query", "database": DB, "query": query}}
+    cid = call("POST", "/card", body)["id"]
+    CARDS[key] = (cid,
+                  ["dimension", ["field", F[date_field], None], {"stage-number": 0}],
+                  ["dimension", ["field", F[period_field], None], {"stage-number": 0}] if period_field else None)
     return cid
 
 
@@ -59,18 +87,15 @@ coll = call("POST", "/collection", {"name": COLLECTION, "description": "Собр
 
 # --- Деньги --------------------------------------------------------------------------------
 CS = "from finance.v_cash_summary where period_type = {{period_type}} [[and {{dates}}]]"
-card("bal", coll, "Денег на счетах", f"select period_start, closing_balance as \"Денег на счетах\" {CS} order by period_start",
-     "smartscalar", colfmt(**{"Денег на счетах": RUB}), "cash.period_start", True)
-card("fcf", coll, "Свободный денежный поток (FCF)", f"select period_start, fcf as \"FCF\" {CS} order by period_start",
-     "smartscalar", colfmt(FCF=RUB), "cash.period_start", True,
-     "Операционный поток минус инвестиции (CAPEX).")
-card("cfo", coll, "Операционный поток", f"select period_start, cfo as \"Операционный поток\" {CS} order by period_start",
-     "smartscalar", colfmt(**{"Операционный поток": RUB}), "cash.period_start", True)
-card("runway", coll, "На сколько хватит денег, мес.",
-     "select period_start, runway_months as \"Месяцев\" from finance.v_metrics where period_type = {{period_type}} "
-     "[[and {{dates}}]] order by period_start",
-     "smartscalar", colfmt(**{"Месяцев": {"decimals": 1}}), "metrics.period_start", True,
-     "Остаток денег, делённый на средний операционный отток за последние месяцы. Пусто — оттока нет.")
+mbql("bal", coll, "Денег на счетах", 16, ["sum", ["field", CASH_CLOSING, None]], "cash.period_start", RUB,
+     period_field="cash.period_type")
+mbql("fcf", coll, "Свободный денежный поток (FCF)", 16, ["sum", ["field", CASH_FCF, None]], "cash.period_start", RUB,
+     period_field="cash.period_type", description="Операционный поток минус инвестиции (CAPEX).")
+mbql("cfo", coll, "Операционный поток", 16, ["sum", ["field", CASH_CFO, None]], "cash.period_start", RUB,
+     period_field="cash.period_type")
+mbql("runway", coll, "На сколько хватит денег, мес.", 19, ["max", ["field", METRICS_RUNWAY, None]],
+     "metrics.period_start", {"decimals": 1}, period_field="metrics.period_type",
+     description="Остаток денег, делённый на средний операционный отток за последние месяцы. Пусто — оттока нет.")
 card("fcf_chart", coll, "FCF по периодам",
      f"select period_start as \"Период\", fcf as \"FCF\", fcf_rolling_3m as \"FCF, среднее за 3 мес.\" {CS} order by 1",
      "combo", {"graph.dimensions": ["Период"], "graph.metrics": ["FCF", "FCF, среднее за 3 мес."],
@@ -110,7 +135,8 @@ card("uncl", coll, "Не разобрано: операции",
      "from finance.v_unclassified where true [[and {{dates}}]] order by operation_date desc",
      "table", {}, "unclassified.operation_date")
 card("check", coll, "Сходимость с банком",
-     f"select period_start as \"Период\", check_diff as \"Расхождение, ₽\" {CS} order by 1 desc",
+     f"select to_char(period_start, 'YYYY-MM') as \"Период\", check_diff as \"Расхождение, ₽\" {CS} "
+     "order by period_start desc",
      "table", {}, "cash.period_start", True, "Во всех строках должен быть 0.")
 
 # --- Продажи: Воронка ------------------------------------------------------------------------
@@ -153,16 +179,11 @@ card("escal", coll, "Вопросы менеджеру по дням",
 
 # --- Продажи: Заказы ---------------------------------------------------------------------------
 PAID = "from analytics.v_orders where is_paid and not is_refunded [[and {{dates}}]]"
-card("rev", coll, "Выручка",
-     f"select date_trunc('month', paid_date_msk)::date as \"Месяц\", sum(total) as \"Выручка\" {PAID} group by 1 order by 1",
-     "smartscalar", colfmt(**{"Выручка": RUB}), "orders.paid_date_msk",
+PAID_MBQL = ["and", ["=", ["field", ORDERS_IS_PAID, None], True], ["=", ["field", ORDERS_IS_REFUNDED, None], False]]
+mbql("rev", coll, "Выручка", 14, ["sum", ["field", ORDERS_TOTAL, None]], "orders.paid_date_msk", RUB, PAID_MBQL,
      description="Оплаченные заказы без возвращённых, по дате оплаты.")
-card("ord_cnt", coll, "Оплаченных заказов",
-     f"select date_trunc('month', paid_date_msk)::date as \"Месяц\", count(*) as \"Заказов\" {PAID} group by 1 order by 1",
-     "smartscalar", {}, "orders.paid_date_msk")
-card("avg", coll, "Средний чек",
-     f"select date_trunc('month', paid_date_msk)::date as \"Месяц\", round(avg(total)) as \"Средний чек\" {PAID} group by 1 order by 1",
-     "smartscalar", colfmt(**{"Средний чек": RUB}), "orders.paid_date_msk")
+mbql("ord_cnt", coll, "Оплаченных заказов", 14, ["count"], "orders.paid_date_msk", None, PAID_MBQL)
+mbql("avg", coll, "Средний чек", 14, ["avg", ["field", ORDERS_TOTAL, None]], "orders.paid_date_msk", RUB, PAID_MBQL)
 card("subsidy", coll, "Доставка за наш счёт",
      f"select coalesce(sum(carrier_delivery_cost) filter (where free_delivery), 0) as \"Доставка за наш счёт\" {PAID}",
      "scalar", colfmt(**{"Доставка за наш счёт": RUB}), "orders.paid_date_msk",
@@ -254,13 +275,12 @@ _seq = [0]
 
 def dc(key, row, col, w, h, tab=None, params=("dates", "period")):
     _seq[0] -= 1
-    cid, has_period, has_dates = CARDS[key]
+    cid, dates_target, period_target = CARDS[key]
     maps = []
-    if has_dates and "dates" in params:
-        maps.append({"parameter_id": "dates", "card_id": cid,
-                     "target": ["dimension", ["template-tag", "dates"], {"stage-number": 0}]})
-    if has_period and "period" in params:
-        maps.append({"parameter_id": "period", "card_id": cid, "target": ["variable", ["template-tag", "period_type"]]})
+    if dates_target and "dates" in params:
+        maps.append({"parameter_id": "dates", "card_id": cid, "target": dates_target})
+    if period_target and "period" in params:
+        maps.append({"parameter_id": "period", "card_id": cid, "target": period_target})
     d = {"id": _seq[0], "card_id": cid, "row": row, "col": col, "size_x": w, "size_y": h,
          "parameter_mappings": maps, "visualization_settings": {}}
     if tab is not None:
