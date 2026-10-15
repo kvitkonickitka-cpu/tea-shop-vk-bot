@@ -128,8 +128,15 @@ def note_error(api: str, operation: str, error: BaseException, duration: float) 
     )
 
 
+# Фоновая выгрузка каталога пунктов Ozon — сотни запросов за проход: к
+# задержкам для клиента она отношения не имеет, а журнал раздула бы.
+_QUIET_CALLS = (("ozon", "/v1/delivery-point/"),)
+
+
 def note_call(api: str, operation: str, duration: float) -> None:
     """Удачный вызов внешнего сервиса и сколько он занял."""
+    if any(api == quiet_api and (operation or "").startswith(prefix) for quiet_api, prefix in _QUIET_CALLS):
+        return
     _BUFFER.append({
         "at": _now(), "kind": "call", "api": api, "operation": (operation or "")[:120],
         "duration_ms": int(duration * 1000),

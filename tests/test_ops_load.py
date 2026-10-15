@@ -33,6 +33,11 @@ async def test_watch_records_successful_calls(monkeypatch):
     calls = [row for row in journal._BUFFER if row["kind"] == "call"]
     assert calls and calls[0]["api"] == "cdek" and calls[0]["operation"] == "расчёт тарифов"
     journal._BUFFER.clear()
+    # Выгрузка каталога пунктов Ozon в журнал не пишется — её сотни за проход.
+    journal.note_call("ozon", "/v1/delivery-point/list", 0.05)
+    journal.note_call("ozon", "расчёт (checkout)", 0.3)
+    assert [row["operation"] for row in journal._BUFFER] == ["расчёт (checkout)"]
+    journal._BUFFER.clear()
 
 
 async def test_latency_and_load_tools(db):
