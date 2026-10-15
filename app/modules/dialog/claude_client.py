@@ -21,6 +21,28 @@ _client = AsyncAnthropic(
 )
 
 
+async def _create(operation: str, **request):
+    """Запрос к модели с запасной на случай отказа.
+
+    Sonnet 5.5 отказывает в большем числе категорий, чем Sonnet 5: ответ —
+    обычный 200 со `stop_reason: "refusal"` и без текста. Для бота это была
+    бы «техническая заминка» у клиента посреди заказа. Поэтому один повтор
+    на запасной модели (anthropic_fallback_model) с тем же запросом: блоки
+    размышления 5.5 прежняя модель не читает, API просто их отбросит.
+    """
+    response = await _client.messages.create(**request)
+    if getattr(response, "stop_reason", None) != "refusal":
+        return response
+    details = getattr(response, "stop_details", None)
+    category = getattr(details, "category", None)
+    fallback = (settings.anthropic_fallback_model or "").strip()
+    logger.warning("Claude (%s): отказ модели %s, категория %s%s", operation, request.get("model"), category,
+                   f" — повторяем на {fallback}" if fallback and fallback != request.get("model") else "")
+    if not fallback or fallback == request.get("model"):
+        return response
+    return await _client.messages.create(**{**request, "model": fallback})
+
+
 def _scrub_value(value, found: list[int]):
     if isinstance(value, str):
         from app import privacy
@@ -66,7 +88,8 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
         system_prompt += f"\n\nТекущий ассортимент:\n{catalog_context}"
 
     system_prompt, messages = guard("ответ без инструментов", system_prompt, [{"role": "user", "content": user_message}])
-    response = await _client.messages.create(
+    response = await _create(
+        "ответ без инструментов",
         model=settings.anthropic_model,
         max_tokens=settings.anthropic_max_tokens,
         system=system_prompt,
@@ -84,7 +107,8 @@ async def generate_dialog_report(transcript: str) -> str:
     # Вызывается из задачи по таймеру, а не из обработки сообщения, поэтому
     # спешить некуда: восьмисекундный бюджет вебхука VK здесь ни при чём.
     system, messages = guard("мини-отчёт по диалогу", _DIALOG_REPORT_PROMPT, [{"role": "user", "content": transcript}])
-    response = await _client.messages.create(
+    response = await _create(
+        "мини-отчёт по диалогу",
         model=settings.anthropic_model,
         # Отчёт короткий, но размышление идёт в тот же лимит: при 400 его
         # могло не хватить даже на одну фразу.
@@ -122,7 +146,8 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict], 
             extra["tool_choice"] = {"type": "none"}
     messages = _well_formed(messages)
     system_prompt, messages = guard("ход диалога", system_prompt, messages)
-    response = await _client.messages.create(
+    response = await _create(
+        "ход диалога",
         model=settings.anthropic_model,
         max_tokens=settings.anthropic_max_tokens,
         system=system_prompt,
@@ -150,7 +175,8 @@ async def ops_assistant_turn(messages: list[dict], system_prompt: str, tools: li
     if effort:
         extra["output_config"] = {"effort": effort}
     system_prompt, messages = guard("ассистент Ops", system_prompt, _well_formed(messages))
-    response = await _client.messages.create(
+    response = await _create(
+        "ассистент Ops",
         model=settings.ops_assistant_model or settings.anthropic_model,
         max_tokens=settings.ops_assistant_max_tokens,
         system=system_prompt,

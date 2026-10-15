@@ -38,8 +38,11 @@ class Settings(BaseSettings):
     vk_api_version: str = "5.199"
 
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-5"
-    # У claude-sonnet-5 размышление включено, даже если его не просить, и
+    anthropic_model: str = "claude-sonnet-5-5"
+    # Модель на повтор, если основная отказала (stop_reason "refusal"):
+    # у Sonnet 5.5 категорий отказа больше, чем у Sonnet 5. Пусто — без повтора.
+    anthropic_fallback_model: str = "claude-sonnet-5"
+    # У Sonnet 5 и 5.5 размышление включено, даже если его не просить, и
     # идёт в тот же max_tokens. При прежних 1024 сложный ход (сводка уже
     # отправлена, клиент пишет адрес) целиком уходил в размышление: ответ без
     # слов и без инструмента, клиент читал «Не уверена, что правильно вас
