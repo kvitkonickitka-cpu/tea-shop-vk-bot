@@ -171,6 +171,7 @@ def _import_models() -> None:
     from app.modules.ops import models as ops_models  # noqa: F401
     from app.modules.analytics import models as analytics_models  # noqa: F401
     from app.privacy import models as privacy_models  # noqa: F401
+    from app.modules.queue import models as queue_models  # noqa: F401
 
 
 async def _connect() -> bool:

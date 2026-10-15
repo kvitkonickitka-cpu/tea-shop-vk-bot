@@ -70,6 +70,14 @@ async def on_startup() -> None:
         diagnostics.log_route_to_database()
         await diagnostics.log_egress_ip()
 
+    from app.modules.queue import client as queue_client
+
+    if queue_client.uses_local():
+        from app.modules.queue import local as local_queue
+
+        # Обработчик своей очереди событий ВК (вместо Yandex Message Queue).
+        app.state.local_queue = asyncio.create_task(local_queue.run())
+
     if settings.ops_assistant_enabled and settings.telegram_bot_token and settings.telegram_ops_chat_id:
         from app.modules.ops.assistant import poller
 
@@ -80,6 +88,7 @@ async def on_startup() -> None:
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    task = getattr(app.state, "ops_assistant", None)
-    if task is not None:
-        task.cancel()
+    for name in ("ops_assistant", "local_queue"):
+        task = getattr(app.state, name, None)
+        if task is not None:
+            task.cancel()

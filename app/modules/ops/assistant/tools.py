@@ -258,8 +258,17 @@ async def schedule_status() -> dict:
         from inbound_messages where done_at is null
         """
     )
+    event_queue = None
+    from app.modules.queue import local as local_queue
+
+    if local_queue.is_enabled():
+        try:
+            event_queue = await local_queue.stats()
+        except Exception:
+            event_queue = {"error": "не прочитали"}
     return _plain({
         "revision": settings.app_revision or None,
+        "event_queue": event_queue,
         "database": "ok" if database.is_available() else "недоступна",
         "heartbeats": beats,
         "manager_outbox": outbox[0] if outbox else None,
@@ -332,8 +341,9 @@ TOOLS = [
         "name": "schedule_status",
         "description": (
             "Расписание и очереди: отметки задач (тик, пульс, отчёт Ops, выгрузки, копии) — когда отработали и "
-            "сколько минут назад; недоставленные уведомления менеджеру; неотправленные сообщения клиентам за "
-            "сутки по типам; необработанные входящие; доступна ли база; ревизия кода."
+            "сколько минут назад; очередь событий ВК (сколько ждёт, сколько ждёт самое старое, сколько брошено "
+            "за сутки); недоставленные уведомления менеджеру; неотправленные сообщения клиентам за сутки по "
+            "типам; необработанные входящие; доступна ли база; ревизия кода."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },

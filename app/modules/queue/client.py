@@ -24,12 +24,25 @@ _YMQ_ENDPOINT = "https://message-queue.api.cloud.yandex.net"
 _client = None
 
 
-def is_configured() -> bool:
+def _ymq_configured() -> bool:
     return bool(
         settings.ymq_queue_url
         and settings.ymq_access_key_id
         and settings.ymq_secret_access_key
     )
+
+
+def is_configured() -> bool:
+    """Есть ли очередь вообще: Yandex или своя в Postgres (queue/local.py)."""
+    from app.modules.queue import local
+
+    return _ymq_configured() or local.is_enabled()
+
+
+def uses_local() -> bool:
+    from app.modules.queue import local
+
+    return not _ymq_configured() and local.is_enabled()
 
 
 def _get_client():
@@ -62,6 +75,10 @@ async def enqueue(vk_event: dict) -> str:
     обратно в теле запроса, и тот же самый проверяющий код узнаёт своего.
     Заводить для очереди отдельный способ авторизации значило бы держать два.
     """
+    if uses_local():
+        from app.modules.queue import local
+
+        return await local.enqueue(vk_event)
     # Секрет сообщества в очереди ни к чему: его проверяет вебхук, дальше по
     # пути он никому не нужен, а лежать в хранилище и в логах будет.
     event = {k: v for k, v in vk_event.items() if k != "secret"}

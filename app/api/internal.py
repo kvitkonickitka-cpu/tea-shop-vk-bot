@@ -146,6 +146,13 @@ async def _run_scheduled() -> dict:
     # ответом и передачей остатка. Дёшево и важнее всего остального.
     result["inbound"] = await _run_task("Сообщения без ответа", inbound.rescue_stale())
 
+    # Своя очередь: разобранные события старше суток — удалить (там тексты
+    # сообщений), и заодно видно, не копится ли неразобранное.
+    from app.modules.queue import local as local_queue
+
+    if local_queue.is_enabled():
+        result["queue"] = await _run_task("Очередь событий", _queue_tick(local_queue))
+
     # Геопозиции клиентов старше GEO_RETENTION_HOURS — удалить: после выбора
     # пункта они не нужны, а хранить точку на карте дольше незачем.
     from app import privacy
@@ -748,6 +755,15 @@ async def check_cdek_orders(request: Request):
     logger.info("Проверка заказов СДЭК: %s", result)
     return result
 
+
+
+async def _queue_tick(local_queue) -> dict:
+    removed = await local_queue.cleanup()
+    stats = await local_queue.stats()
+    if (stats["oldest_seconds"] or 0) > 300:
+        logger.error("Очередь: самое старое событие ждёт %s с, ждут %s — обработчик стоит?",
+                     stats["oldest_seconds"], stats["waiting"])
+    return {"removed": removed, **stats}
 
 @router.post("/")
 async def trigger_entrypoint(request: Request):

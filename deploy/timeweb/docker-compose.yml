@@ -16,8 +16,12 @@ services:
     env_file: .env.bot
     environment:
       PORT: "8080"
-      # Очереди Yandex здесь нет: без неё бот обрабатывает событие сразу.
+      # Очереди Yandex здесь нет — вместо неё своя в Postgres
+      # (app/modules/queue/local.py): вебхук сразу отвечает ВК, ход идёт в
+      # фоне, работает склейка сообщений. Откат — "false" и `up -d bot`:
+      # тогда событие снова разбирается прямо в вебхуке, без склейки.
       YMQ_QUEUE_URL: ""
+      LOCAL_QUEUE_ENABLED: "true"
       # Monitoring берёт токен из метаданных ВМ Yandex — здесь их нет.
       YC_FOLDER_ID: ""
     # Только для cron на этой же машине — снаружи бот виден через Caddy.
