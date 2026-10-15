@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     anthropic_max_tokens: int = 8000
     # low | medium | high | xhigh | max. По умолчанию у модели high: для
     # продавца в чате это лишние секунды на каждом ходу.
-    anthropic_effort: str = "medium"
+    # У Sonnet 5.5 уровни перенастроены: на живом прогоне 15.10.2026 ход с
+    # заказом (3 запроса к модели и 4 инструмента) на medium шёл 10,0 с — за
+    # 8 секундами вебхука ВК, — на low 7,2 с при тех же вызовах инструментов.
+    anthropic_effort: str = "low"
     # Прокси перед api.anthropic.com — нужен, когда хостинг физически в РФ
     # и Anthropic блокирует прямые запросы оттуда. Пусто = обращаться напрямую.
     anthropic_base_url: str = ""
