@@ -101,8 +101,14 @@ def recent_commits(limit=15) -> dict:
         files = _changed_files(repo, commit)
         commits.append({
             "hash": commit.id.decode()[:7], "date": _commit_time(commit), "subject": _subject(commit),
-            "deployed": is_deployed,
-            # Коммиты новее выкаченного — в main есть, в контейнере ещё нет.
+            # Ровно этот коммит сейчас в контейнере (ревизия из /health).
+            "is_running_revision": is_deployed,
+            # Входит в работающую версию: выкаченный коммит и всё, что старше
+            # него. Раньше здесь был флаг только у самого выкаченного, и
+            # ассистент читал «deployed: false» у старых коммитов как «не
+            # выкатилось» (15.10.2026, про очередь b38f096).
+            "in_running_version": seen_deployed,
+            # Новее выкаченного: в main есть, в контейнере ещё нет.
             "not_deployed_yet": not seen_deployed,
             "files": files[:15] + ([f"… ещё {len(files) - 15}"] if len(files) > 15 else []),
         })
@@ -217,9 +223,10 @@ TOOLS = [
     {
         "name": "recent_commits",
         "description": (
-            "Последние коммиты main: хеш, дата, тема, изменённые файлы. Отмечено, какой коммит сейчас выкачен "
-            "в контейнер (deployed) и какие новее него ещё не выкачены. Смотри первым, когда спрашивают, "
-            "выкатилось ли что-то и что поменялось."
+            "Последние коммиты main: хеш, дата, тема, изменённые файлы. is_running_revision — ровно этот "
+            "коммит сейчас в контейнере; in_running_version — коммит входит в работающую версию (выкаченный и "
+            "все старше него); not_deployed_yet — новее выкаченного, ещё не в контейнере. Смотри первым, когда "
+            "спрашивают, выкатилось ли что-то."
         ),
         "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "До 40, по умолчанию 15."}}},
     },

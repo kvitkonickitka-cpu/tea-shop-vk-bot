@@ -50,9 +50,18 @@ def test_recent_commits_mark_what_is_deployed(repo):
     data = code.recent_commits()
     assert data["deployed"] == repo["first"][:7]
     newest, deployed = data["commits"]
-    assert newest["subject"] == "Change enqueue after deploy" and newest["not_deployed_yet"] and not newest["deployed"]
-    assert deployed["deployed"] and not deployed["not_deployed_yet"]
+    assert newest["subject"] == "Change enqueue after deploy" and newest["not_deployed_yet"]
+    assert not newest["in_running_version"] and not newest["is_running_revision"]
+    assert deployed["is_running_revision"] and deployed["in_running_version"] and not deployed["not_deployed_yet"]
     assert "app/modules/queue/local.py" in deployed["files"]
+
+
+def test_older_commits_are_in_the_running_version(repo, monkeypatch):
+    # Выкачен второй коммит — первый (старше) тоже в работающей версии.
+    monkeypatch.setattr(settings, "app_revision", repo["second"][:12])
+    newest, older = code.recent_commits()["commits"]
+    assert newest["is_running_revision"] and newest["in_running_version"]
+    assert older["in_running_version"] and not older["is_running_revision"] and not older["not_deployed_yet"]
 
 
 def test_code_is_read_at_the_deployed_revision(repo):
