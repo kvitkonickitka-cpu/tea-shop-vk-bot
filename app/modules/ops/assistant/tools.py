@@ -349,7 +349,13 @@ TOOLS = [
     },
 ]
 
+from app.modules.ops.assistant import code as _code  # noqa: E402
+
+TOOLS = TOOLS + _code.TOOLS
+CODE_TOOLS = set(_code.HANDLERS)
+
 _HANDLERS = {
+    **_code.HANDLERS,
     "service_errors": service_errors,
     "reply_times": reply_times,
     "order_status": order_status,
@@ -367,7 +373,7 @@ async def run(name: str, arguments: dict) -> dict:
     except TypeError:
         return {"error": "неверные параметры"}
     except RuntimeError:
-        return {"error": "база недоступна"}
+        return {"error": "база недоступна" if name not in CODE_TOOLS else "репозиторий недоступен"}
     except Exception as error:
         # Сбой одного запроса — ответ модели «данных нет», а не провал всего
         # вопроса. Текст ошибки базы не отдаём: в нём бывают значения строк.

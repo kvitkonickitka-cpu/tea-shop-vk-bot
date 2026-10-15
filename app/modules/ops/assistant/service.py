@@ -276,8 +276,11 @@ async def answer(message: dict, me: dict) -> dict:
             data = await tools.run(block.name, block.input or {})
             used.append((block.name, dict(block.input or {}), data))
             counter = [0]
-            data = redact.clean_data(data, stop, counter)
-            hidden += counter[0]
+            data = redact.clean_data(data, stop, counter, generous=block.name not in tools.CODE_TOOLS)
+            # Совпадения в коде (фикстуры тестов) — не данные клиентов из чата:
+            # «скрыто» под ответом считаем только по служебным данным.
+            if block.name not in tools.CODE_TOOLS:
+                hidden += counter[0]
             results.append({
                 "type": "tool_result", "tool_use_id": block.id,
                 "content": json.dumps(data, ensure_ascii=False, default=str),
@@ -332,13 +335,32 @@ def sources(message: dict, used: list[tuple[str, dict, dict]], *, alert: bool) -
             found.append((f"заказ №{order.get('id')}", link))
         elif name == "client_status" and arguments.get("peer_id"):
             found.append((f"диалог {arguments['peer_id']}", vk_client.dialog_link(int(arguments["peer_id"]))))
+        elif name == "recent_commits":
+            found.append(("коммиты main", f"{settings.ops_assistant_repo_url}/commits/main"))
+        elif name == "show_commit" and data.get("hash"):
+            found.append((f"коммит {data['hash']}", f"{settings.ops_assistant_repo_url}/commit/{data['hash']}"))
+        elif name == "read_file" and data.get("path"):
+            found.append((_short_path(data["path"]), f"{settings.ops_assistant_repo_url}/blob/{data['revision']}/"
+                          f"{data['path']}#L{data['start']}-L{data['end']}"))
+        elif name == "search_code":
+            # Ссылки — на файлы с совпадениями, на ту же ревизию, первыми тремя.
+            for path in list(dict.fromkeys(m["path"] for m in data.get("matches") or []))[:3]:
+                line = next(m["line"] for m in data["matches"] if m["path"] == path)
+                found.append((_short_path(path), f"{settings.ops_assistant_repo_url}/blob/{data['revision']}/"
+                              f"{path}#L{line}"))
     if alert:
         found.append(("runbook", _doc("runbook")))
     unique: list[tuple[str, str]] = []
     for item in found:
         if item not in unique:
             unique.append(item)
-    return unique[:8]
+    return unique[:10]
+
+
+def _short_path(path: str) -> str:
+    """«app/modules/queue/local.py» → «queue/local.py»: в строке источников короче."""
+    parts = path.split("/")
+    return "/".join(parts[-2:]) if len(parts) > 2 else path
 
 
 def _message_link(chat_id, message_id) -> str:

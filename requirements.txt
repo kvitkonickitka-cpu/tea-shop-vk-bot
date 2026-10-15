@@ -9,3 +9,5 @@ boto3
 dnspython
 cryptography
 pymorphy3
+# Чтение git без git: коммиты и код для ассистента Ops.
+dulwich

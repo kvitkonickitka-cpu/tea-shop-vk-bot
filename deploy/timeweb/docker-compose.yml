@@ -30,6 +30,10 @@ services:
     extra_hosts:
       # Postgres на этой же ВМ: из контейнера он — host.docker.internal.
       - "host.docker.internal:host-gateway"
+    volumes:
+      # История и код для ассистента Ops — только на чтение. В git секретов
+      # нет: .env.bot он не отслеживает. Остального репозитория в контейнере нет.
+      - ../../.git:/repo/.git:ro
     restart: unless-stopped
     logging: *logging
     # При нехватке памяти на ВМ ядро должно выбрать Metabase, а не бота,

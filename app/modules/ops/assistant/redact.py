@@ -117,14 +117,19 @@ def clean(text: str, stop: detect.StopList, *, generous: bool = True) -> tuple[s
 _CAP_WORD = re.compile(r"(?<![\w\[])[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?")
 
 
-def clean_data(value, stop: detect.StopList, counter: list[int]):
-    """То же для результата инструмента: строки внутри словарей и списков."""
+def clean_data(value, stop: detect.StopList, counter: list[int], *, generous: bool = True):
+    """То же для результата инструмента: строки внутри словарей и списков.
+
+    Для кода и документации — `generous=False`: там слова с заглавной в
+    комментариях («Пульс», «Сторож»), а не клиенты; телефоны, почты, адреса
+    и уверенные имена (фикстуры тестов) снимаются всё равно.
+    """
     if isinstance(value, str):
-        cleaned, found = clean(value, stop)
+        cleaned, found = clean(value, stop, generous=generous)
         counter[0] += found
         return cleaned
     if isinstance(value, list):
-        return [clean_data(item, stop, counter) for item in value]
+        return [clean_data(item, stop, counter, generous=generous) for item in value]
     if isinstance(value, dict):
-        return {key: clean_data(item, stop, counter) for key, item in value.items()}
+        return {key: clean_data(item, stop, counter, generous=generous) for key, item in value.items()}
     return value

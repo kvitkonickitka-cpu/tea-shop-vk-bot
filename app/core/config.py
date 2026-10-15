@@ -444,7 +444,7 @@ class Settings(BaseSettings):
     ops_assistant_effort: str = "medium"
     ops_assistant_max_tokens: int = 6000
     # Сколько раз за вопрос модель может сходить за данными.
-    ops_assistant_max_tool_calls: int = 6
+    ops_assistant_max_tool_calls: int = 10
     # Вопросов в сутки на весь чат — предохранитель от счёта за API.
     ops_assistant_daily_limit: int = 60
     # Telegram ID тех, кому отвечать, через запятую. Пусто — всем в чате Ops.
@@ -454,6 +454,10 @@ class Settings(BaseSettings):
     ops_assistant_stale_minutes: int = 10
     # Куда ведут ссылки «Источники» на разделы мониторинга и runbook.
     ops_assistant_docs_url: str = "https://github.com/kvitkonickitka-cpu/tea-shop-vk-bot/blob/main/docs/monitoring.md"
+    ops_assistant_repo_url: str = "https://github.com/kvitkonickitka-cpu/tea-shop-vk-bot"
+    # Каталог с .git репозитория (в контейнер — только на чтение, compose):
+    # отсюда ассистент читает коммиты и код выкаченной версии.
+    ops_assistant_repo_path: str = "/repo"
     # Сколько дней хранить журнал ops_events.
     ops_events_keep_days: int = 30
     # Когда бот сам пишет в Ops (app/modules/ops/alerts.py): p95 ответа
