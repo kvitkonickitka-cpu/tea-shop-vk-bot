@@ -31,6 +31,7 @@ async def _create(operation: str, **request):
     размышления 5.5 прежняя модель не читает, API просто их отбросит.
     """
     response = await _client.messages.create(**request)
+    _log_cache(operation, response)
     if getattr(response, "stop_reason", None) != "refusal":
         return response
     details = getattr(response, "stop_details", None)
@@ -41,6 +42,41 @@ async def _create(operation: str, **request):
     if not fallback or fallback == request.get("model"):
         return response
     return await _client.messages.create(**{**request, "model": fallback})
+
+
+def _system_blocks(system: str, cache_upto: int | None):
+    """Системный промпт — блоками, с меткой кэша в конце неизменной части.
+
+    Кэш Anthropic — совпадение начала запроса: инструменты, потом система,
+    потом переписка. Неизменная часть (базовый промпт, каталог) одинакова у
+    всех клиентов на одном этапе, и её повторное чтение из кэша в 10 раз
+    дешевле. Что про этого клиента (черновик, покупки, этап) — после метки:
+    оно меняется каждый ход, и кэш на нём только платил бы за запись.
+    Текст тот же, что без кэша, — меняется лишь деление на блоки.
+
+    `cache_upto` — где кончается неизменная часть; None — весь промпт
+    неизменный (ассистент Ops).
+    """
+    if not settings.anthropic_prompt_cache or not system:
+        return system
+    if cache_upto is None or cache_upto >= len(system):
+        return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    if cache_upto <= 0:
+        return system
+    blocks = [{"type": "text", "text": system[:cache_upto], "cache_control": {"type": "ephemeral"}}]
+    if system[cache_upto:].strip():
+        blocks.append({"type": "text", "text": system[cache_upto:]})
+    return blocks
+
+
+def _log_cache(operation: str, response) -> None:
+    usage = getattr(response, "usage", None)
+    read = getattr(usage, "cache_read_input_tokens", None)
+    written = getattr(usage, "cache_creation_input_tokens", None)
+    if read or written:
+        logger.info("Claude (%s): вход %s, из кэша %s, в кэш %s, выход %s", operation,
+                    getattr(usage, "input_tokens", "?"), read or 0, written or 0,
+                    getattr(usage, "output_tokens", "?"))
 
 
 def _scrub_value(value, found: list[int]):
@@ -133,7 +169,8 @@ def _well_formed(messages: list[dict]) -> list[dict]:
 
 
 @watch("claude", "ход диалога")
-async def converse(messages: list[dict], system_prompt: str, tools: list[dict], *, words_only: bool = False):
+async def converse(messages: list[dict], system_prompt: str, tools: list[dict], *, words_only: bool = False,
+                   cache_upto: int | None = 0):
     # `words_only` — модель обязана ответить словами (последний круг хода).
     # Инструменты при этом остаются в запросе, вызывать их запрещает
     # tool_choice: убрать их нельзя, если в истории хода уже есть вызовы
@@ -145,7 +182,9 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict], 
         if words_only:
             extra["tool_choice"] = {"type": "none"}
     messages = _well_formed(messages)
-    system_prompt, messages = guard("ход диалога", system_prompt, messages)
+    # Деление на блоки — до последнего рубежа: он чистит каждый блок, а
+    # граница неизменной части считается по исходному тексту.
+    system_prompt, messages = guard("ход диалога", _system_blocks(system_prompt, cache_upto), messages)
     response = await _create(
         "ход диалога",
         model=settings.anthropic_model,
@@ -174,7 +213,12 @@ async def ops_assistant_turn(messages: list[dict], system_prompt: str, tools: li
     effort = (settings.ops_assistant_effort or "").strip()
     if effort:
         extra["output_config"] = {"effort": effort}
-    system_prompt, messages = guard("ассистент Ops", system_prompt, _well_formed(messages))
+    # Промпт и инструменты ассистента одинаковы у всех вопросов — кэшируем
+    # целиком; переписку внутри вопроса (круги с инструментами) — меткой
+    # верхнего уровня: следующий круг читает предыдущий из кэша.
+    if settings.anthropic_prompt_cache:
+        extra["cache_control"] = {"type": "ephemeral"}
+    system_prompt, messages = guard("ассистент Ops", _system_blocks(system_prompt, None), _well_formed(messages))
     response = await _create(
         "ассистент Ops",
         model=settings.ops_assistant_model or settings.anthropic_model,

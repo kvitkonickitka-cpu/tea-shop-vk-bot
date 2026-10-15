@@ -2804,6 +2804,9 @@ async def _handle_turn(
     system_prompt = system_prompt[:personal_from] + await privacy.tokenize(
         peer_id, system_prompt[personal_from:], names=False
     )
+    # До personal_from — одинаковое у всех клиентов (базовый промпт, каталог):
+    # эта часть кэшируется у Anthropic, остальное идёт после метки кэша.
+    cache_upto = personal_from
     if images:
         # Снимок идёт перед текстом: так модель сначала смотрит, а потом
         # читает вопрос о том, что увидела.
@@ -2816,7 +2819,7 @@ async def _handle_turn(
     messages: list[dict] = history + [{"role": "user", "content": content}]
 
     turn_started = time.monotonic()
-    response = await spent.claude(claude_client.converse(messages, system_prompt, tools))
+    response = await spent.claude(claude_client.converse(messages, system_prompt, tools, cache_upto=cache_upto))
 
     called: set[str] = set()
     for round_number in range(1, _MAX_TOOL_ROUNDS + 1):
@@ -2918,7 +2921,7 @@ async def _handle_turn(
             )
 
         response = await spent.claude(
-            claude_client.converse(messages, system_prompt, tools, words_only=last_round)
+            claude_client.converse(messages, system_prompt, tools, words_only=last_round, cache_upto=cache_upto)
         )
         if last_round:
             break

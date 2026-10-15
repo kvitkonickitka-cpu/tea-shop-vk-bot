@@ -222,6 +222,25 @@ async def _send(chat_id: str, reply_to: int, text: str, *, footer: str = "",
         return None
 
 
+ASK_IN_WORDS = (
+    "Ответь на вопрос словами по уже собранным данным. Чего в данных нет — так и скажи "
+    "и назови, где это посмотреть. Инструменты больше не вызывай."
+)
+
+
+def _ask_in_words(messages: list[dict]) -> None:
+    """Просьба ответить словами — в последнее сообщение с результатами инструментов.
+
+    Текст после блоков tool_result в том же сообщении: так история только
+    дописывается, а модель видит просьбу рядом с данными.
+    """
+    last = messages[-1] if messages else None
+    if last and last.get("role") == "user" and isinstance(last.get("content"), list):
+        last["content"] = [*last["content"], {"type": "text", "text": ASK_IN_WORDS}]
+    else:
+        messages.append({"role": "user", "content": ASK_IN_WORDS})
+
+
 def _first_message(question: str, context: str) -> str:
     parts = []
     if context:
@@ -260,8 +279,15 @@ async def answer(message: dict, me: dict) -> dict:
     text = ""
     used: list[tuple[str, dict, dict]] = []
     nudged = False
+    asked_in_words = False
     while True:
         words_only = calls >= settings.ops_assistant_max_tool_calls
+        if words_only and not asked_in_words:
+            # Один запрет инструментов Sonnet 5.5 понимает как «нечего
+            # сказать» и возвращает пустой ответ (проверено вживую 15.10.2026);
+            # с просьбой текстом рядом с данными — отвечает.
+            _ask_in_words(messages)
+            asked_in_words = True
         response = await claude_client.ops_assistant_turn(messages, PROMPT, tools.TOOLS, words_only=words_only)
         if getattr(response, "stop_reason", None) == "refusal":
             text = "Модель отказалась отвечать на этот вопрос. Попробуйте переформулировать."
@@ -278,10 +304,8 @@ async def answer(message: dict, me: dict) -> dict:
                                getattr(response, "stop_reason", None))
                 if response.content:
                     messages.append({"role": "assistant", "content": response.content})
-                messages.append({"role": "user", "content": (
-                    "Ответь на вопрос словами по уже собранным данным. Чего в данных нет — так и скажи "
-                    "и назови, где это посмотреть."
-                )})
+                messages.append({"role": "user", "content": ASK_IN_WORDS})
+                asked_in_words = True
                 calls = max(calls, settings.ops_assistant_max_tool_calls)
                 continue
             break

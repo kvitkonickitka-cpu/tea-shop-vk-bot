@@ -235,7 +235,13 @@ async def test_tool_calls_are_capped(wire, monkeypatch):
     monkeypatch.setattr(settings, "ops_assistant_max_tool_calls", 2)
     wire["script"] = [tool_use("schedule_status"), tool_use("schedule_status"), said("Готово.")]
     await service._answer_safely(message("что с расписанием?"), ME)
-    assert wire["requests"][-1].get("tool_choice") == {"type": "none"}
+    last = wire["requests"][-1]
+    assert last.get("tool_choice") == {"type": "none"}
+    # Просьба словами — текстом рядом с результатами инструментов: без неё
+    # Sonnet 5.5 на запрет инструментов отвечал пустотой.
+    tail = last["messages"][-1]["content"]
+    assert tail[-1] == {"type": "text", "text": service.ASK_IN_WORDS}
+    assert any(block.get("type") == "tool_result" for block in tail[:-1])
     assert "Готово." in wire["sent"][0]
 
 
