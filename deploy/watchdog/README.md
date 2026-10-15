@@ -33,3 +33,16 @@ WATCHDOG_URL=https://bot.teapotwice.ru/health teashop-watchdog   # 🟢
 ```
 
 Боевое состояние — `/var/lib/teashop-watchdog`.
+
+## Кто сторожит сам Aeza
+
+Если ляжет VPS Aeza, бот перестанет отвечать клиентам (Claude идёт через
+прокси на нём), а написать об этом в Telegram не сможет: с ВМ Timeweb
+Telegram напрямую недоступен, только через тот же прокси. Поэтому Aeza
+проверяет **монитор Timeweb** «Aeza прокси (Claude, Telegram)» — раз в
+минуту `https://94-228-170-170.nip.io/health` из Петербурга и Амстердама
+(30 ₽/мес). Тревогу шлёт сам Timeweb — его уведомления подключены к чату
+Teapotwice Alerts (Профиль → Уведомления → Телеграм → Групповой чат).
+
+`/health` — блок `handle /health { respond "ok" 200 }` в `/etc/caddy/Caddyfile`
+на Aeza (с 15.10.2026): отвечает сам Caddy, без Anthropic и Telegram.
