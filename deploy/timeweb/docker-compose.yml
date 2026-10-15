@@ -28,9 +28,13 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     logging: *logging
-    # Памяти на ВМ впритык (2 ГБ, увеличить нельзя): при нехватке ядро должно
-    # выбрать Metabase, а не бота, который отвечает клиентам.
+    # При нехватке памяти на ВМ ядро должно выбрать Metabase, а не бота,
+    # который отвечает клиентам.
     oom_score_adj: -500
+    # Обычно ~200 МБ. Потолок — от утечки: лучше перезапуск бота (restart
+    # поднимет его за секунды), чем база без памяти. Без swap — ответ ВК ждёт 8 с.
+    mem_limit: 1g
+    memswap_limit: 1g
 
   caddy:
     image: caddy:2

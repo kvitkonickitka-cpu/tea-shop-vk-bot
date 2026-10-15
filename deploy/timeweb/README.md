@@ -1,8 +1,8 @@
 # Бот на своей ВМ (Timeweb)
 
 **С 13.10.2026 это основной и единственный путь**: ВМ `teashop-db`
-(Москва MSK-1, `201.24.120.144`, 1 CPU / 2 ГБ — увеличить нельзя, регион
-«Распродано»). Здесь же Postgres, Metabase и cashflow. Yandex остановлен —
+(Москва MSK-1, `201.24.120.144`, 1 CPU / 4 ГБ — память
+поддержка Timeweb увеличила 15.10.2026, ядро пока одно). Здесь же Postgres, Metabase и cashflow. Yandex остановлен —
 раздел «Yandex остановлен» ниже.
 
 Появился как запасной путь, когда Yandex Serverless Containers не принимал
@@ -65,7 +65,9 @@ restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-act
 
 ## Память, логи, копии
 
-**Память — 2 ГБ на всё** (бот, Postgres, Caddy, Metabase), swap 1 ГБ. Кто
+**Память — 4 ГБ на всё** (бот, Postgres, Caddy, Metabase, cashflow), swap 1 ГБ.
+Лимиты: бот 1 ГБ (обычно ест ~200 МБ; больше — утечка, лучше перезапуск
+контейнера, чем голодная база), Metabase 1800 МБ. Кто
 первым идёт под нож при нехватке, решает `oom_score_adj`: Metabase `800`,
 бот, Caddy и Postgres `-500`. Тот же смысл у `vm.swappiness=10`
 (`/etc/sysctl.d/99-teashop.conf`): ядро сначала отдаёт кэш, а не
@@ -98,7 +100,8 @@ restrict,command="/usr/local/sbin/teashop-deploy" ssh-ed25519 AAAA… github-act
 
 Дашборды — `https://stats.teapotwice.ru` (блок в `Caddyfile`), контейнер из
 `metabase/docker-compose.yml` в `/opt/metabase`, свои настройки хранит в базе
-`metabase`. Памяти мало, поэтому лимит контейнера 1200 МБ и куча Java 512 МБ:
+`metabase`. Лимит контейнера 1800 МБ и куча Java 1 ГБ (до 15.10.2026, при 2 ГБ на ВМ, —
+1200 МБ и 512 МБ: тяжёлые вкладки дашборда упирались в кучу):
 при нехватке система останавливает Metabase, а не бота и базу. **Версия
 закреплена** (`v0.64.2` с digest): `latest` при пересоздании подтянул бы новую
 мажорную версию, а Metabase мигрирует свою базу без пути назад. Обновлять —

@@ -9,7 +9,7 @@ services:
     image: metabase/metabase:v0.64.2@sha256:038b47779d234dbf6462444639346e86b12fab13110dce783e4dcd22d7c0c14c
     env_file: .env
     environment:
-      JAVA_OPTS: "-Xmx512m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:+UseSerialGC"
+      JAVA_OPTS: "-Xmx1024m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:+UseSerialGC"
       JAVA_TIMEZONE: Europe/Moscow
       MB_SITE_URL: https://stats.teapotwice.ru
       MB_ANON_TRACKING_ENABLED: "false"
@@ -17,8 +17,9 @@ services:
       MB_JDBC_DATA_WAREHOUSE_MAX_CONNECTION_POOL_SIZE: "8"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    mem_limit: 1200m
-    memswap_limit: 1600m
+    # Куча 1 ГБ + метаданные до 384 МБ + код и потоки — с запасом в 1800 МБ.
+    mem_limit: 1800m
+    memswap_limit: 2200m
     # Первым под нож при нехватке памяти — дашборды подождут, бот и база нет.
     oom_score_adj: 800
     restart: unless-stopped

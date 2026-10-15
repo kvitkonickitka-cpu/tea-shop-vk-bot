@@ -30,7 +30,7 @@ Timeweb» → Run workflow (`.github/workflows/deploy-timeweb.yml` →
 подключения к базе, устройство группы безопасности и грабли, на которые
 уже наступали. Коротко о главном:
 
-- **всё на одной ВМ Timeweb** (`201.24.120.144`, 1 CPU / 2 ГБ): бот, Caddy,
+- **всё на одной ВМ Timeweb** (`201.24.120.144`, 1 CPU / 4 ГБ): бот, Caddy,
   Postgres, Metabase, cashflow — `deploy/timeweb/README.md`. Postgres
   слушает только `172.17.0.1:5432`, бот ходит к нему через
   `host.docker.internal` по SSL; снаружи базы не видно. Docker публикует
