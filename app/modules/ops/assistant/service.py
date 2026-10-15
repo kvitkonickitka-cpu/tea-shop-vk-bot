@@ -259,6 +259,7 @@ async def answer(message: dict, me: dict) -> dict:
     calls = 0
     text = ""
     used: list[tuple[str, dict, dict]] = []
+    nudged = False
     while True:
         words_only = calls >= settings.ops_assistant_max_tool_calls
         response = await claude_client.ops_assistant_turn(messages, PROMPT, tools.TOOLS, words_only=words_only)
@@ -268,6 +269,21 @@ async def answer(message: dict, me: dict) -> dict:
         uses = [block for block in response.content if block.type == "tool_use"]
         if getattr(response, "stop_reason", None) != "tool_use" or not uses or words_only:
             text = claude_client.extract_text(response, default="")
+            if not text.strip() and not nudged:
+                # Sonnet 5.5 иногда заканчивает ход одним размышлением, без
+                # текста: клиент видел «модель вернула пустой ответ». Один
+                # повтор с прямой просьбой — история при этом только дописывается.
+                nudged = True
+                logger.warning("Ассистент Ops: модель закончила без текста (stop_reason=%s), просим ответить",
+                               getattr(response, "stop_reason", None))
+                if response.content:
+                    messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": (
+                    "Ответь на вопрос словами по уже собранным данным. Чего в данных нет — так и скажи "
+                    "и назови, где это посмотреть."
+                )})
+                calls = max(calls, settings.ops_assistant_max_tool_calls)
+                continue
             break
         messages.append({"role": "assistant", "content": response.content})
         results = []
@@ -301,7 +317,12 @@ async def answer(message: dict, me: dict) -> dict:
     }
 
 
-_HOURS_LABEL = {"service_errors": "журнал сбоев", "reply_times": "время ответов"}
+_HOURS_LABEL = {
+    "service_errors": ("журнал сбоев", "что считается сбоем сервиса"),
+    "reply_times": ("время ответов", "пороги"),
+    "host_load": ("загрузка ВМ", "как устроено"),
+    "api_latency": ("время ответа сервисов", "что считается сбоем сервиса"),
+}
 
 
 def _doc(anchor: str) -> str:
@@ -325,8 +346,8 @@ def sources(message: dict, used: list[tuple[str, dict, dict]], *, alert: bool) -
         if name in _HOURS_LABEL:
             hours = data.get("hours") or arguments.get("hours") or 24
             api = f" {arguments['api']}" if arguments.get("api") else ""
-            found.append((f"{_HOURS_LABEL[name]}{api} за {hours} ч",
-                          _doc("что считается сбоем сервиса" if name == "service_errors" else "пороги")))
+            label, anchor = _HOURS_LABEL[name]
+            found.append((f"{label}{api} за {hours} ч", _doc(anchor)))
         elif name == "schedule_status":
             found.append(("расписание и очереди", _doc("как устроено")))
         elif name == "order_status" and isinstance(data.get("order"), dict):

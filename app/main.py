@@ -70,6 +70,11 @@ async def on_startup() -> None:
         diagnostics.log_route_to_database()
         await diagnostics.log_egress_ip()
 
+    from app.modules.ops import resources
+
+    # Замеры процессора и памяти ВМ и бота — для пульса (дёшево: чтение /proc).
+    app.state.resources = asyncio.create_task(resources.run())
+
     from app.modules.queue import client as queue_client
 
     if queue_client.uses_local():
@@ -88,7 +93,7 @@ async def on_startup() -> None:
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    for name in ("ops_assistant", "local_queue"):
+    for name in ("ops_assistant", "local_queue", "resources"):
         task = getattr(app.state, name, None)
         if task is not None:
             task.cancel()

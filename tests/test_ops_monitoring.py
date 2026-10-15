@@ -107,7 +107,9 @@ async def test_watch_keeps_results_and_counts_claude_time():
     holder = journal.start_turn()
     assert await converse() == "ответ"
     assert holder[0] >= 0.04
-    assert not journal._BUFFER
+    # Удачный вызов — только строка «сколько ждали», сбоев нет.
+    assert [row["kind"] for row in journal._BUFFER] == ["call"]
+    assert journal._BUFFER[0]["duration_ms"] >= 40
 
 
 async def test_cancellation_is_not_an_error():
@@ -120,7 +122,7 @@ async def test_cancellation_is_not_an_error():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert not journal._BUFFER
+    assert not [r for r in journal._BUFFER if r["kind"] == "error"]
 
 
 async def test_order_scope_puts_order_into_the_error():

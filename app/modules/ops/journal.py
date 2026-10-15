@@ -128,6 +128,14 @@ def note_error(api: str, operation: str, error: BaseException, duration: float) 
     )
 
 
+def note_call(api: str, operation: str, duration: float) -> None:
+    """Удачный вызов внешнего сервиса и сколько он занял."""
+    _BUFFER.append({
+        "at": _now(), "kind": "call", "api": api, "operation": (operation or "")[:120],
+        "duration_ms": int(duration * 1000),
+    })
+
+
 def note_pii_redacted(operation: str, count: int) -> None:
     """В запрос к Claude дошли телефон или почта — их сняли перед отправкой."""
     # Строка на каждое найденное значение: отчёт считает строки. Самих
@@ -208,7 +216,7 @@ def watch(api: str, operation=None):
         async def wrapper(*args, **kwargs):
             started = time.monotonic()
             try:
-                return await fn(*args, **kwargs)
+                result = await fn(*args, **kwargs)
             except Exception as error:
                 if not getattr(error, "_ops_recorded", False):
                     try:
@@ -217,6 +225,14 @@ def watch(api: str, operation=None):
                     except Exception:
                         logger.debug("Не записали сбой %s", api, exc_info=True)
                 raise
+            else:
+                # Удачный вызов — сколько ждали: без этого время ответа
+                # сервисов было видно только по сбоям.
+                try:
+                    note_call(api, _operation_name(name, args, kwargs), time.monotonic() - started)
+                except Exception:
+                    logger.debug("Не записали вызов %s", api, exc_info=True)
+                return result
             finally:
                 if api == "claude":
                     holder = _llm_seconds.get()

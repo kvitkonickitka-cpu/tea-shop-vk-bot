@@ -146,6 +146,7 @@ _MISSING_COLUMNS = (
     "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
     # Мониторинг: какие сбои уже ушли в Ops подробностью.
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
+    "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS data JSONB",
 )
 
 

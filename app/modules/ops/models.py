@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import DateTime, Index, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -25,7 +26,8 @@ class OpsEvent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # error — сбой внешнего сервиса, turn — ответ клиенту, pulse — минутный пульс.
+    # error — сбой внешнего сервиса, call — удачный вызов (сколько ждали),
+    # turn — ответ клиенту, pulse — минутный пульс с загрузкой ВМ.
     kind: Mapped[str] = mapped_column(String)
     # yookassa | cdek | ozon | claude — для ошибок.
     api: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -39,3 +41,5 @@ class OpsEvent(Base):
     order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Когда сбой ушёл в Ops-чат подробностью (app/modules/ops/details.py).
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Для пульса — загрузка ВМ и бота за минуту (app/modules/ops/resources.py).
+    data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

@@ -53,7 +53,7 @@ async def test_revoked_token_is_replaced_once(monkeypatch):
     data = await ozon_client.call("/v1/delivery-point/list", {})
     assert data == {"delivery_points": [1]}
     assert seen["auth"] == ["Bearer revoked", "Bearer t1"]
-    assert not journal._BUFFER  # прошедший повтор — не сбой
+    assert not [r for r in journal._BUFFER if r["kind"] == "error"]  # прошедший повтор — не сбой
 
 
 async def test_second_401_is_a_real_error(monkeypatch):
@@ -76,7 +76,7 @@ async def test_catalog_read_survives_one_timeout(monkeypatch):
     journal._BUFFER.clear()
     _ozon(monkeypatch, ["timeout", 200])
     assert await ozon_client.call("/v1/delivery-point/list", {}) == {"delivery_points": [1]}
-    assert not journal._BUFFER  # прошедший повтор — не сбой
+    assert not [r for r in journal._BUFFER if r["kind"] == "error"]  # прошедший повтор — не сбой
 
 
 async def test_two_timeouts_are_a_real_error(monkeypatch):
@@ -120,4 +120,4 @@ async def test_catalog_read_survives_a_dropped_connection(monkeypatch):
     journal._BUFFER.clear()
     _ozon(monkeypatch, ["disconnect", 200])
     assert await ozon_client.call("/v1/delivery-point/info", {}) == {"delivery_points": [1]}
-    assert not journal._BUFFER
+    assert not [r for r in journal._BUFFER if r["kind"] == "error"]

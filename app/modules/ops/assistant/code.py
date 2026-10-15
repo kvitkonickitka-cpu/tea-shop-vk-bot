@@ -79,7 +79,9 @@ def _changed_files(repo, commit) -> list[str]:
     parent_tree = repo[commit.parents[0]].tree if commit.parents else None
     files = []
     for change in tree_changes(repo.object_store, parent_tree, commit.tree):
-        path = (change.new.path or change.old.path or b"").decode("utf-8", errors="replace")
+        # У удалённого файла нет new, у добавленного — old.
+        side = change.new if change.new is not None and change.new.path else change.old
+        path = (side.path if side is not None and side.path else b"").decode("utf-8", errors="replace")
         files.append(path)
     return files
 

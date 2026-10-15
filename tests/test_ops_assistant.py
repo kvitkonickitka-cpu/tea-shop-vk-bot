@@ -300,3 +300,14 @@ async def test_model_html_is_escaped(wire):
     wire["script"] = [said("<b>жирно</b> и <a href='x'>ссылка</a>")]
     await service._answer_safely(message("тест"), ME)
     assert "&lt;b&gt;жирно" in wire["sent"][0]
+
+
+async def test_empty_answer_is_asked_again_in_words(wire):
+    empty = NS(stop_reason="end_turn", content=[NS(type="thinking", thinking="", signature="x")],
+               usage=NS(input_tokens=1, output_tokens=1))
+    wire["script"] = [empty, said("Сбоев за сутки нет.")]
+    await service._answer_safely(message("что со сбоями?"), ME)
+    assert len(wire["requests"]) == 2
+    assert wire["requests"][1].get("tool_choice") == {"type": "none"}
+    assert wire["requests"][1]["messages"][-1]["role"] == "user"
+    assert "Сбоев за сутки нет." in wire["sent"][0] and "пустой ответ" not in wire["sent"][0]

@@ -100,6 +100,86 @@ async def reply_times(hours=24) -> dict:
     return {"hours": hours, **{k: (round(v, 1) if isinstance(v, float) else v) for k, v in stats.items()}}
 
 
+async def host_load(hours=24) -> dict:
+    """Загрузка ВМ и бота по минутам из пульса — и как она связана с ходами."""
+    from app.modules.ops import resources
+
+    hours = _hours(hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = await _rows(
+        """
+        with minutes as (
+            select date_trunc('minute', at) as minute, data from ops_events
+            where kind = 'pulse' and data is not null and at >= :since
+        ), turns as (
+            select date_trunc('minute', at) as minute, count(*) as turns, max(duration_ms) as slowest_ms
+            from ops_events where kind = 'turn' and at >= :since group by 1
+        )
+        select m.minute, m.data, coalesce(t.turns, 0) as turns, t.slowest_ms
+        from minutes m left join turns t using (minute) order by m.minute
+        """,
+        since=since,
+    )
+    if not rows:
+        return {"hours": hours, "error": "замеров за этот период нет (замеры пишутся с 15.10.2026)",
+                "now": resources.sample()}
+
+    def stat(selected, key, pick=max):
+        values = [r["data"][key] for r in selected if key in r["data"]]
+        return round(pick(values), 1) if values else None
+
+    busy = [r for r in rows if r["turns"]]
+    idle = [r for r in rows if not r["turns"]]
+    top = sorted(rows, key=lambda r: r["data"].get("cpu_max", 0), reverse=True)[:8]
+    total_mb = next((r["data"]["mem_total_mb"] for r in reversed(rows) if "mem_total_mb" in r["data"]), None)
+    return {
+        "hours": hours, "minutes_measured": len(rows), "cpu_cores": 1, "mem_total_mb": total_mb,
+        "whole_period": {
+            "cpu_max": stat(rows, "cpu_max"), "steal_max": stat(rows, "steal_max"),
+            "bot_cpu_max": stat(rows, "bot_cpu_max"), "load1_max": stat(rows, "load1_max"),
+            "mem_available_min_mb": stat(rows, "mem_available_mb", min), "bot_mem_max_mb": stat(rows, "bot_mem_mb"),
+            "swap_used_max_mb": stat(rows, "swap_used_mb"),
+        },
+        "minutes_with_client_turns": {
+            "count": len(busy), "turns": sum(r["turns"] for r in busy),
+            "cpu_max": stat(busy, "cpu_max"), "bot_cpu_max": stat(busy, "bot_cpu_max"),
+            "mem_available_min_mb": stat(busy, "mem_available_mb", min), "bot_mem_max_mb": stat(busy, "bot_mem_mb"),
+        },
+        "minutes_without_turns": {
+            "count": len(idle), "cpu_max": stat(idle, "cpu_max"), "cpu_avg_max": stat(idle, "cpu_avg"),
+        },
+        "busiest_minutes": [
+            {"minute": _t(r["minute"]), "turns": r["turns"],
+             "slowest_turn_s": round(r["slowest_ms"] / 1000, 1) if r["slowest_ms"] else None, **r["data"]}
+            for r in top
+        ],
+        "now": resources.sample(),
+    }
+
+
+async def api_latency(hours=24, api=None) -> dict:
+    """Сколько ждём ответа внешних сервисов: удачные вызовы из журнала."""
+    hours = _hours(hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = await _rows(
+        """
+        select api, operation, count(*) as calls,
+               percentile_cont(0.5) within group (order by duration_ms) as p50_ms,
+               percentile_cont(0.95) within group (order by duration_ms) as p95_ms,
+               max(duration_ms) as max_ms
+        from ops_events
+        where kind = 'call' and at >= :since and (cast(:api as text) is null or api = :api)
+        group by api, operation order by api, count(*) desc
+        """,
+        since=since, api=api or None,
+    )
+    for row in rows:
+        for key in ("p50_ms", "p95_ms"):
+            row[key] = int(row[key]) if row[key] is not None else None
+    note = "удачные вызовы пишутся с 15.10.2026; сбои — в service_errors"
+    return {"hours": hours, "calls": rows, "note": note}
+
+
 async def order_status(order_id) -> dict:
     try:
         order_id = int(order_id)
@@ -306,6 +386,27 @@ TOOLS = [
         },
     },
     {
+        "name": "host_load",
+        "description": (
+            "Загрузка ВМ (1 ядро) и бота по минутам за N часов: процессор ВМ и steal, процессор и память "
+            "контейнера бота, свободная память ВМ, swap, load average — среднее и пик внутри минуты. "
+            "Отдельно — минуты, когда бот отвечал клиентам, и самые нагруженные минуты с числом ходов. "
+            "Плюс замер прямо сейчас."
+        ),
+        "input_schema": {"type": "object", "properties": {"hours": {"type": "integer"}}},
+    },
+    {
+        "name": "api_latency",
+        "description": (
+            "Сколько мы ждём ответа внешних сервисов (удачные вызовы): yookassa, cdek, ozon, claude, vk "
+            "(отправка сообщения) — по операциям: число вызовов, p50, p95, максимум в мс."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"hours": {"type": "integer"}, "api": {"type": "string"}},
+        },
+    },
+    {
         "name": "reply_times",
         "description": "Время ответа бота клиентам за N часов: число ходов, p50, p95, максимум, p95 Claude, сколько дольше 8 с.",
         "input_schema": {"type": "object", "properties": {"hours": {"type": "integer"}}},
@@ -357,6 +458,8 @@ CODE_TOOLS = set(_code.HANDLERS)
 _HANDLERS = {
     **_code.HANDLERS,
     "service_errors": service_errors,
+    "host_load": host_load,
+    "api_latency": api_latency,
     "reply_times": reply_times,
     "order_status": order_status,
     "client_status": client_status,

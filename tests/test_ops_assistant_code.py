@@ -85,3 +85,13 @@ async def test_assistant_reads_code_and_links_it(wire, repo, monkeypatch):
     assert "/commits/main" in sent
     assert f"/blob/{repo['first'][:7]}/app/modules/queue/local.py#L1-L4" in sent
     assert "скрыто" not in sent
+
+
+def test_deleted_file_does_not_break_commit_list(repo, tmp_path):
+    from dulwich import porcelain
+
+    porcelain.remove(str(tmp_path), paths=[str(tmp_path / "CLAUDE.md")])
+    porcelain.commit(str(tmp_path), message=b"Drop CLAUDE.md", author=b"T <t@t>", committer=b"T <t@t>")
+    data = code.recent_commits()
+    assert data["commits"][0]["subject"] == "Drop CLAUDE.md"
+    assert "CLAUDE.md" in data["commits"][0]["files"]

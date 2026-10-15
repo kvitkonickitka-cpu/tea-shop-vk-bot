@@ -1,5 +1,6 @@
 import logging
 import random
+import time
 import re
 
 import httpx
@@ -121,9 +122,15 @@ async def send_message(
         # сводка со счётом становилась вдвое длиннее. Ссылка остаётся
         # ссылкой, карточки нет — только в сообщениях с условиями.
         params["dont_parse_links"] = 1
+    started = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(f"{VK_API_URL}/messages.send", data=params)
         response.raise_for_status()
         data = response.json()
         if "error" in data:
             raise VkApiError(data["error"])
+    # Только время удачной отправки — для разбора задержек. Сбои ВК в журнал
+    # Ops не идут: «нельзя писать этому клиенту» (901) — не поломка.
+    from app.modules.ops import journal
+
+    journal.note_call("vk", "отправка сообщения", time.monotonic() - started)

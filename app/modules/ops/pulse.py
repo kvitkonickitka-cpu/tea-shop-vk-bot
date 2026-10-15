@@ -24,13 +24,14 @@ Monitoring нет.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_session_factory
-from app.modules.ops import alerts, details, journal, monitoring
+from app.modules.ops import alerts, details, journal, monitoring, resources
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,12 @@ async def _collect() -> tuple[bool, dict | None]:
     async with session_factory() as session:
         await session.execute(text("select 1"))
         stats = await window_stats(session, settings.ops_window_minutes)
-        await session.execute(text("insert into ops_events (kind) values ('pulse')"))
+        # Пульс несёт и загрузку ВМ и бота за минуту — её смотрит ассистент Ops.
+        load = resources.minute_summary()
+        await session.execute(
+            text("insert into ops_events (kind, data) values ('pulse', cast(:data as jsonb))"),
+            {"data": json.dumps(load) if load else None},
+        )
         await session.commit()
     return True, stats
 
