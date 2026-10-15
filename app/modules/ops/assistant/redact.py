@@ -44,8 +44,15 @@ ADDRESS = re.compile(
 FLAT = re.compile(r"\b(?i:кв\.?|квартира)\s*\d+")
 
 
-def clean(text: str, stop: detect.StopList) -> tuple[str, int]:
-    """Текст без данных клиента и сколько замен сделано."""
+def clean(text: str, stop: detect.StopList, *, generous: bool = True) -> tuple[str, int]:
+    """Текст без данных клиента и сколько замен сделано.
+
+    `generous=False` — для сообщений, которые написали боты (наши тревоги и
+    отчёты, сторож, Timeweb): их текст собирает код, имён клиентов там нет,
+    а проход «с запасом» принимал служебные слова за фамилии («Аптайм:
+    100 %» становилось «[ИМЯ]: 100 %»). Телефоны, почты, адреса и уверенные
+    имена снимаются всё равно.
+    """
     if not text:
         return "", 0
     count = 0
@@ -102,7 +109,8 @@ def clean(text: str, stop: detect.StopList) -> tuple[str, int]:
             return "[ИМЯ]"
         return value
 
-    text = _CAP_WORD.sub(maybe_person, text)
+    if generous:
+        text = _CAP_WORD.sub(maybe_person, text)
     return text, count
 
 

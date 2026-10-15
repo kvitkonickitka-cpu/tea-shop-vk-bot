@@ -24,11 +24,12 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from app import privacy
 from app.core.config import settings
-from app.modules.dialog import claude_client, telegram_client
+from app.modules.dialog import claude_client, telegram_client, vk_client
 from app.modules.ops.assistant import redact, tools
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ MSK = ZoneInfo("Europe/Moscow")
 # полчаса. Только тексты вопросов (уже очищенные) и ответов.
 _THREAD_TTL_SECONDS = 30 * 60
 _THREAD_MAX = 200
-_TELEGRAM_LIMIT = 3800
+# Telegram берёт до 4096 знаков; запас — на разметку, источники и подпись.
+_TEXT_LIMIT = 3000
 _CONTEXT_CHARS = 3000
 
 _threads: dict[int, dict] = {}
@@ -168,7 +170,8 @@ async def _answer_safely(message: dict, me: dict) -> None:
     footer = f"⏱ {seconds:.0f} с"
     if result["hidden"]:
         footer += f" · скрыто данных клиента: {result['hidden']}"
-    sent = await _send(chat_id, message["message_id"], result["text"], footer=footer)
+    sent = await _send(chat_id, message["message_id"], result["text"], footer=footer,
+                       source_items=result.get("sources"))
     logger.info(
         "Ассистент Ops: ответил tg_id=%s, скрыто %s, инструментов %s, %.1f с",
         (message.get("from") or {}).get("id"), result["hidden"], result["tool_calls"], seconds,
@@ -179,15 +182,37 @@ async def _answer_safely(message: dict, me: dict) -> None:
 
 
 def _to_html(text: str) -> str:
+    """Разметка модели — в HTML Telegram: **жирный**, `код`, абзацы.
+
+    Модель пишет markdown по привычке; Telegram его не понимает, а HTML-теги
+    от модели принимать нельзя — экранируем всё и разрешаем только эти три.
+    """
     escaped = html.escape(text.strip())
-    # Команды в обратных кавычках — моноширинным: их копируют на ВМ.
-    return re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+    # Команды и операции в обратных кавычках — моноширинным: их копируют на ВМ.
+    escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", escaped)
+    # Заголовки и маркеры markdown, если модель всё же их написала.
+    escaped = re.sub(r"(?m)^#{1,6}\s*", "", escaped)
+    escaped = re.sub(r"(?m)^\s*[-*]\s+", "• ", escaped)
+    return re.sub(r"\n{3,}", "\n\n", escaped)
 
 
-async def _send(chat_id: str, reply_to: int, text: str, *, footer: str = "") -> dict | None:
+def _sources_html(items: list[tuple[str, str]]) -> str:
+    links = [
+        f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>' if url else html.escape(label)
+        for label, url in items
+    ]
+    return "<b>Источники:</b> " + ", ".join(links) + "."
+
+
+async def _send(chat_id: str, reply_to: int, text: str, *, footer: str = "",
+                source_items: list[tuple[str, str]] | None = None) -> dict | None:
+    # Режем до разметки: обрезанный посреди тега HTML Telegram не примет.
+    if len(text) > _TEXT_LIMIT:
+        text = text[:_TEXT_LIMIT].rsplit("\n", 1)[0] + "\n…"
     body = _to_html(text)
-    if len(body) > _TELEGRAM_LIMIT:
-        body = body[:_TELEGRAM_LIMIT].rsplit("\n", 1)[0] + "\n…"
+    if source_items:
+        body += "\n\n" + _sources_html(source_items)
     if footer:
         body += f"\n\n<i>{html.escape(footer)}</i>"
     try:
@@ -222,7 +247,10 @@ async def answer(message: dict, me: dict) -> dict:
         for asked, said in thread["turns"]:
             history += [{"role": "user", "content": asked}, {"role": "assistant", "content": said}]
     elif reply:
-        context, found = redact.clean((reply.get("text") or reply.get("caption") or "")[:_CONTEXT_CHARS], stop)
+        by_bot = bool((reply.get("from") or {}).get("is_bot"))
+        context, found = redact.clean(
+            (reply.get("text") or reply.get("caption") or "")[:_CONTEXT_CHARS], stop, generous=not by_bot,
+        )
         hidden += found
 
     first = _first_message(question, context) if not history else (question or "Продолжи.")
@@ -230,6 +258,7 @@ async def answer(message: dict, me: dict) -> dict:
 
     calls = 0
     text = ""
+    used: list[tuple[str, dict, dict]] = []
     while True:
         words_only = calls >= settings.ops_assistant_max_tool_calls
         response = await claude_client.ops_assistant_turn(messages, PROMPT, tools.TOOLS, words_only=words_only)
@@ -245,6 +274,7 @@ async def answer(message: dict, me: dict) -> dict:
         for block in uses:
             calls += 1
             data = await tools.run(block.name, block.input or {})
+            used.append((block.name, dict(block.input or {}), data))
             counter = [0]
             data = redact.clean_data(data, stop, counter)
             hidden += counter[0]
@@ -263,5 +293,57 @@ async def answer(message: dict, me: dict) -> dict:
     turns = [*(thread["turns"] if thread else []), (first, text)][-6:]
     return {
         "text": text, "hidden": hidden, "tool_calls": calls,
+        "sources": sources(message, used, alert=bool(context)),
         "thread": {"context": context, "turns": turns},
     }
+
+
+_HOURS_LABEL = {"service_errors": "журнал сбоев", "reply_times": "время ответов"}
+
+
+def _doc(anchor: str) -> str:
+    # Якорь заголовка на GitHub: строчными, пробелы — дефисы.
+    return f"{settings.ops_assistant_docs_url}#{quote(anchor.lower().replace(' ', '-'))}"
+
+
+def sources(message: dict, used: list[tuple[str, dict, dict]], *, alert: bool) -> list[tuple[str, str]]:
+    """Откуда ответ: что ассистент смотрел, ссылками.
+
+    Список собирает код по вызванным инструментам, а не модель: так в нём
+    только то, что действительно открывали, и ни одной выдуманной ссылки.
+    Ссылки на диалог ВК ведут команду туда, где данные клиента видны ей
+    самой, — модели они при этом не показывались.
+    """
+    found: list[tuple[str, str]] = []
+    reply = message.get("reply_to_message") or {}
+    if reply.get("message_id"):
+        found.append(("сообщение в чате", _message_link(message["chat"]["id"], reply["message_id"])))
+    for name, arguments, data in used:
+        if name in _HOURS_LABEL:
+            hours = data.get("hours") or arguments.get("hours") or 24
+            api = f" {arguments['api']}" if arguments.get("api") else ""
+            found.append((f"{_HOURS_LABEL[name]}{api} за {hours} ч",
+                          _doc("что считается сбоем сервиса" if name == "service_errors" else "пороги")))
+        elif name == "schedule_status":
+            found.append(("расписание и очереди", _doc("как устроено")))
+        elif name == "order_status" and isinstance(data.get("order"), dict):
+            order = data["order"]
+            link = vk_client.dialog_link(order["peer_id"]) if order.get("peer_id") else ""
+            found.append((f"заказ №{order.get('id')}", link))
+        elif name == "client_status" and arguments.get("peer_id"):
+            found.append((f"диалог {arguments['peer_id']}", vk_client.dialog_link(int(arguments["peer_id"]))))
+    if alert:
+        found.append(("runbook", _doc("runbook")))
+    unique: list[tuple[str, str]] = []
+    for item in found:
+        if item not in unique:
+            unique.append(item)
+    return unique[:8]
+
+
+def _message_link(chat_id, message_id) -> str:
+    # Ссылка на сообщение супергруппы: t.me/c/<id без -100>/<номер>. Открывается
+    # только у участников чата.
+    raw = str(chat_id)
+    internal = raw[4:] if raw.startswith("-100") else raw.lstrip("-")
+    return f"https://t.me/c/{internal}/{message_id}"

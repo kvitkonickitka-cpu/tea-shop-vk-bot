@@ -437,6 +437,8 @@ class Settings(BaseSettings):
     # Вопрос старше этого не обрабатываем: после простоя бот не должен
     # отвечать на всё, что накопилось за ночь.
     ops_assistant_stale_minutes: int = 10
+    # Куда ведут ссылки «Источники» на разделы мониторинга и runbook.
+    ops_assistant_docs_url: str = "https://github.com/kvitkonickitka-cpu/tea-shop-vk-bot/blob/main/docs/monitoring.md"
     # Сколько дней хранить журнал ops_events.
     ops_events_keep_days: int = 30
     # Когда бот сам пишет в Ops (app/modules/ops/alerts.py): p95 ответа

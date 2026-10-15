@@ -271,3 +271,32 @@ async def test_order_tool_shows_no_client_fields(db):
     assert str(order_id) in dumped and "123456789" in dumped
     for secret in ("Иванов", "79001234567", "ivanov@", "Мира"):
         assert secret not in dumped
+
+
+async def test_bot_report_is_not_mistaken_for_names(wire):
+    report = {"message_id": 11, "from": ME,
+              "text": "📊 Сутки бота · 14.10 15:20 – 15.10 15:20 МСК\nАптайм: 100,0 % (1440 из 1440 минут с пульсом)\n"
+                      "Ответы: 16, p95 8,8 с\nСбоев сервисов: 0"}
+    wire["script"] = [said("Аптайм 100 %.")]
+    await service._answer_safely(message("что значит первая строка?", mention=False, reply_to=report), ME)
+    dumped = json.dumps(wire["requests"], ensure_ascii=False, default=str)
+    assert "Аптайм: 100,0 %" in dumped
+    assert "скрыто" not in wire["sent"][0]
+
+
+async def test_sources_list_what_was_looked_at(wire):
+    alert = {"message_id": 10, "from": {"id": 999, "is_bot": True}, "text": "🔎 СДЭК — 1 сбой · заказ #1042"}
+    wire["script"] = [tool_use("order_status", order_id=1042), said("**Сбой СДЭКа** по `1042`.\n\n- проверить ключ")]
+    await service._answer_safely(message("что делать?", reply_to=alert), ME)
+    sent = wire["sent"][0]
+    assert "<b>Сбой СДЭКа</b>" in sent and "<code>1042</code>" in sent and "• проверить ключ" in sent
+    assert "<b>Источники:</b>" in sent
+    assert 'href="https://t.me/c/4495345064/10"' in sent
+    assert ">заказ №1042</a>" in sent and "gim240363526?sel=123456789" in sent
+    assert "#runbook" in sent
+
+
+async def test_model_html_is_escaped(wire):
+    wire["script"] = [said("<b>жирно</b> и <a href='x'>ссылка</a>")]
+    await service._answer_safely(message("тест"), ME)
+    assert "&lt;b&gt;жирно" in wire["sent"][0]
