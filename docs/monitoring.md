@@ -12,6 +12,15 @@ metric», и за ночь пришло почти 600 сообщений — н
 (`deploy/watchdog`). С переезда на Timeweb (13.10.2026) метрики в Yandex
 Monitoring не уходят, и его алерт «нет пульса» больше не работает.
 
+Чат Ops — группа «Teapotwice Alerts». **Номер чата меняется, если Telegram
+делает группу супергруппой** (так бывает после смены настроек группы или
+подключения стороннего бота). 15.10.2026 её перевёл Timeweb, и бот со сторожем
+получали `400 group chat was upgraded to a supergroup chat` — отчёт за сутки
+не ушёл. Новый номер Telegram отдаёт в той же ошибке (`migrate_to_chat_id`).
+Его надо вписать в двух местах: `TELEGRAM_OPS_CHAT_ID` в `.env.bot` на ВМ
+(плюс `docker compose up -d bot`) и `TELEGRAM_CHAT_ID` в
+`/etc/teashop-watchdog.env` на Aeza.
+
 ## Что приходит в Ops
 
 | Что | Кто пишет | Когда | Повтор |
