@@ -77,3 +77,71 @@ async def send_message(text: str, chat_id: str | None = None) -> None:
         data = response.json()
         if not data.get("ok"):
             raise RuntimeError(f"Telegram API error: {data}")
+
+
+class TelegramConflict(RuntimeError):
+    """409 на getUpdates: обновления этого бота уже забирает кто-то другой.
+
+    Бывает в секунды деплоя, когда старый контейнер ещё жив, или если на
+    токен поставили вебхук. Опросу надо подождать, а не сыпать ошибками.
+    """
+
+
+async def call(method: str, payload: dict | None = None, *, timeout: float = _TIMEOUT_SECONDS):
+    """Любой метод Bot API через тот же путь, что и send_message: прокси и секрет.
+
+    Ошибки — без адреса запроса: в нём токен бота (см. send_message).
+    Возвращает поле `result` ответа.
+    """
+    base_url = settings.telegram_api_base_url or TELEGRAM_API_URL
+    url = f"{base_url}/bot{settings.telegram_bot_token}/{method}"
+    headers = (
+        {"X-Proxy-Secret": settings.telegram_proxy_secret}
+        if settings.telegram_api_base_url and settings.telegram_proxy_secret
+        else {}
+    )
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            response = await client.post(url, json=payload or {}, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                raise TelegramConflict(error.response.text[:300]) from None
+            raise RuntimeError(
+                f"Telegram ответил {error.response.status_code}: {error.response.text[:300]}"
+            ) from None
+        except httpx.RequestError as error:
+            raise TelegramUnavailable(f"Telegram недоступен: {type(error).__name__}") from None
+    data = response.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram API error: {str(data)[:300]}")
+    return data.get("result")
+
+
+async def reply(text: str, *, chat_id: str, reply_to: int) -> dict:
+    """Ответ на конкретное сообщение (HTML). Возвращает отправленное сообщение."""
+    return await call("sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "link_preview_options": {"is_disabled": True},
+        # Сообщение могли удалить, пока шёл ответ, — тогда ответ уходит просто в чат.
+        "reply_parameters": {"message_id": reply_to, "allow_sending_without_reply": True},
+    })
+
+
+async def typing(chat_id: str) -> None:
+    """«Печатает…» в чате — живёт около пяти секунд."""
+    await call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+
+
+async def get_me() -> dict:
+    return await call("getMe")
+
+
+async def get_updates(offset: int | None, *, wait_seconds: int) -> list[dict]:
+    """Длинный опрос: Telegram держит запрос до wait_seconds, пока нет нового."""
+    payload: dict = {"timeout": wait_seconds, "allowed_updates": ["message"]}
+    if offset is not None:
+        payload["offset"] = offset
+    return await call("getUpdates", payload, timeout=wait_seconds + 15)

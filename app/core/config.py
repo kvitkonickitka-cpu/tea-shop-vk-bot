@@ -418,6 +418,25 @@ class Settings(BaseSettings):
     ops_window_minutes: int = 10
     # Час (по Москве), после которого уходит ежедневный отчёт.
     ops_report_hour_msk: int = 9
+
+    # Ассистент в чате Ops (app/modules/ops/assistant): отвечает на вопросы
+    # по тревогам, когда бота отмечают (@бот) или отвечают на его сообщение.
+    # Видит только служебные данные и идентификаторы, данных клиентов — нет.
+    # Выключен, пока не включат явно: он держит длинный опрос Telegram.
+    ops_assistant_enabled: bool = False
+    # Пусто — та же модель, что у бота (anthropic_model).
+    ops_assistant_model: str = ""
+    ops_assistant_effort: str = "medium"
+    ops_assistant_max_tokens: int = 6000
+    # Сколько раз за вопрос модель может сходить за данными.
+    ops_assistant_max_tool_calls: int = 6
+    # Вопросов в сутки на весь чат — предохранитель от счёта за API.
+    ops_assistant_daily_limit: int = 60
+    # Telegram ID тех, кому отвечать, через запятую. Пусто — всем в чате Ops.
+    ops_assistant_allowed_tg_ids: str = ""
+    # Вопрос старше этого не обрабатываем: после простоя бот не должен
+    # отвечать на всё, что накопилось за ночь.
+    ops_assistant_stale_minutes: int = 10
     # Сколько дней хранить журнал ops_events.
     ops_events_keep_days: int = 30
     # Когда бот сам пишет в Ops (app/modules/ops/alerts.py): p95 ответа

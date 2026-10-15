@@ -136,6 +136,36 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict], 
     return response
 
 
+@watch("claude", "ассистент Ops")
+async def ops_assistant_turn(messages: list[dict], system_prompt: str, tools: list[dict], *, words_only: bool = False):
+    """Ход ассистента в чате Ops. Тот же последний рубеж, что у бота.
+
+    Вопросы туда приходят уже очищенными (app/modules/ops/assistant/redact.py);
+    guard здесь — на случай, если очистка что-то пропустила.
+    """
+    extra: dict = {"tools": tools}
+    if words_only:
+        extra["tool_choice"] = {"type": "none"}
+    effort = (settings.ops_assistant_effort or "").strip()
+    if effort:
+        extra["output_config"] = {"effort": effort}
+    system_prompt, messages = guard("ассистент Ops", system_prompt, _well_formed(messages))
+    response = await _client.messages.create(
+        model=settings.ops_assistant_model or settings.anthropic_model,
+        max_tokens=settings.ops_assistant_max_tokens,
+        system=system_prompt,
+        messages=messages,
+        **extra,
+    )
+    usage = getattr(response, "usage", None)
+    logger.info(
+        "Ассистент Ops: ход модели, вход %s, выход %s токенов, stop_reason=%s",
+        getattr(usage, "input_tokens", "?"), getattr(usage, "output_tokens", "?"),
+        getattr(response, "stop_reason", None),
+    )
+    return response
+
+
 def _effort() -> dict:
     """Глубина размышления — параметром, если задана."""
     effort = (settings.anthropic_effort or "").strip()

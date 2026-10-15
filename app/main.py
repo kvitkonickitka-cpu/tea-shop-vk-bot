@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import FastAPI, Request
@@ -68,3 +69,17 @@ async def on_startup() -> None:
         # в интернете (по нему видно, какого префикса не хватает в правилах).
         diagnostics.log_route_to_database()
         await diagnostics.log_egress_ip()
+
+    if settings.ops_assistant_enabled and settings.telegram_bot_token and settings.telegram_ops_chat_id:
+        from app.modules.ops.assistant import poller
+
+        # Ссылка на задачу — в состоянии приложения: иначе сборщик мусора
+        # может прибить фоновую задачу, на которую никто не ссылается.
+        app.state.ops_assistant = asyncio.create_task(poller.run())
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    task = getattr(app.state, "ops_assistant", None)
+    if task is not None:
+        task.cancel()
