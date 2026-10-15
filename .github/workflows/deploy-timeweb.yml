@@ -17,6 +17,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Каждый запуск — запись во вкладке Deployments репозитория: видно, когда
+    # и какой коммит выкатили. Окружение GitHub создаёт сам при первом запуске;
+    # секрет TIMEWEB_DEPLOY_KEY — репозитория, он виден и отсюда.
+    environment:
+      name: timeweb
+      url: https://bot.teapotwice.ru/health
     steps:
       - name: Deploy main to the Timeweb VM
         env:
