@@ -372,6 +372,8 @@ def sources(message: dict, used: list[tuple[str, dict, dict]], *, alert: bool) -
             api = f" {arguments['api']}" if arguments.get("api") else ""
             label, anchor = _HOURS_LABEL[name]
             found.append((f"{label}{api} за {hours} ч", _doc(anchor)))
+        elif name == "event_queue":
+            found.append((f"очередь событий за {data.get('hours', 24)} ч", _doc("как устроено")))
         elif name == "schedule_status":
             found.append(("расписание и очереди", _doc("как устроено")))
         elif name == "order_status" and isinstance(data.get("order"), dict):

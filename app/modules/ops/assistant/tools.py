@@ -180,6 +180,43 @@ async def api_latency(hours=24, api=None) -> dict:
     return {"hours": hours, "calls": rows, "note": note}
 
 
+async def event_queue(hours=24) -> dict:
+    """События ВК в своей очереди: сколько, каких, как быстро разобраны.
+
+    Тела событий не отдаём — в них текст сообщения клиента. Только тип,
+    время, попытки, класс ошибки и peer_id. Разобранные события таблица
+    хранит сутки (queue/local.py), поэтому окно больше суток покажет меньше.
+    """
+    hours = min(_hours(hours), 48)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    by_type = await _rows(
+        """
+        select to_char(date_trunc('hour', created_at at time zone 'Europe/Moscow'), 'DD.MM HH24:00') as hour_msk,
+               body->>'type' as type, count(*) as events,
+               count(*) filter (where done_at is not null) as done,
+               count(*) filter (where done_at is null) as waiting,
+               count(*) filter (where last_error is not null) as with_error,
+               round(avg(extract(epoch from done_at - created_at))::numeric, 1) as avg_seconds_to_done,
+               round(max(extract(epoch from done_at - created_at))::numeric, 1) as max_seconds_to_done
+        from queued_events where created_at >= :since
+        group by 1, 2 order by 1, 2
+        """,
+        since=since,
+    )
+    recent = await _rows(
+        """
+        select id, body->>'type' as type,
+               coalesce(body->'object'->'message'->>'peer_id', body->>'peer_id') as peer_id,
+               created_at, taken_at, done_at, attempts, last_error
+        from queued_events order by id desc limit 15
+        """
+    )
+    return _plain({
+        "hours": hours, "retention": "разобранные события хранятся сутки",
+        "by_hour_and_type": by_type, "recent": recent,
+    })
+
+
 async def order_status(order_id) -> dict:
     try:
         order_id = int(order_id)
@@ -407,6 +444,16 @@ TOOLS = [
         },
     },
     {
+        "name": "event_queue",
+        "description": (
+            "Очередь событий ВК (queued_events) за N часов, до 48: по часам (МСК) и типам — сколько пришло, "
+            "разобрано, ждёт, с ошибкой, среднее и максимальное время от прихода до конца разбора в секундах; "
+            "плюс 15 последних событий: тип, peer_id, время прихода и разбора, попытки, ошибка. "
+            "Тексты сообщений клиентов не отдаются. Разобранные события хранятся сутки."
+        ),
+        "input_schema": {"type": "object", "properties": {"hours": {"type": "integer"}}},
+    },
+    {
         "name": "reply_times",
         "description": "Время ответа бота клиентам за N часов: число ходов, p50, p95, максимум, p95 Claude, сколько дольше 8 с.",
         "input_schema": {"type": "object", "properties": {"hours": {"type": "integer"}}},
@@ -458,6 +505,7 @@ CODE_TOOLS = set(_code.HANDLERS)
 _HANDLERS = {
     **_code.HANDLERS,
     "service_errors": service_errors,
+    "event_queue": event_queue,
     "host_load": host_load,
     "api_latency": api_latency,
     "reply_times": reply_times,

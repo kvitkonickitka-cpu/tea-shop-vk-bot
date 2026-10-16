@@ -69,3 +69,27 @@ async def test_latency_and_load_tools(db):
     assert load["minutes_with_client_turns"]["cpu_max"] == 70.0
     assert load["minutes_without_turns"]["cpu_max"] == 5.0
     assert load["busiest_minutes"][0]["turns"] == 1 and load["busiest_minutes"][0]["slowest_turn_s"] == 6.5
+
+
+async def test_event_queue_tool_shows_counts_but_no_message_text(db):
+    import json
+
+    async with get_session_factory()() as session:
+        await session.execute(text("delete from queued_events"))
+        await session.execute(text(
+            "insert into queued_events (body, done_at, attempts) values (cast(:b as jsonb), now(), 1)"
+        ), {"b": json.dumps({"type": "message_new", "event_id": "e1",
+                             "object": {"message": {"peer_id": 111, "text": "Иванов Иван +79001234567"}}})})
+        await session.execute(text(
+            "insert into queued_events (body, attempts, last_error) values (cast(:b as jsonb), 2, 'RuntimeError')"
+        ), {"b": json.dumps({"type": "message_new", "object": {"message": {"peer_id": 222, "text": "секрет"}}})})
+        await session.commit()
+
+    data = await tools.event_queue(24)
+    total = sum(row["events"] for row in data["by_hour_and_type"])
+    assert total == 2
+    row = data["by_hour_and_type"][0]
+    assert row["type"] == "message_new" and row["done"] == 1 and row["waiting"] == 1 and row["with_error"] == 1
+    assert {r["peer_id"] for r in data["recent"]} == {"111", "222"}
+    dumped = json.dumps(data, ensure_ascii=False, default=str)
+    assert "Иванов" not in dumped and "79001234567" not in dumped and "секрет" not in dumped
