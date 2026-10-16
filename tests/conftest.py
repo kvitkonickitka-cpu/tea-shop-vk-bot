@@ -65,6 +65,17 @@ def _rebuild_engine():
     database._session_factory = async_sessionmaker(database._engine, expire_on_commit=False)
 
 
+def _no_database(reason: str) -> None:
+    """Базы нет: на своей машине тест пропускается, в CI — падает.
+
+    В CI (`TESTS_REQUIRE_DATABASE=1`) пропуск означал бы зелёную проверку,
+    в которой половина тестов не запускалась.
+    """
+    if os.environ.get("TESTS_REQUIRE_DATABASE"):
+        pytest.fail(f"тестам нужна база, а её нет: {reason}")
+    pytest.skip(reason)
+
+
 @pytest.fixture
 async def db():
     """Живая база с созданными таблицами. Нет базы — тест пропускается.
@@ -77,7 +88,7 @@ async def db():
     from app.core import database
 
     if database._engine is None:
-        pytest.skip("DATABASE_URL не задан")
+        _no_database("DATABASE_URL не задан")
 
     _rebuild_engine()
 
@@ -85,12 +96,12 @@ async def db():
         try:
             await database.init_models()
         except Exception as error:  # база недоступна — это не провал теста
-            pytest.skip(f"база недоступна: {type(error).__name__}")
+            _no_database(f"база недоступна: {type(error).__name__}")
         _initialized = True
         _rebuild_engine()
 
     if database._session_factory is None:
-        pytest.skip("база недоступна, приложение ушло в память")
+        _no_database("база недоступна, приложение ушло в память")
 
     return database.get_session_factory()
 
