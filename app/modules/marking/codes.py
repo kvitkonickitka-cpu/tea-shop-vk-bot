@@ -14,10 +14,18 @@
 сканировать надо камерой на странице сборки: копирование текста из
 стороннего сканера разделители теряет.
 
-Если разделителей нет вовсе (ручной ввод, копия из текстового файла),
-пробуем восстановить: криптохвост стоит последним и имеет фиксированную
-длину, так что серийный номер находится однозначно. Если однозначно не
-выходит — отказываем, а не угадываем.
+Если разделителей нет вовсе (камерные сканеры часто теряют GS, ручной
+ввод, копия из текстового файла), восстанавливаем — но только код вида
+`01` + 14 цифр + `21` + серийный номер + `93` + 4 символа: криптохвост `93`
+стоит последним и имеет фиксированную длину, так что серийный номер
+находится однозначно. Всё остальное без разделителей — «Код не распознан»:
+длинный хвост `91`+`92` у чая не встречается, и угадывать его границы мы не
+берёмся.
+
+Скан, который начинается не с `01`, — не код маркировки: чаще всего это QR
+«Как заваривать» с той же этикетки или EAN с упаковки. Страница сборки
+распознаёт только DataMatrix (форматы отключены в самом сканере), но ручной
+ввод и сторонние сканеры приносят что угодно — поэтому разбор объясняет и это.
 """
 
 from __future__ import annotations
@@ -38,7 +46,6 @@ _FIXED = {"01": 14, "11": 6, "13": 6, "15": 6, "17": 6, "3103": 6, "8005": 6, "7
 _VARIABLE = {"21": 20, "10": 20, "240": 30, "91": 90, "92": 90, "93": 35}
 
 _CRYPTO_93 = re.compile(r"^(?P<serial>.{1,20})93(?P<check>.{4})$", re.S)
-_CRYPTO_91_92 = re.compile(r"^(?P<serial>.{1,20})91(?P<key>.{4})92(?P<sig>.{44}|.{88})$", re.S)
 
 
 class CodeError(ValueError):
@@ -135,24 +142,39 @@ def _elements(text: str) -> dict[str, str] | None:
 
 
 def _restore(text: str) -> MarkingCode | None:
-    """Код без разделителей: найти серийный номер по хвосту фиксированной длины."""
+    """Код без разделителей: найти серийный номер по хвосту `93` фиксированной длины."""
     if not text.startswith("01") or GS in text or text[16:18] != "21":
         return None
     gtin, rest = text[2:16], text[18:]
-    found = []
     match = _CRYPTO_93.match(rest)
-    if match:
-        found.append(MarkingCode(
-            code=f"01{gtin}21{match['serial']}{GS}93{match['check']}",
-            gtin=gtin, serial=match["serial"], crypto="93", restored=True,
-        ))
-    match = _CRYPTO_91_92.match(rest)
-    if match:
-        found.append(MarkingCode(
-            code=f"01{gtin}21{match['serial']}{GS}91{match['key']}{GS}92{match['sig']}",
-            gtin=gtin, serial=match["serial"], crypto="91+92", restored=True,
-        ))
-    return found[0] if len(found) == 1 else None
+    if not match:
+        return None
+    return MarkingCode(
+        code=f"01{gtin}21{match['serial']}{GS}93{match['check']}",
+        gtin=gtin, serial=match["serial"], crypto="93", restored=True,
+    )
+
+
+NOT_RECOGNIZED = "Код не распознан, отсканируйте ещё раз."
+
+
+def _not_a_marking_code(text: str) -> str:
+    """Почему скан не код маркировки — словами, по тому, на что он похож."""
+    lowered = text.lower()
+    if lowered.startswith(("http://", "https://", "www.")) or "://" in lowered[:12]:
+        return (
+            "Это QR-код со ссылкой (например, «Как заваривать»), а не код маркировки. "
+            "Наведите камеру на квадратный DataMatrix «Честного знака»."
+        )
+    if text.isdigit() and len(text) in (8, 12, 13, 14):
+        return (
+            "Это штрихкод EAN, а не код маркировки. Наведите камеру на квадратный "
+            "DataMatrix «Честного знака»."
+        )
+    return (
+        "Это не код маркировки: он должен начинаться с 01 и GTIN из 14 цифр. "
+        "Наведите камеру на квадратный DataMatrix «Честного знака»."
+    )
 
 
 def parse(raw: str) -> MarkingCode:
@@ -165,23 +187,16 @@ def parse(raw: str) -> MarkingCode:
     if bracketed is not None:
         text = bracketed
 
-    if not text.startswith("01") or not text[2:16].isdigit():
-        raise CodeError(
-            "Это не код маркировки: он должен начинаться с GTIN (01 и 14 цифр). "
-            "Возможно, отсканирован штрихкод EAN вместо квадратного DataMatrix."
-        )
+    if not text.startswith("01"):
+        raise CodeError(_not_a_marking_code(text))
+    if not text[2:16].isdigit():
+        raise CodeError(NOT_RECOGNIZED)
 
     elements = _elements(text) if GS in text else None
     if elements is None or "21" not in elements:
-        restored = _restore(text.replace(GS, "")) if GS not in text else None
-        if restored is None and GS not in text:
-            raise CodeError(
-                "В коде нет разделителей, и серийный номер не отделить от "
-                "криптохвоста однозначно. Отсканируйте камерой на этой странице — "
-                "при копировании текста разделители теряются."
-            )
+        restored = _restore(text) if GS not in text else None
         if restored is None:
-            raise CodeError("Код не разбирается — отсканируйте ещё раз.")
+            raise CodeError(NOT_RECOGNIZED)
         parsed = restored
     else:
         gtin = elements.get("01", "")

@@ -9,7 +9,7 @@ import pytest
 from app.modules.catalog import service as catalog_service
 from app.modules.marking import packing
 from app.modules.marking.codes import GS
-from app.modules.marking.models import ASSIGNED, IN_STOCK, MarkingCodeRow
+from app.modules.marking.models import SCANNED, OrderMarkingCode
 from app.modules.orders import repository as orders_repository
 from app.modules.orders.models import Order, OrderPayment
 from app.modules.payment import webhook, yookassa_client
@@ -96,18 +96,16 @@ async def packed_order(db, payment_id: str = "pay-9", **later) -> Order:
     return order
 
 
-async def code_row(db) -> MarkingCodeRow:
+async def code_rows(db) -> list:
     async with db() as session:
-        return (await session.execute(
-            MarkingCodeRow.__table__.select()
-        )).one()
+        return (await session.execute(OrderMarkingCode.__table__.select())).all()
 
 
 async def test_refund_before_delivery_frees_the_codes(clean, world):
     order = await packed_order(clean, not_delivered_at=datetime.now(timezone.utc))
     await webhook.handle({"event": "refund.succeeded", "object": {"id": "ref-9"}})
-    row = await code_row(clean)
-    assert row.status == IN_STOCK and row.order_id is None
+    # Пачка не продана: строка заказа удалена, код свободен.
+    assert await code_rows(clean) == []
     assert any("освобождены: 1" in text for text in world["manager"])
     # Пачка снова годится для другого заказа.
     other = await packed_order(clean, payment_id="pay-10")
@@ -118,6 +116,6 @@ async def test_refund_after_delivery_keeps_the_codes(clean, world):
     await packed_order(clean, delivered_at=datetime.now(timezone.utc),
                        settlement_receipt_id="rt-1", settlement_receipt_status="succeeded")
     await webhook.handle({"event": "refund.succeeded", "object": {"id": "ref-9"}})
-    row = await code_row(clean)
-    assert row.status == ASSIGNED and row.order_id is not None
+    [row] = await code_rows(clean)
+    assert row.status == SCANNED and row.order_id is not None
     assert any("после закрывающего чека" in text for text in world["manager"])

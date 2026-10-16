@@ -26,7 +26,7 @@ from app.modules.orders import (
     repository as orders_repository,
     retention,
 )
-from app.modules.payment import service as payment_service, settlement
+from app.modules.payment import returns, service as payment_service, settlement
 from app.modules.payment import watch as payment_watch
 from app.modules.payment import yookassa_client
 from app.modules.queue import client as queue_client
@@ -449,6 +449,24 @@ async def settlement_receipt(order_id: int, request: Request):
                      f"вручён, но перевозчик молчит: scripts/api.sh orders/{order_id}/delivered",
         }
     return {"заказ": order_id, **(await settlement.issue(order))}
+
+
+@router.post("/internal/orders/{order_id}/refund-with-codes")
+async def refund_with_codes(order_id: int, request: Request):
+    """Полный возврат заказа, проданного с кодами маркировки.
+
+        scripts/api.sh orders/12/refund-with-codes
+
+    Только после закрывающего чека: в чек возврата уходят те же коды, что в
+    нём, и коды получают статус «возвращён». До закрывающего чека возврат —
+    как раньше, кнопкой в кабинете ЮKassa. Возврат части заказа — вручную.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    order = await orders_repository.by_id(order_id)
+    if order is None:
+        return {"error": f"заказа №{order_id} нет в базе"}
+    return {"заказ": order_id, **(await returns.refund_with_codes(order))}
 
 
 @router.post("/internal/orders/{order_id}/pack-link")

@@ -147,6 +147,16 @@ _MISSING_COLUMNS = (
     # Мониторинг: какие сбои уже ушли в Ops подробностью.
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS data JSONB",
+    # Коды заказа переехали из пула в свою таблицу (16.10.2026). Переносим
+    # прежние привязки; повторный запуск ничего не дублирует — пара GTIN +
+    # серийный номер, уже известная новой таблице, пропускается.
+    "INSERT INTO order_marking_codes (order_id, item_index, raw_code, gtin, serial, kind, "
+    "status, from_pool, manual, scanned_at, scanned_by, sold_at) "
+    "SELECT m.order_id, COALESCE(m.item_index, 0), m.code, m.gtin, m.serial, 'pack', "
+    "CASE m.status WHEN 'assigned' THEN 'scanned' ELSE m.status END, m.from_pool, "
+    "m.manual, COALESCE(m.scanned_at, m.created_at), m.scanned_by, m.sold_at "
+    "FROM marking_codes m WHERE m.order_id IS NOT NULL AND NOT EXISTS ("
+    "SELECT 1 FROM order_marking_codes o WHERE o.gtin = m.gtin AND o.serial = m.serial)",
 )
 
 

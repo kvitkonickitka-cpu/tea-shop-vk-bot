@@ -1,0 +1,82 @@
+{
+  "customer": {
+    "email": "a@b.ru",
+    "full_name": "Иванов Иван"
+  },
+  "internet": true,
+  "items": [
+    {
+      "amount": {
+        "currency": "RUB",
+        "value": "1500.00"
+      },
+      "description": "Сет «Два улуна»",
+      "mark_code_info": {
+        "gs_1m": "010465011724040821SET0000000001\u001d93dGVz"
+      },
+      "mark_mode": "0",
+      "measure": "piece",
+      "payment_mode": "full_payment",
+      "payment_subject": "marked",
+      "quantity": 1,
+      "vat_code": 1
+    },
+    {
+      "amount": {
+        "currency": "RUB",
+        "value": "800.00"
+      },
+      "description": "Те Гуань Инь",
+      "mark_code_info": {
+        "gs_1m": "010460620309922121TGY0000000001\u001d93dGVz"
+      },
+      "mark_mode": "0",
+      "measure": "piece",
+      "payment_mode": "full_payment",
+      "payment_subject": "marked",
+      "quantity": 1,
+      "vat_code": 1
+    },
+    {
+      "amount": {
+        "currency": "RUB",
+        "value": "800.00"
+      },
+      "description": "Те Гуань Инь",
+      "mark_code_info": {
+        "gs_1m": "010460620309922121TGY0000000002\u001d93dGVz"
+      },
+      "mark_mode": "0",
+      "measure": "piece",
+      "payment_mode": "full_payment",
+      "payment_subject": "marked",
+      "quantity": 1,
+      "vat_code": 1
+    },
+    {
+      "amount": {
+        "currency": "RUB",
+        "value": "117.00"
+      },
+      "description": "Доставка: Ozon, пункт выдачи",
+      "measure": "piece",
+      "payment_mode": "full_payment",
+      "payment_subject": "service",
+      "quantity": 1,
+      "vat_code": 1
+    }
+  ],
+  "payment_id": "pay-17",
+  "send": true,
+  "settlements": [
+    {
+      "amount": {
+        "currency": "RUB",
+        "value": "3217.00"
+      },
+      "type": "prepayment"
+    }
+  ],
+  "timezone": 2,
+  "type": "payment"
+}

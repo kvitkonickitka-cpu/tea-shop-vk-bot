@@ -427,6 +427,24 @@ async def create_refund(
     return refund
 
 
+async def create_refund_with_receipt(
+    *, payment_id: str, amount: float, receipt: dict, key: str,
+) -> Refund:
+    """Возврат с готовым чеком возврата — для товара, проданного с кодами.
+
+    Отдельно от `create_refund`: там чек собирается из позиций предоплаты, а
+    здесь его собирает вызывающий (`settlement.return_receipt`) — полный
+    расчёт и коды маркировки, как в закрывающем чеке.
+    """
+    payload = {"payment_id": payment_id, "amount": _money(amount), "receipt": receipt}
+    refund = _to_refund(await _call("POST", "/refunds", payload, key=key))
+    logger.info(
+        "ЮKassa: возврат с кодами %s по платежу %s на %s руб, статус %s",
+        refund.id, payment_id, refund.amount, refund.status,
+    )
+    return refund
+
+
 @dataclass(frozen=True)
 class Receipt:
     """Чек, созданный отдельным запросом, — закрывающий при вручении."""

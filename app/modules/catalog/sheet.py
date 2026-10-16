@@ -60,6 +60,7 @@ _COLUMNS = {
     "в наличии": "in_stock",
     "наличие": "in_stock",
     "gtin": "gtin",
+    "тип": "kind",
     "ссылка": "link",
     "описание": "description",
     "с чем советуем": "recommended",
@@ -117,6 +118,26 @@ def _brewing(values: dict, where: str, warnings: list[str]) -> tuple[str, str]:
         warnings.append(f"{where}: «Видео» — ссылка должна начинаться с https://; применено без видео")
         video = ""
     return brewing, video
+
+
+_KINDS = {
+    "": "pack", "пачка": "pack", "блин": "pack", "pack": "pack",
+    "сет": "set", "набор": "set", "set": "set",
+}
+
+
+def _kind(values: dict, where: str, warnings: list[str]) -> str:
+    """«Тип»: пачка (по умолчанию) или сет / набор.
+
+    Непонятное значение не блокирует таблицу: тип влияет только на подсказки
+    сборщику и разбор частичного возврата, а коды всё равно сверяются по
+    GTIN. Поэтому — пачка и предупреждение.
+    """
+    raw = (values.get("kind") or "").strip().casefold()
+    if raw in _KINDS:
+        return _KINDS[raw]
+    warnings.append(f"{where}: «Тип» — «{raw}», нужно «пачка», «сет» или «набор»; считаем пачкой")
+    return "pack"
 
 
 def _price(raw: str) -> float | None:
@@ -192,6 +213,8 @@ def parse_csv(text: str) -> Parsed:
             )
             continue
 
+        kind = _kind(values, where, result.warnings)
+
         sizes = [
             part.strip()
             for part in re.split(r"[;,]", values.get("package_sizes", ""))
@@ -205,6 +228,8 @@ def parse_csv(text: str) -> Parsed:
             "package_sizes": sizes,
             "in_stock": in_stock,
             "gtin": gtin,
+            # Пачка или сет / набор в коробке со своим кодом (КИН).
+            "kind": kind,
             "link": values.get("link", ""),
             "description": values.get("description", ""),
             "recommended": [
