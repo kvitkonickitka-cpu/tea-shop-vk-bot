@@ -182,6 +182,30 @@ docker exec -i teashop-postgres pg_restore -U teashop -d teashop --clean --if-ex
 Проверка: `curl https://bot.teapotwice.ru/health` — `"database": "ok"`; через
 5 минут в «по расписанию» появится отметка тика.
 
+## Доступ к ВМ и защита
+
+Снаружи открыты только 22, 80 и 443 (облачный файрвол Timeweb; проверено с
+Aeza 16.10.2026: 5432, 8080, 10050 закрыты). Postgres слушает только
+`172.17.0.1`.
+
+- **SSH — только по ключу**: `/etc/ssh/sshd_config.d/10-teashop-hardening.conf`
+  (`PermitRootLogin prohibit-password`, пароль и keyboard-interactive выключены).
+  Ключи в `/root/.ssh/authorized_keys`: `tea-shop-vk-bot-vm` (наш), `github-actions-deploy`
+  (только `teashop-deploy`, forced command) и `otp_vds@20251027111519` — его 14.10.2026
+  дописал гипервизор Timeweb (`qemu-guest-agent`, `guest-exec`) во время обращения в
+  поддержку; входов им не было. Поддержка Timeweb может выполнять команды на ВМ через
+  гостевой агент и без ключа — это свойство хостинга.
+- **fail2ban** (`/etc/fail2ban/jail.d/teashop.local`): только SSH, читает
+  `/var/log/auth.log`; 6 неудач за 10 минут — бан на час, повторно до суток.
+  Не банит Timeweb (`92.53.116.0/24`) и Aeza (`94.228.170.170`). Через журнал systemd
+  с уточнённым `journalmatch` новые записи не ловились — не возвращать.
+  Себя разбанить: `fail2ban-client set sshd unbanip <адрес>` (из консоли Timeweb,
+  если SSH закрыт). Посмотреть: `fail2ban-client status sshd`.
+- **Агент Zabbix** (`zabbix-agent-timeweb`, порт 10050) — графики загрузки в панели
+  Timeweb, отвечает только серверам Timeweb, снаружи порт закрыт.
+- Боты перебирают пароли постоянно (≈1500 попыток в сутки) — это фон; вход по
+  паролю выключен, подобрать нечего.
+
 ## Адреса: teapotwice.ru
 
 С 15.10.2026 у магазина свой домен `teapotwice.ru` (Timeweb, автопродление
