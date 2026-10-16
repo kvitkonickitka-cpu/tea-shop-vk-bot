@@ -191,10 +191,12 @@ Aeza 16.10.2026: 5432, 8080, 10050 закрыты). Postgres слушает то
 - **SSH — только по ключу**: `/etc/ssh/sshd_config.d/10-teashop-hardening.conf`
   (`PermitRootLogin prohibit-password`, пароль и keyboard-interactive выключены).
   Ключи в `/root/.ssh/authorized_keys`: `tea-shop-vk-bot-vm` (наш), `github-actions-deploy`
-  (только `teashop-deploy`, forced command) и `otp_vds@20251027111519` — его 14.10.2026
+  (только `teashop-deploy`, forced command). Ключ `otp_vds@20251027111519` 14.10.2026
   дописал гипервизор Timeweb (`qemu-guest-agent`, `guest-exec`) во время обращения в
-  поддержку; входов им не было. Поддержка Timeweb может выполнять команды на ВМ через
-  гостевой агент и без ключа — это свойство хостинга.
+  поддержку; входов им не было, 16.10.2026 он удалён (копия файла —
+  `/root/authorized_keys.bak-*`). Поддержка Timeweb может выполнять команды на ВМ через
+  гостевой агент и без ключа и при новом обращении допишет ключ снова — это свойство
+  хостинга; `qemu-guest-agent` и `zabbix-agent-timeweb` не трогаем.
 - **fail2ban** (`/etc/fail2ban/jail.d/teashop.local`): только SSH, читает
   `/var/log/auth.log`; 6 неудач за 10 минут — бан на час, повторно до суток.
   Не банит Timeweb (`92.53.116.0/24`) и Aeza (`94.228.170.170`). Через журнал systemd
