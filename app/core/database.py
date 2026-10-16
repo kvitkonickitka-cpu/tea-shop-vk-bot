@@ -147,17 +147,56 @@ _MISSING_COLUMNS = (
     # Мониторинг: какие сбои уже ушли в Ops подробностью.
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
     "ALTER TABLE ops_events ADD COLUMN IF NOT EXISTS data JSONB",
-    # Коды заказа переехали из пула в свою таблицу (16.10.2026). Переносим
-    # прежние привязки; повторный запуск ничего не дублирует — пара GTIN +
-    # серийный номер, уже известная новой таблице, пропускается.
+)
+
+
+# Коды заказа переехали из пула `marking_codes` в свою таблицу
+# `order_marking_codes` (16.10.2026) — переносим прежние привязки к заказам.
+#
+# Не строкой в `_MISSING_COLUMNS`: те идут в одной транзакции со схемой, и
+# ошибка одной строки в Postgres обрывает всю транзакцию — бот ушёл бы в
+# резервный режим. Перенос — своей транзакцией после схемы (`_move_marking`).
+#
+# Повторный запуск ничего не задваивает: пара GTIN + серийный номер,
+# уже известная новой таблице (в любом статусе), пропускается, а ON CONFLICT
+# страхует от гонки двух контейнеров, стартующих разом.
+_MARKING_TRANSFER = (
     "INSERT INTO order_marking_codes (order_id, item_index, raw_code, gtin, serial, kind, "
     "status, from_pool, manual, scanned_at, scanned_by, sold_at) "
     "SELECT m.order_id, COALESCE(m.item_index, 0), m.code, m.gtin, m.serial, 'pack', "
     "CASE m.status WHEN 'assigned' THEN 'scanned' ELSE m.status END, m.from_pool, "
     "m.manual, COALESCE(m.scanned_at, m.created_at), m.scanned_by, m.sold_at "
     "FROM marking_codes m WHERE m.order_id IS NOT NULL AND NOT EXISTS ("
-    "SELECT 1 FROM order_marking_codes o WHERE o.gtin = m.gtin AND o.serial = m.serial)",
+    "SELECT 1 FROM order_marking_codes o WHERE o.gtin = m.gtin AND o.serial = m.serial) "
+    "ON CONFLICT DO NOTHING"
 )
+# Сверка в той же транзакции: после переноса у каждой старой привязки есть
+# строка в новой таблице. Не сошлось — откат, база как была.
+_MARKING_TRANSFER_CHECK = (
+    "SELECT count(*) FROM marking_codes m WHERE m.order_id IS NOT NULL AND NOT EXISTS ("
+    "SELECT 1 FROM order_marking_codes o WHERE o.gtin = m.gtin AND o.serial = m.serial)"
+)
+
+
+async def _move_marking(engine) -> int:
+    """Перенести старые привязки кодов к заказам. Сколько строк перенесено.
+
+    Одна транзакция: при любой ошибке всё откатывается, бот стартует как
+    обычно (коды старых заказов просто не видны странице сборки и чеку), а в
+    лог — строка с причиной; следующий старт попробует снова.
+    """
+    try:
+        async with engine.begin() as conn:
+            moved = (await conn.exec_driver_sql(_MARKING_TRANSFER)).rowcount or 0
+            left = (await conn.exec_driver_sql(_MARKING_TRANSFER_CHECK)).scalar()
+            if left:
+                raise RuntimeError(f"после переноса без пары осталось привязок: {left}")
+    except Exception:
+        logger.exception("Перенос привязок кодов маркировки не удался — откатили, база как была")
+        return 0
+    if moved:
+        logger.warning("Перенесены привязки кодов маркировки в order_marking_codes: %s", moved)
+    return moved
 
 
 async def _add_missing_columns(conn) -> None:
@@ -215,6 +254,7 @@ async def _connect() -> bool:
 
     _engine = engine
     _session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    await _move_marking(engine)
     if _down_since is not None:
         logger.warning("База снова доступна — резервный режим длился %.0f с", time.monotonic() - _down_since)
     _down_since = None
