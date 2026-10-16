@@ -38,6 +38,9 @@ class Config:
     first_day: date
     dsn: str
     sync_overlap_days: int = 10
+    # За сколько дней спрашивать холды: карточные авторизации держатся до
+    # месяца, дольше — уже повод разбираться с банком.
+    pending_lookback_days: int = 30
     ca_bundle: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -96,6 +99,7 @@ def load_config(env_path: Path | None = None) -> Config:
         first_day=first_day,
         dsn=dsn,
         sync_overlap_days=int(os.environ.get("SYNC_OVERLAP_DAYS", "10")),
+        pending_lookback_days=int(os.environ.get("PENDING_LOOKBACK_DAYS", "30")),
         ca_bundle=os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE"),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID") or None,

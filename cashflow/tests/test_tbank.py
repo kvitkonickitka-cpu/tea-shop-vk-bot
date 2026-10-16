@@ -151,3 +151,41 @@ def test_token_never_appears_in_error_text(monkeypatch):
         with pytest.raises(TBankError) as exc:
             list(client.statement(ACCOUNT, date(2025, 3, 1), date(2025, 3, 2)))
     assert "SUPER-SECRET-TOKEN" not in str(exc.value)
+
+
+def test_authorizations_ask_for_holds_and_follow_the_cursor():
+    seen_params = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_params.append(dict(request.url.params))
+        if "cursor" not in request.url.params:
+            return httpx.Response(200, json={
+                "operations": [op_payload(operationId="h1", operationStatus="Authorization")],
+                "nextCursor": "p2",
+            })
+        return httpx.Response(200, json={"operations": [
+            op_payload(operationId="h2", operationStatus="Authorization"),
+            # Проведённое в ответе на запрос холдов — забота основной выписки.
+            op_payload(operationId="t1", operationStatus="Transaction"),
+        ]})
+
+    with _client(handler) as client:
+        pages = list(client.authorizations(ACCOUNT, date(2025, 3, 1), date(2025, 3, 31)))
+
+    assert [op.operation_id for ops in pages for op in ops] == ["h1", "h2"]
+    assert all(p["operationStatus"] == "Authorization" for p in seen_params)
+    assert "withBalances" not in seen_params[0]
+    assert seen_params[1]["cursor"] == "p2"
+
+
+def test_main_statement_request_is_unchanged():
+    # Основная выписка — как раньше: без operationStatus, с остатками.
+    seen_params = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_params.append(dict(request.url.params))
+        return httpx.Response(200, json={"operations": []})
+
+    with _client(handler) as client:
+        list(client.statement(ACCOUNT, date(2025, 3, 1), date(2025, 3, 2)))
+    assert "operationStatus" not in seen_params[0] and seen_params[0]["withBalances"] == "true"

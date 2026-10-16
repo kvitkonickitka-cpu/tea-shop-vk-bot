@@ -145,6 +145,17 @@ card("uncl", coll, "Не разобрано: операции",
      "counterparty_name as \"Контрагент\", purpose as \"Назначение\", issue as \"Что не так\" "
      "from finance.v_unclassified where true [[and {{dates}}]] order by operation_date desc",
      "table", {}, "unclassified.operation_date")
+card("hold_sum", coll, "В холде, ₽",
+     "select case when bool_or(check_failed) or bool_or(checked_at is null) then null "
+     "else sum(holds_signed) end as \"В холде, ₽\" from finance.v_pending_summary",
+     "scalar", colfmt(**{"В холде, ₽": {"suffix": " ₽"}}), description=(
+         "Операции в холде: банк их ещё не провёл, в ДДС и остатки они не входят. Списания — с минусом. "
+         "Пусто — холды проверить не удалось или ещё не проверяли. Обновляется в 07:00 и 21:00 МСК."))
+card("hold_tbl", coll, "В холде: операции",
+     "select operation_date as \"Дата\", amount_signed as \"Сумма\", counterparty_name as \"Контрагент\", "
+     "purpose as \"Назначение\", days_in_hold as \"Дней в холде\" from finance.v_pending "
+     "order by operation_date desc",
+     "table", {}, description="Ещё не проведённые банком операции. Проведённые уходят отсюда сами.")
 card("check", coll, "Сходимость с банком",
      f"select to_char(period_start, 'YYYY-MM') as \"Период\", check_diff as \"Расхождение, ₽\" {CS} "
      "order by period_start desc",
@@ -311,7 +322,7 @@ def make(name, desc, parameters, dashcards, tabs=None):
 # Один дашборд «Сводка»: вкладка «Обзор» — главное на одном экране (те же вопросы, что
 # на остальных вкладках), дальше вкладки по темам. Фильтр «Период» — только у финансовых.
 T = {"Обзор": -1, "Деньги": -2, "Воронка": -3, "Заказы": -4, "Удержание": -5, "Ассортимент": -6}
-make("Сводка", "Деньги и продажи на одном дашборде. Выписка обновляется в 07:00 МСК, заказы — сразу. "
+make("Сводка", "Деньги и продажи на одном дашборде. Выписка обновляется в 07:00 и 21:00 МСК, заказы — сразу. "
      "Без тестовых клиентов и заказов.", [P_PERIOD, P_DATES], [
     # Обзор
     dc("bal", 0, 0, 4, 3, T["Обзор"]), dc("runway", 0, 4, 4, 3, T["Обзор"]), dc("rev", 0, 8, 4, 3, T["Обзор"]),
@@ -327,6 +338,7 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     dc("costs", 15, 0, 12, 6, T["Деньги"]), dc("income", 15, 12, 12, 6, T["Деньги"]),
     dc("ddc", 21, 0, 24, 7, T["Деньги"]),
     dc("uncl_share", 28, 0, 6, 3, T["Деньги"]), dc("check", 31, 0, 6, 4, T["Деньги"]), dc("uncl", 28, 6, 18, 7, T["Деньги"]),
+    dc("hold_sum", 35, 0, 6, 3, T["Деньги"]), dc("hold_tbl", 35, 6, 18, 6, T["Деньги"]),
     # Воронка
     dc("funnel", 0, 0, 12, 8, T["Воронка"]), dc("conv", 0, 12, 6, 3, T["Воронка"]),
     dc("losses", 3, 12, 12, 5, T["Воронка"]), dc("daily", 8, 0, 24, 6, T["Воронка"]),

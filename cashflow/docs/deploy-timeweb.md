@@ -25,7 +25,7 @@
 - код — `/opt/cashflow` (распакован из этой ветки), окружение — `/opt/cashflow/.venv`;
 - настройки и секреты — `/etc/cashflow/.env` (600, владелец `cashflow`);
 - логи — `/var/log/cashflow/`, копии схемы `finance` — `/var/backups/cashflow/`;
-- таймеры `cashflow.timer` (07:00 МСК) и `cashflow-backup.timer` (06:30 МСК);
+- таймеры `cashflow.timer` (07:00 и 21:00 МСК) и `cashflow-backup.timer` (06:30 МСК);
 - отметки для ежедневного отчёта Ops — `ops-heartbeat@.service` и
   `*.service.d/ops-heartbeat.conf` из `ops/vm/` репозитория бота. Задача,
   не отработавшая больше 26 часов, видна в отчёте как «давно не было».
@@ -44,3 +44,14 @@ sudo -u cashflow .venv/bin/python -m cashflow classify
 **Запятая в комментарии ломает CSV**: строка получает лишний столбец, и
 `import-rules` падает целиком (справочники в базе остаются прежними). В
 комментариях — без запятых.
+
+## Холды
+
+С 16.10.2026 каждая выгрузка после основной выписки отдельным запросом
+(`operationStatus=Authorization`, за `PENDING_LOOKBACK_DAYS`=30 дней) берёт
+операции в холде и кладёт снимок в `finance.pending_operations`: проведённые и
+отменённые из него уходят сами. В ДДС, остатки и `check_diff` холды не входят.
+Дашборд читает `finance.v_pending` (физлица замаскированы, уже проведённые
+исключены) и `finance.v_pending_summary` (когда проверяли и не было ли сбоя).
+Сбой запроса холдов основную выгрузку не останавливает — виден как
+`check_failed`, а прежний снимок остаётся.

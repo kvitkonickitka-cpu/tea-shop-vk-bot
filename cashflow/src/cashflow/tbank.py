@@ -25,6 +25,10 @@ PAGE_LIMIT = 5000
 MAX_ATTEMPTS = 5
 # Операции в других статусах (холд, отмена) в ленту не попадают.
 WANTED_STATUS = "transaction"
+# Холд — авторизация, ещё не проведённая банком. Их забираем отдельным
+# запросом (operationStatus=Authorization) в finance.pending_operations: в ДДС
+# и остатки они не идут, но видны на дашборде отдельной строкой.
+HOLD_STATUS = "authorization"
 
 
 class TBankError(RuntimeError):
@@ -318,6 +322,42 @@ class TBankClient:
             )
             yield operations, balances
 
+            cursor = _extract_cursor(body)
+            if not cursor:
+                break
+
+    def authorizations(
+        self, account_number: str, period_from: date, period_to: date
+    ) -> Iterator[list[Operation]]:
+        """Операции в холде за период, постранично.
+
+        Отдельный запрос с operationStatus=Authorization: обычная выписка
+        отдаёт только проведённые. Остатки здесь не нужны — они есть в
+        основной выписке. Разбор тот же, что у проведённых операций.
+        """
+        cursor: str | None = None
+        page = 0
+        while True:
+            params: dict[str, Any] = {
+                "accountNumber": account_number,
+                "from": f"{period_from.isoformat()}T00:00:00Z",
+                "to": f"{period_to.isoformat()}T23:59:59Z",
+                "limit": PAGE_LIMIT,
+                "operationStatus": "Authorization",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            body = self._get("/api/v1/statement", params)
+            page += 1
+            operations = []
+            for item in _extract_operations(body):
+                status = str(_first(item, "operationStatus", "status") or "").lower()
+                # Проведённое, если банк всё же вернул, — забота основной выписки.
+                if status == WANTED_STATUS:
+                    continue
+                operations.append(parse_operation(item, account_number))
+            log.info("Счёт %s: холды, страница %s, операций %s", account_number[-4:], page, len(operations))
+            yield operations
             cursor = _extract_cursor(body)
             if not cursor:
                 break

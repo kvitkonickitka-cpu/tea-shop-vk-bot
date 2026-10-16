@@ -251,3 +251,125 @@ def test_datalens_role_can_read_views(view):
     _guard(DATALENS_DSN)
     with psycopg.connect(DATALENS_DSN) as ro_conn, ro_conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {view} LIMIT 1")
+
+
+# --- Холды (migrations/009) -------------------------------------------------------------
+
+from cashflow import sync as sync_module  # noqa: E402
+from cashflow.config import Config  # noqa: E402
+from cashflow.tbank import parse_operation  # noqa: E402
+
+
+def _hold(operation_id, inn, name, amount="500.00", purpose="Оплата", day="2025-03-20"):
+    return parse_operation({
+        "operationId": operation_id, "operationStatus": "Authorization",
+        "authorizationDate": f"{day}T12:00:00+03:00", "typeOfOperation": "Debit",
+        "accountAmount": amount, "recipientName": name, "recipientInn": inn, "paymentPurpose": purpose,
+    }, ACCOUNT)
+
+
+class FakeBank:
+    def __init__(self, holds=None, fail=False, operations=None):
+        self.holds, self.fail, self.operations = holds or [], fail, operations or []
+
+    def authorizations(self, account, period_from, period_to):
+        if self.fail:
+            raise RuntimeError("банк недоступен")
+        yield self.holds
+
+    def statement(self, account, period_from, period_to):
+        yield self.operations, []
+
+
+def _real_cfg():
+    return Config(tbank_token="t", tbank_api_base="https://example.test", accounts=[ACCOUNT],
+                  first_day=date(2025, 1, 1), dsn=DSN)
+
+
+@pytest.fixture
+def holds_db(conn):
+    with conn.cursor() as cur:
+        cur.execute("TRUNCATE finance.pending_operations")
+        cur.execute("DELETE FROM finance.sync_state")
+        cur.execute("INSERT INTO finance.sync_state (account_number, synced_through) VALUES (%s, %s)",
+                    (ACCOUNT, date(2025, 3, 31)))
+    conn.commit()
+    return conn
+
+
+def _rows(conn, sql):
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        return cur.fetchall()
+
+
+def test_hold_snapshot_is_replaced_and_people_are_masked(holds_db):
+    bank = FakeBank([_hold("h-org", "7712345678", "ООО Хостинг", "1200.00"),
+                     _hold("h-person", "771234567890", "Иванов Иван Иванович", "300.00",
+                           purpose="Перевод Иванову за аренду помещения на март месяц 2025 года")])
+    assert sync_module.sync_pending(holds_db, bank, _real_cfg(), ACCOUNT, date(2025, 3, 25)) == 2
+    rows = _rows(holds_db, "SELECT counterparty_name, purpose, amount_signed FROM finance.v_pending ORDER BY amount")
+    assert rows[0][0] == "Покупатель (физлицо)" and "Иванов" not in rows[0][0]
+    assert len(rows[0][1]) <= 40
+    assert rows[1][0] == "ООО Хостинг" and rows[1][2] == Decimal("-1200.00")
+    summary = _rows(holds_db, "SELECT holds, holds_out, holds_signed, check_failed, checked_at IS NOT NULL "
+                              "FROM finance.v_pending_summary")
+    assert summary == [(2, Decimal("1500.00"), Decimal("-1500.00"), False, True)]
+
+    # Следующий снимок — человека уже нет (провелось или отменилось): строка ушла.
+    sync_module.sync_pending(holds_db, FakeBank([_hold("h-org", "7712345678", "ООО Хостинг", "1200.00")]),
+                             _real_cfg(), ACCOUNT, date(2025, 3, 26))
+    assert _rows(holds_db, "SELECT operation_id FROM finance.pending_operations") == [("h-org",)]
+    # Пустой снимок — холдов нет совсем.
+    sync_module.sync_pending(holds_db, FakeBank([]), _real_cfg(), ACCOUNT, date(2025, 3, 27))
+    assert _rows(holds_db, "SELECT count(*) FROM finance.pending_operations") == [(0,)]
+    assert _rows(holds_db, "SELECT holds, holds_signed FROM finance.v_pending_summary") == [(0, Decimal("0"))]
+
+
+def test_repeated_snapshot_changes_nothing(holds_db):
+    bank = FakeBank([_hold("h-1", "7712345678", "ООО А", "100.00")])
+    sync_module.sync_pending(holds_db, bank, _real_cfg(), ACCOUNT, date(2025, 3, 25))
+    before = _rows(holds_db, "SELECT operation_id, amount, first_seen_at FROM finance.pending_operations")
+    sync_module.sync_pending(holds_db, bank, _real_cfg(), ACCOUNT, date(2025, 3, 25))
+    assert _rows(holds_db, "SELECT operation_id, amount, first_seen_at FROM finance.pending_operations") == before
+
+
+def test_settled_hold_is_not_counted_twice(holds_db):
+    sync_module.sync_pending(holds_db, FakeBank([_hold("same-id", "7712345678", "ООО Б", "700.00")]),
+                             _real_cfg(), ACCOUNT, date(2025, 3, 25))
+    # Банк провёл операцию, а снимок холдов ещё не обновлён.
+    add_operation(holds_db, "same-id", date(2025, 3, 25), "out", "700.00", name="ООО Б", inn="7712345678")
+    assert _rows(holds_db, "SELECT count(*) FROM finance.v_pending") == [(0,)]
+    assert _rows(holds_db, "SELECT holds, holds_signed FROM finance.v_pending_summary") == [(0, Decimal("0"))]
+
+
+def test_failed_hold_request_keeps_snapshot_and_shows_failure(holds_db):
+    sync_module.sync_pending(holds_db, FakeBank([_hold("h-1", "7712345678", "ООО А", "100.00")]),
+                             _real_cfg(), ACCOUNT, date(2025, 3, 25))
+    assert sync_module.sync_pending(holds_db, FakeBank(fail=True), _real_cfg(), ACCOUNT, date(2025, 3, 26)) is None
+    assert _rows(holds_db, "SELECT operation_id FROM finance.pending_operations") == [("h-1",)]
+    assert _rows(holds_db, "SELECT check_failed FROM finance.v_pending_summary") == [(True,)]
+    # Следующая удачная проверка снимает отметку.
+    sync_module.sync_pending(holds_db, FakeBank([]), _real_cfg(), ACCOUNT, date(2025, 3, 27))
+    assert _rows(holds_db, "SELECT check_failed FROM finance.v_pending_summary") == [(False,)]
+
+
+def test_main_sync_survives_failed_holds(holds_db):
+    results = sync_module.run_sync(holds_db, FakeBank(fail=True), _real_cfg(),
+                                   period_from=date(2025, 3, 1), period_to=date(2025, 3, 31))
+    assert len(results) == 1
+    assert _rows(holds_db, "SELECT last_status FROM finance.sync_state") == [("ok",)]
+
+
+def test_holds_do_not_touch_cash_flow(seeded):
+    before = fetch_summary(seeded, "M")
+    with seeded.cursor() as cur:
+        cur.execute("INSERT INTO finance.sync_state (account_number, synced_through) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING", (ACCOUNT, date(2025, 3, 31)))
+    seeded.commit()
+    sync_module.sync_pending(seeded, FakeBank([_hold("h-big", "7712345678", "ООО В", "99999.00", day="2025-03-28")]),
+                             _real_cfg(), ACCOUNT, date(2025, 3, 31))
+    assert fetch_summary(seeded, "M") == before  # ДДС, остатки, check_diff — как были
+    with seeded.cursor() as cur:
+        cur.execute("TRUNCATE finance.pending_operations")
+    seeded.commit()

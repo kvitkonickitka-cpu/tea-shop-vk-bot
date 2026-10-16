@@ -33,6 +33,9 @@ select 'grant usage on schema finance to metabase_ro'
 -- v_daily_balance_total — остаток по дням для кривой на «Сводке» (15.10.2026): только день и сумма.
 select 'grant select on finance.v_cash_summary, finance.v_metrics, finance.v_ddc, finance.v_unclassified, finance.v_channel_mix, finance.v_daily_balance_total to metabase_ro'
  where exists (select from pg_namespace where nspname = 'finance') \gexec
+-- Холды (16.10.2026, cashflow/migrations/009): физлица в витринах замаскированы, как в v_unclassified.
+select 'grant select on finance.v_pending, finance.v_pending_summary to metabase_ro'
+ where exists (select from pg_views where schemaname = 'finance' and viewname = 'v_pending') \gexec
 
 select format('create role metabase_app login password %L', :'app_pw')
  where not exists (select from pg_roles where rolname = 'metabase_app') \gexec

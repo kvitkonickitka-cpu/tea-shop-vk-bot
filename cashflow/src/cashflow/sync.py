@@ -10,6 +10,7 @@ from datetime import date, timedelta
 import psycopg
 
 from .config import Config
+from .engine import counterparty_kind
 from .tbank import Balance, Operation, TBankClient
 
 log = logging.getLogger(__name__)
@@ -181,6 +182,87 @@ def sync_account(
     return result
 
 
+UPSERT_PENDING = """
+INSERT INTO finance.pending_operations (
+    operation_id, account_number, operation_date, operation_ts, direction, amount,
+    counterparty_name, counterparty_inn, counterparty_kind, purpose, operation_status, raw_json
+)
+VALUES (%(operation_id)s, %(account_number)s, %(operation_date)s, %(operation_ts)s,
+        %(direction)s, %(amount)s, %(counterparty_name)s, %(counterparty_inn)s,
+        %(counterparty_kind)s, %(purpose)s, %(operation_status)s, %(raw_json)s)
+ON CONFLICT (operation_id) DO UPDATE SET
+    account_number    = EXCLUDED.account_number,
+    operation_date    = EXCLUDED.operation_date,
+    operation_ts      = EXCLUDED.operation_ts,
+    direction         = EXCLUDED.direction,
+    amount            = EXCLUDED.amount,
+    counterparty_name = EXCLUDED.counterparty_name,
+    counterparty_inn  = EXCLUDED.counterparty_inn,
+    counterparty_kind = EXCLUDED.counterparty_kind,
+    purpose           = EXCLUDED.purpose,
+    operation_status  = EXCLUDED.operation_status,
+    raw_json          = EXCLUDED.raw_json,
+    last_seen_at      = now()
+"""
+
+
+def sync_pending(
+    conn: psycopg.Connection, client: TBankClient, cfg: Config, account: str, today: date
+) -> int | None:
+    """Снимок холдов по счёту: записать, что вернул банк, остальное убрать.
+
+    Всё — одной транзакцией: упал запрос на середине — снимок остаётся
+    прежним, а в sync_state отмечена ошибка (витрина покажет check_failed).
+    Основную выгрузку сбой здесь не останавливает: холды — справка, а не учёт.
+    Возвращает число холдов или None при сбое.
+    """
+    since = today - timedelta(days=cfg.pending_lookback_days)
+    try:
+        operations: list[Operation] = []
+        for page in client.authorizations(account, since, today):
+            operations.extend(page)
+        with conn.cursor() as cur:
+            for op in operations:
+                cur.execute(UPSERT_PENDING, {
+                    "operation_id": op.operation_id,
+                    "account_number": op.account_number,
+                    "operation_date": op.operation_date,
+                    "operation_ts": op.operation_ts,
+                    "direction": op.direction,
+                    "amount": op.amount,
+                    "counterparty_name": op.counterparty_name,
+                    "counterparty_inn": op.counterparty_inn,
+                    "counterparty_kind": counterparty_kind(op.counterparty_inn),
+                    "purpose": op.purpose,
+                    "operation_status": op.operation_status,
+                    "raw_json": json.dumps(op.raw, ensure_ascii=False),
+                })
+            # Чего в свежем снимке нет — провелось или отменилось.
+            cur.execute(
+                "DELETE FROM finance.pending_operations "
+                "WHERE account_number = %s AND NOT (operation_id = ANY(%s::text[]))",
+                (account, [op.operation_id for op in operations]),
+            )
+            cur.execute(
+                "UPDATE finance.sync_state SET pending_checked_at = now(), pending_error = NULL "
+                "WHERE account_number = %s",
+                (account,),
+            )
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 — холды не должны ронять выгрузку
+        conn.rollback()
+        log.warning("Счёт %s: холды не получены — %s", account[-4:], str(exc)[:300])
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE finance.sync_state SET pending_error = %s WHERE account_number = %s",
+                (str(exc)[:1000], account),
+            )
+        conn.commit()
+        return None
+    log.info("Счёт %s: в холде %s операций", account[-4:], len(operations))
+    return len(operations)
+
+
 def run_sync(
     conn: psycopg.Connection,
     client: TBankClient,
@@ -194,4 +276,7 @@ def run_sync(
     for account in cfg.accounts:
         from_day = period_from or _period_start(conn, cfg, account, full)
         results.append(sync_account(conn, client, cfg, account, from_day, to_day))
+        # После основной выгрузки: sync_state по счёту уже есть, и отметка
+        # о проверке холдов ляжет в ту же строку.
+        sync_pending(conn, client, cfg, account, to_day)
     return results
