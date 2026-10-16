@@ -98,6 +98,10 @@ async def test_datalens_role_reads_analytics_only(db):
     port = str(url.query.get("port") or url.port or 5432)
     base = ["psql", "-X", "-q", "-h", host, "-p", port, "-d", url.database]
     env = {**os.environ, "DATALENS_DB_PASSWORD": "pw-for-tests"}
+    # Пароль из адреса базы, если он есть: локальная база ходит через сокет
+    # без пароля, а в CI у Postgres пароль, и psql без него получает отказ.
+    if url.password:
+        env["PGPASSWORD"] = url.password
     for _ in range(2):  # повторный запуск безопасен
         script = (ROOT / "analytics" / "datalens_role.sql").read_text()
         done = subprocess.run(base + ["-U", url.username or "postgres"], input=script,
