@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.marking import packing, pool
 from app.modules.marking.codes import GS
-from app.modules.marking.models import SOLD, MarkingCodeRow
+from app.modules.marking.models import RETURNED, SOLD, OrderMarkingCode
 from app.modules.orders import repository as orders_repository
 from app.modules.orders.models import Order
 
@@ -77,7 +77,7 @@ async def test_happy_path(clean):
     assert "не из пула" in first.warning
     assert not first.state.can_finish
 
-    with pytest.raises(packing.LinkError, match="не на все пачки"):
+    with pytest.raises(packing.LinkError, match="не на все позиции"):
         await packing.finish(order.id)
 
     second = await packing.scan(order.id, code("AAAAAAAAAAAA2"), by="Оля")
@@ -97,9 +97,11 @@ async def test_happy_path(clean):
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("4606203099221", "не код маркировки"),
-        (f"01{GTIN_TEA}21SERIAL", "криптохвоста"),
-        (code("BBBBBBBBBBBB1", GTIN_OTHER), "другого сорта"),
+        ("4606203099221", "штрихкод EAN"),
+        ("https://teapotwice.ru/brew/tgy", "QR-код"),
+        (f"01{GTIN_TEA}21SERIAL", "Код не распознан, отсканируйте ещё раз."),
+        (code("BBBBBBBBBBBB1", GTIN_OTHER),
+         f"Это не та пачка: в заказе «Те Гуань Инь», отсканировано GTIN {GTIN_OTHER}"),
     ],
 )
 async def test_bad_scans(clean, raw, expected):
@@ -122,20 +124,50 @@ async def test_code_cannot_serve_two_orders(clean):
     second = await make_order(clean)
     assert (await packing.scan(first.id, code("DDDDDDDDDDDD1"))).ok
     stolen = await packing.scan(second.id, code("DDDDDDDDDDDD1"))
-    assert not stolen.ok and f"заказу №{first.id}" in stolen.message
+    assert not stolen.ok and f"уже в заказе №{first.id}" in stolen.message
     # Тот же код без разделителей — та же пачка.
     sneaky = await packing.scan(second.id, code("DDDDDDDDDDDD1").replace(GS, ""), manual=True)
-    assert not sneaky.ok and f"заказу №{first.id}" in sneaky.message
+    assert not sneaky.ok and f"уже в заказе №{first.id}" in sneaky.message
+
+
+async def put_code(db, order_id: int, serial: str, status: str) -> None:
+    async with db() as session:
+        session.add(OrderMarkingCode(order_id=order_id, item_index=0, raw_code=code(serial),
+                                     gtin=GTIN_TEA, serial=serial, status=status))
+        await session.commit()
 
 
 async def test_sold_code_is_refused(clean):
+    sold = await make_order(clean)
     order = await make_order(clean)
-    async with clean() as session:
-        session.add(MarkingCodeRow(code=code("EEEEEEEEEEEE1"), gtin=GTIN_TEA,
-                                   serial="EEEEEEEEEEEE1", status=SOLD, from_pool=False))
-        await session.commit()
+    await put_code(clean, sold.id, "EEEEEEEEEEEE1", SOLD)
     result = await packing.scan(order.id, code("EEEEEEEEEEEE1"))
-    assert not result.ok and "уже продан" in result.message
+    assert not result.ok and f"уже продан по заказу №{sold.id}" in result.message
+
+
+async def test_returned_code_can_be_sold_again(clean):
+    """Код, вернувшийся по чеку возврата, снова в обороте — исключение из уникальности."""
+    old = await make_order(clean)
+    await put_code(clean, old.id, "EEEEEEEEEEEE2", RETURNED)
+    order = await make_order(clean, items=[{"name": "Те Гуань Инь", "quantity": 1, "price": 800}])
+    result = await packing.scan(order.id, code("EEEEEEEEEEEE2"))
+    assert result.ok and f"возвращался по заказу №{old.id}" in result.warning
+    # А вот второй действующей строки с тем же кодом уже не будет.
+    third = await make_order(clean)
+    again = await packing.scan(third.id, code("EEEEEEEEEEEE2"))
+    assert not again.ok and f"уже в заказе №{order.id}" in again.message
+
+
+async def test_unique_index_blocks_a_second_active_row(clean):
+    """Индекс в базе, а не только проверка в коде: гонку двух сборщиков ловит он."""
+    from sqlalchemy.exc import IntegrityError
+
+    first = await make_order(clean)
+    second = await make_order(clean)
+    await put_code(clean, first.id, "EEEEEEEEEEEE3", RETURNED)
+    await put_code(clean, first.id, "EEEEEEEEEEEE3", SOLD)
+    with pytest.raises(IntegrityError):
+        await put_code(clean, second.id, "EEEEEEEEEEEE3", "scanned")
 
 
 async def test_pool_is_enforced_once_imported(clean):
@@ -156,7 +188,7 @@ async def test_position_without_gtin_blocks_finish(clean):
     current = await packing.state(order.id)
     assert not current.can_finish
     assert current.as_dict()["positions"][1]["gtin"] == ""
-    with pytest.raises(packing.LinkError, match="нет GTIN"):
+    with pytest.raises(packing.LinkError, match="нет GTIN в каталоге"):
         await packing.finish(order.id)
 
 
@@ -167,6 +199,7 @@ async def test_remove_returns_code(clean):
     code_id = scanned.state.positions[0].codes[0]["id"]
     after = await packing.remove(order.id, code_id)
     assert after.positions[0].codes == []
+    assert await pool.pool_imported()
     # Код из пула остался в пуле и годится снова.
     assert (await packing.scan(order.id, code("HHHHHHHHHHHH1"))).ok
 

@@ -84,7 +84,8 @@
     <button id="cameraButton">Включить камеру</button>
   </div>
   <div class="message" id="message"></div>
-  <p class="muted" id="hint">Наведите камеру на квадратный код DataMatrix на пачке. Каждая пачка — один скан.</p>
+  <p class="muted" id="hint">Наведите камеру на квадратный код DataMatrix на пачке. Каждая пачка — один скан.
+    У сета или набора сканируется только код на коробке, пачки внутри — нет. QR «Как заваривать» сканер не читает.</p>
 </div>
 
 <div class="card">
@@ -176,7 +177,8 @@
       row.className = "row";
       const name = document.createElement("span");
       name.className = "name";
-      name.textContent = position.name + " × " + position.quantity;
+      name.textContent = position.name + (position.kind === "set" ? " (сет — код на коробке)" : "") +
+        " × " + position.quantity;
       const count = document.createElement("span");
       count.className = "count" + (position.done ? " done" : "");
       count.textContent = position.scanned + " / " + position.quantity + (position.done ? " ✓" : "");
@@ -185,7 +187,7 @@
       if (!position.gtin) {
         const warn = document.createElement("p");
         warn.className = "message bad show";
-        warn.textContent = "У товара не задан GTIN в каталоге — собрать с кодами нельзя.";
+        warn.textContent = "Нет GTIN в каталоге — собрать эту позицию с кодами нельзя.";
         div.appendChild(warn);
       }
       const list = document.createElement("ul");
@@ -307,6 +309,8 @@
       context.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, side, side);
       try {
         const results = await ZXingWASM.readBarcodes(context.getImageData(0, 0, side, side), {
+          // Только DataMatrix: QR «Как заваривать» на той же этикетке, EAN и
+          // прочие форматы сканер не ищет вовсе, а не отбрасывает после чтения.
           formats: ["DataMatrix"],
           // Plain — чтобы разделители GS остались в тексте как есть.
           textMode: "Plain",
@@ -319,12 +323,9 @@
           // Один и тот же код в кадре — не повод слать его каждые 200 мс.
           if (found.text !== lastText || now - lastAt > 4000) {
             lastText = found.text; lastAt = now;
-            if (found.symbologyIdentifier && found.symbologyIdentifier !== "]d2") {
-              show("Это не код маркировки (не GS1 DataMatrix) — наведите на другой квадратный код.", "bad");
-              feedback(false);
-            } else {
-              await submit(found.text, false);
-            }
+            // Разбирает и проверяет сервер: он же восстановит потерянный GS
+            // и объяснит, если это не код маркировки.
+            await submit(found.text, false);
           }
         }
       } catch (e) {

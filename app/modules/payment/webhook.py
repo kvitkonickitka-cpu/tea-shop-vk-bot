@@ -19,6 +19,7 @@ import logging
 from app.messages import funnel, client as client_messages, templates
 from app.modules.dialog import vk_client
 from app.modules.marking import packing
+from app.modules.marking.models import RETURNED
 from app.modules.orders import (
     cdek_watch,
     eta,
@@ -27,7 +28,7 @@ from app.modules.orders import (
     shipping,
 )
 from app.modules.ops.journal import watch
-from app.modules.payment import service as payment_service, settlement, yookassa_client
+from app.modules.payment import returns, service as payment_service, settlement, yookassa_client
 
 logger = logging.getLogger(__name__)
 
@@ -433,10 +434,25 @@ async def _on_refund(refund_id: str) -> dict:
         if released:
             card += "\n" + templates.manager_refund_codes_released(released)
     elif settlement.was_sent(order):
-        # Товар уже продан по чеку с кодами. Чек возврата, который ЮKassa
-        # соберёт по данным платежа, — предоплата без кодов — для такого
-        # случая неверен. Автоматики на это нет: разбирает менеджер.
-        card += "\n" + templates.manager_refund_after_settlement()
+        paid = await returns.paid_amount(order)
+        if returns.is_ours(order, refund, paid):
+            # Возврат командой с кодами: чек возврата уже с кодами, отметить их.
+            await packing.mark_returned(order.id, refund.id)
+            returned = await packing.codes_of(order.id, statuses=(RETURNED,))
+            card += "\n" + templates.manager_refund_codes_returned(len(returned))
+        elif round(float(refund.amount or 0), 2) < round(paid, 2) and returns.has_set(
+            order, await packing.codes_of(order.id)
+        ):
+            # TODO(chz-partial-return): возврат части заказа с сетом (например,
+            # одной пачки из проданного набора) — как оформлять чек возврата,
+            # когда набор расформирован, уточняем в «Честном знаке». Пока разбирает
+            # менеджер, коды не трогаем.
+            card += "\n" + templates.manager_partial_return_with_set(order)
+        else:
+            # Товар уже продан по чеку с кодами, а возврат сделан кнопкой в
+            # кабинете: чек возврата, который ЮKassa соберёт по данным платежа, —
+            # предоплата без кодов — для такого случая неверен. Разбирает менеджер.
+            card += "\n" + templates.manager_refund_after_settlement(order)
     await order_chat.send(order, card)
     # Возврат делает менеджер в кабинете ЮKassa, и клиент об этом узнаёт
     # только от банка — через неизвестно сколько. Скажем сами. Сумма — та,

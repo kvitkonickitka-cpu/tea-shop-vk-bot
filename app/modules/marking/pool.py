@@ -98,8 +98,8 @@ async def import_codes(text: str, *, skip: str = "") -> dict:
                     for code in chunk
                 ])
                 # Повторный импорт той же выгрузки не должен ни падать, ни
-                # плодить строки. Код, уже увиденный при сборке, в пул не
-                # переводим: его судьба уже известна.
+                # плодить строки. Где пачка сейчас, пул не знает — это
+                # `order_marking_codes`.
                 .on_conflict_do_nothing()
                 .returning(MarkingCodeRow.id)
             )

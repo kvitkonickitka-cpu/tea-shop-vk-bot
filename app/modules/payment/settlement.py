@@ -24,6 +24,15 @@
 - **тихие часы на чек не действуют** — они про сообщения клиенту. Чек
   уходит сразу по событию «вручено».
 
+Каждая маркированная единица — своя строка с количеством 1 и своим кодом:
+две одинаковые пачки — две строки, сет или набор — одна строка с кодом
+идентификации набора (КИН) с коробки. Сумма чека совпадает с чеком
+предоплаты до копейки: если цену позиции приходится делить на строки,
+остаток копеек уходит на последнюю.
+
+Здесь же — чек возврата для полного возврата после закрывающего чека
+(`return_receipt`): те же строки с теми же кодами.
+
 Всё — за настройкой `SETTLEMENT_RECEIPT_ENABLED`, по умолчанию выключено.
 """
 
@@ -33,13 +42,13 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages import templates
 from app.modules.marking import packing
-from app.modules.marking.models import ASSIGNED, SOLD, MarkingCodeRow
+from app.modules.marking.models import OrderMarkingCode
 from app.modules.orders import order_chat, repository as orders_repository
 from app.modules.orders.models import Order
 from app.modules.ops.journal import order_scope
@@ -105,13 +114,24 @@ def _money(value: float) -> dict:
     return {"value": f"{float(value):.2f}", "currency": "RUB"}
 
 
-def build_payload(order: Order, codes: list[MarkingCodeRow]) -> dict:
-    """Тело `POST /receipts` для закрывающего чека.
+def split_kopecks(total: int, parts: int) -> list[int]:
+    """Разделить сумму в копейках на `parts` строк так, чтобы итог сошёлся.
 
-    Позиции строятся той же функцией, что и в первом чеке, — чтобы названия,
-    цены и ставка НДС совпали, — и переделываются: пачка с кодом становится
-    отдельной позицией с количеством 1 и кодом, у всех — полный расчёт.
+    Поровну, а остаток копеек — на последнюю строку: 1000,00 ₽ на три
+    строки — 333,33 + 333,33 + 333,34.
     """
+    if parts <= 0:
+        raise ValueError("строк должно быть больше нуля")
+    base = total // parts
+    return [base] * (parts - 1) + [total - base * (parts - 1)]
+
+
+def _kopecks(money: dict) -> int:
+    return round(float(money["value"]) * 100)
+
+
+def _prepayment_rows(order: Order) -> tuple[list[dict], list[dict]]:
+    """Позиции чека предоплаты — товары и доставка — той же функцией, что при оплате."""
     details = order.details or {}
     first = yookassa_client.receipt_items(
         list(order.items or []),
@@ -120,30 +140,54 @@ def build_payload(order: Order, codes: list[MarkingCodeRow]) -> dict:
             order.delivery_method or "", order.delivery_method or ""
         ),
     )
-    goods, delivery = first[: len(order.items or [])], first[len(order.items or []):]
+    count = len(order.items or [])
+    return first[:count], first[count:]
 
-    by_position: dict[int, list[MarkingCodeRow]] = {}
+
+def marked_items(order: Order, codes: list[OrderMarkingCode]) -> list[dict]:
+    """Строки чека с кодами маркировки: одна единица — одна строка.
+
+    Позиции берутся из чека предоплаты (те же названия, цены и ставка НДС)
+    и переделываются: строка позиции делится на столько строк, сколько у неё
+    единиц, у каждой количество 1 и свой код, расчёт полный. Сет — одна
+    единица со своим КИН: пачки внутри в чек не идут. Доставка — своей
+    строкой, как в чеке предоплаты, но тоже полным расчётом.
+
+    TODO(yookassa): формат второго чека и чека возврата с кодами — вопрос в
+    поддержку ЮKassa ещё открыт. Сверено с OpenAPI ЮKassa 16.10.2026:
+    `mark_code_info.gs_1m` — код целиком (до 200 символов), `mark_mode` —
+    строка «0», `payment_subject: marked` — «товар с кодом маркировки».
+    Не передаём, пока не ответят: `mark_quantity` (OpenAPI называет его
+    обязательным при `measure: piece`, хотя это тег дробного количества —
+    для целой пачки он не нужен) и `planned_status` (тег 2003, у ЮKassa
+    «указывается только для маркированных», без слова «обязательно»).
+    """
+    goods, delivery = _prepayment_rows(order)
+
+    by_position: dict[int, list[OrderMarkingCode]] = {}
     for row in codes:
         by_position.setdefault(row.item_index, []).append(row)
 
     items = []
     for index, row in enumerate(goods):
         position_codes = by_position.get(index, [])
-        if len(position_codes) != int(row["quantity"]):
+        units = int(row["quantity"])
+        if len(position_codes) != units:
             raise NotReady(
                 f"по позиции «{row['description']}» кодов {len(position_codes)}, "
-                f"а пачек {row['quantity']}"
+                f"а единиц {units}"
             )
-        for code in position_codes:
+        amounts = split_kopecks(_kopecks(row["amount"]) * units, units)
+        for code, kopecks in zip(position_codes, amounts):
             items.append({
                 "description": row["description"],
                 "quantity": 1,
-                "amount": row["amount"],
+                "amount": _money(kopecks / 100),
                 "vat_code": row["vat_code"],
                 "payment_mode": _PAYMENT_MODE,
                 "payment_subject": _SUBJECT_MARKED,
                 "mark_mode": _MARK_MODE,
-                "mark_code_info": {"gs_1m": encode_mark(code.code)},
+                "mark_code_info": {"gs_1m": encode_mark(code.raw_code)},
                 "measure": "piece",
             })
     for row in delivery:
@@ -156,16 +200,36 @@ def build_payload(order: Order, codes: list[MarkingCodeRow]) -> dict:
             f"в чеке вышло {len(items)} позиций, а «Чеки от ЮKassa» принимают "
             f"не больше {_MAX_ITEMS} — чек придётся разбить вручную"
         )
-
+    prepaid = yookassa_client.receipt_total(goods + delivery)
     total = yookassa_client.receipt_total(items)
-    customer = yookassa_client.receipt_customer(
+    if total != prepaid:
+        raise NotReady(
+            f"сумма строк с кодами {total:.2f} не сходится с чеком предоплаты {prepaid:.2f}"
+        )
+    return items
+
+
+def _customer(order: Order) -> dict:
+    details = order.details or {}
+    return yookassa_client.receipt_customer(
         full_name=details.get("recipient_name", ""),
         email=details.get("recipient_email", ""),
     )
+
+
+def build_payload(order: Order, codes: list[OrderMarkingCode]) -> dict:
+    """Тело `POST /receipts` для закрывающего чека.
+
+    TODO(yookassa): второй чек (зачёт предоплаты с кодами) — формат
+    подтверждён поддержкой 25–26.09.2026, но вопрос про второй чек и коды
+    ещё открыт; проверить на тестовой отправке (docs/TEST_PLAN_marking.md).
+    """
+    items = marked_items(order, codes)
+    total = yookassa_client.receipt_total(items)
     return {
         "type": "payment",
         "payment_id": order.payment_id,
-        "customer": customer,
+        "customer": _customer(order),
         "send": True,
         "items": items,
         "settlements": [{"type": "prepayment", "amount": _money(total)}],
@@ -174,7 +238,29 @@ def build_payload(order: Order, codes: list[MarkingCodeRow]) -> dict:
     }
 
 
-async def _check_ready(order: Order) -> list[MarkingCodeRow]:
+def return_receipt(order: Order, codes: list[OrderMarkingCode]) -> dict:
+    """`receipt` для `POST /refunds` — полный возврат после закрывающего чека.
+
+    Товар продан полным расчётом с кодами, поэтому и чек возврата прихода —
+    те же строки, полный расчёт и код каждой единицы (по ФФД 1.2 коды в чеке
+    возврата маркированного товара обязательны). Без `receipt` ЮKassa
+    собрала бы чек по данным платежа — предоплату без кодов, — а это неверно.
+    Доставка возвращается вместе с заказом: полный возврат — вся сумма.
+
+    TODO(yookassa): поддержка 26.09.2026 ответила «при возврате передаётся
+    `receipt` с возвращаемыми товарами и кодами» — то есть в `POST /refunds`,
+    без отдельного чека. Сверить на тестовой отправке; `planned_status: 3`
+    («штучный товар возвращён») пока не передаём — см. `marked_items`.
+    """
+    return {
+        "customer": _customer(order),
+        "items": marked_items(order, codes),
+        "internet": True,
+        "timezone": settings.yookassa_receipt_timezone,
+    }
+
+
+async def _check_ready(order: Order) -> list[OrderMarkingCode]:
     """Всё ли есть для чека. Коды заказа — если всё; иначе NotReady."""
     if order.payment_status != orders_repository.PAID or not order.payment_id:
         raise NotReady("заказ не оплачен через ЮKassa — закрывающий чек не нужен")
@@ -205,17 +291,6 @@ async def _tell_manager(order: Order, note: str, *, urgent: bool = True) -> None
         return
     await _save(order, settlement_note=note)
     await order_chat.send(order, templates.manager_settlement_problem(order, note, urgent=urgent))
-
-
-async def _mark_sold(order_id: int) -> None:
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        await session.execute(
-            update(MarkingCodeRow)
-            .where(MarkingCodeRow.order_id == order_id, MarkingCodeRow.status == ASSIGNED)
-            .values(status=SOLD, sold_at=datetime.now(timezone.utc))
-        )
-        await session.commit()
 
 
 @order_scope
@@ -269,7 +344,7 @@ async def issue(order: Order) -> dict:
         settlement_note=None,
     )
     if receipt.status == SUCCEEDED:
-        await _mark_sold(order.id)
+        await packing.mark_sold(order.id)
     logger.info("Заказ %s: закрывающий чек %s, статус %s", order.id, receipt.id, receipt.status)
     return {"чек": receipt.id, "статус": receipt.status, "попытка": attempt}
 
@@ -324,7 +399,7 @@ async def check(now: datetime | None = None) -> dict:
                 continue
             if receipt.status == SUCCEEDED:
                 await _save(order, settlement_receipt_status=SUCCEEDED)
-                await _mark_sold(order.id)
+                await packing.mark_sold(order.id)
                 result["succeeded"] += 1
             elif receipt.status == CANCELED:
                 await _save(order, settlement_receipt_status=CANCELED)
