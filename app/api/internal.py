@@ -580,6 +580,15 @@ async def catalog_from_sheet(request: Request):
     result["источник"] = (
         "Google Таблица" if catalog_sheet.current_items() is not None else "catalog.json в образе"
     )
+    # Каким способом читается таблица — для проверки после переключения
+    # SHEETS_AUTH_MODE. Почта сервисного аккаунта не секрет, ключа здесь нет.
+    if catalog_sheet._mode() == catalog_sheet.SERVICE_ACCOUNT:
+        from app.core import google_sheets
+
+        account = google_sheets.client().account
+        result["доступ"] = "сервисный аккаунт" + (f" {account}" if account else "")
+    else:
+        result["доступ"] = "публичная ссылка (CSV)"
     return result
 
 

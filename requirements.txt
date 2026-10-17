@@ -11,3 +11,6 @@ cryptography
 pymorphy3
 # Чтение git без git: коммиты и код для ассистента Ops.
 dulwich
+# Чтение Google Таблиц сервисным аккаунтом (Sheets API, только чтение):
+# подпись JWT и токен. HTTP — тем же httpx, без requests.
+google-auth

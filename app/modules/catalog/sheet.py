@@ -1,8 +1,21 @@
 """Каталог из Google Таблицы: менеджер правит цену — бот знает её без деплоя.
 
-Таблица публикуется в интернете как CSV («Файл → Поделиться →
-Опубликовать в интернете → CSV»), адрес лежит в `CATALOG_SHEET_CSV_URL`.
-Ключи Google не нужны: цены и описания и так публичные.
+Читать таблицу можно двумя способами (`SHEETS_AUTH_MODE`):
+
+- `public` (по умолчанию) — таблица опубликована в интернете как CSV («Файл
+  → Поделиться → Опубликовать в интернете → CSV»), адрес в
+  `CATALOG_SHEET_CSV_URL`, ключи не нужны;
+- `service_account` — Sheets API сервисным аккаунтом, только чтение
+  (`app/core/google_sheets.py`): таблица `CATALOG_SHEET_ID`, вкладка
+  `CATALOG_SHEET_TAB`. Таблицу тогда можно закрыть от интернета. Ошибка
+  доступа здесь — та же 🚨 менеджеру, что и ошибка в строках, и бот остаётся
+  на прошлой версии; на публичную ссылку он не откатывается.
+
+Оба способа дают разбору одни и те же строки: ячейки как они видны в таблице
+(`FORMATTED_VALUE` — то, что публикует и CSV), пустые хвосты обрезаны,
+строки выровнены (`_canonical`). Поэтому и отпечаток таблицы у них один:
+после переключения режима `scripts/api.sh catalog/sheet` покажет «та же
+версия, что прочитана прошлый раз: true», если таблица прочиталась так же.
 
 Устроено в два шага, и это не лишнее. Тик расписания раз в пять минут
 скачивает таблицу, проверяет её и кладёт удачную версию в базу
@@ -25,6 +38,7 @@ import csv
 import hashlib
 import html
 import io
+import json
 import logging
 import re
 import time
@@ -34,6 +48,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 
+from app.core import google_sheets
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages import manager as manager_messages
@@ -128,13 +143,56 @@ def _price(raw: str) -> float | None:
     return value if value > 0 else None
 
 
+PUBLIC = "public"
+SERVICE_ACCOUNT = "service_account"
+
+
+def _mode() -> str:
+    return (settings.sheets_auth_mode or PUBLIC).strip().lower()
+
+
+def connected() -> bool:
+    """Подключена ли таблица: тогда каталог — из неё (через базу), а не из образа.
+
+    В режиме сервисного аккаунта — всегда: даже если ключа или id нет, бот
+    должен держаться прошлой версии из базы и кричать, а не молча
+    переехать на `catalog.json`.
+    """
+    return _mode() != PUBLIC or bool(settings.catalog_sheet_csv_url)
+
+
+def _canonical(rows: list[list[str]]) -> list[list[str]]:
+    """Строки в одном виде для обоих способов чтения.
+
+    CSV отдаёт строку на всю ширину таблицы, Sheets API обрезает пустые
+    ячейки в конце строки и пустые строки в конце листа. Обрезаем и тут, и
+    там, потом выравниваем по самой широкой.
+    """
+    trimmed = []
+    for row in rows:
+        cells = list(row)
+        while cells and cells[-1] == "":
+            cells.pop()
+        trimmed.append(cells)
+    while trimmed and not trimmed[-1]:
+        trimmed.pop()
+    return google_sheets.pad_rows(trimmed)
+
+
+def _rows_from_csv(text: str) -> list[list[str]]:
+    return _canonical(list(csv.reader(io.StringIO(text.lstrip("﻿")))))
+
+
 def parse_csv(text: str) -> Parsed:
+    """CSV таблицы → товары каталога (способ `public`)."""
+    return parse_rows(_rows_from_csv(text))
+
+
+def parse_rows(rows: list[list[str]]) -> Parsed:
     """Строки таблицы → товары каталога в том же виде, что `catalog.json`."""
     from app.modules.marking import codes
 
     result = Parsed()
-    reader = csv.reader(io.StringIO(text.lstrip("﻿")))
-    rows = list(reader)
     if not rows:
         result.errors.append("таблица пустая")
         return result
@@ -271,7 +329,7 @@ async def ensure_fresh() -> None:
     он сменился.
     """
     global _memory_loaded_at
-    if not settings.catalog_sheet_csv_url:
+    if not connected():
         return
     if _memory_loaded_at and time.monotonic() - _memory_loaded_at < _MEMORY_TTL_SECONDS:
         return
@@ -299,12 +357,12 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-async def refresh(*, force: bool = False) -> dict:
-    """Скачать таблицу, проверить и, если она в порядке, сделать её каталогом."""
-    url = settings.catalog_sheet_csv_url
-    if not url:
-        return {"skipped": "CATALOG_SHEET_CSV_URL не задан — работает catalog.json"}
+def _hash_rows(rows: list[list[str]]) -> str:
+    return _hash(json.dumps(rows, ensure_ascii=False))
 
+
+async def _read_public() -> tuple[Parsed, str] | dict:
+    url = settings.catalog_sheet_csv_url
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, follow_redirects=True) as client:
             response = await client.get(url)
@@ -319,11 +377,57 @@ async def refresh(*, force: bool = False) -> dict:
     if "<html" in text[:500].lower():
         # Ссылка не на CSV, а на страницу таблицы: такое бывает, если
         # скопировать адрес из браузера вместо «Опубликовать в интернете».
-        parsed = Parsed(errors=["по ссылке не CSV, а веб-страница — нужна ссылка из «Опубликовать в интернете → CSV»"])
-    else:
-        parsed = parse_csv(text)
+        return (
+            Parsed(errors=["по ссылке не CSV, а веб-страница — нужна ссылка из «Опубликовать в интернете → CSV»"]),
+            _hash(text),
+        )
+    rows = _rows_from_csv(text)
+    return parse_rows(rows), _hash_rows(rows)
 
-    source_hash = _hash(text)
+
+async def _read_service_account() -> tuple[Parsed, str] | dict:
+    sheet_id = (settings.catalog_sheet_id or "").strip()
+    tab = (settings.catalog_sheet_tab or "").strip()
+    if not sheet_id or not tab:
+        problem = "SHEETS_AUTH_MODE=service_account, но не задан " + (
+            "CATALOG_SHEET_ID" if not sheet_id else "CATALOG_SHEET_TAB"
+        )
+        logger.error("Таблица каталога: %s", problem)
+        return Parsed(errors=[problem]), _hash(problem)
+    try:
+        ranges = await google_sheets.client().batch_get(sheet_id, [google_sheets.a1_range(tab)])
+    except google_sheets.SheetsError as error:
+        if error.transient:
+            # Как и в режиме public: временная беда Google — следующий тик.
+            logger.warning("Таблицу каталога не прочитали через Sheets API: %s", error)
+            return {"failed": f"Sheets API: {error}"}
+        # Доступ сломан — громко: 🚨 менеджеру и бот на прошлой версии.
+        # На публичную ссылку не откатываемся, иначе сломанный доступ
+        # заметили бы, только когда закрыли бы публикацию.
+        logger.error("Таблицу каталога не прочитать сервисным аккаунтом: %s", error)
+        problem = f"таблицу не прочитать сервисным аккаунтом: {error}"
+        return Parsed(errors=[problem]), _hash(problem)
+    rows = _canonical(ranges[0] if ranges else [])
+    return parse_rows(rows), _hash_rows(rows)
+
+
+async def refresh(*, force: bool = False) -> dict:
+    """Прочитать таблицу, проверить и, если она в порядке, сделать её каталогом."""
+    mode = _mode()
+    if mode == PUBLIC:
+        if not settings.catalog_sheet_csv_url:
+            return {"skipped": "CATALOG_SHEET_CSV_URL не задан — работает catalog.json"}
+        read = await _read_public()
+    elif mode == SERVICE_ACCOUNT:
+        read = await _read_service_account()
+    else:
+        problem = f"SHEETS_AUTH_MODE={mode!r} — нужно public или service_account"
+        logger.error("Таблица каталога: %s", problem)
+        read = (Parsed(errors=[problem]), _hash(problem))
+    if isinstance(read, dict):
+        return read
+    parsed, source_hash = read
+
     now = datetime.now(timezone.utc)
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -344,13 +448,18 @@ async def refresh(*, force: bool = False) -> dict:
                 await manager_messages.notify(
                     manager_messages.CATALOG_SHEET,
                     "🚨 <b>Таблица каталога с ошибками — бот работает на прошлой версии</b>\n"
-                    + "\n".join(f"• {error}" for error in parsed.errors[:15])
+                    # Экранируем: в тексте бывают ответ Google и содержимое ячеек.
+                    + "\n".join(f"• {html.escape(error)}" for error in parsed.errors[:15])
                     + ("\n…" if len(parsed.errors) > 15 else ""),
                 )
             logger.warning("Таблица каталога не применена: %s", error_text[:500])
             return {"applied": False, "errors": parsed.errors}
 
-        changed = force or row.source_hash != source_hash
+        # Тот же отпечаток, что у прошлой удачной версии: после переключения
+        # SHEETS_AUTH_MODE так видно, что новый способ прочитал таблицу
+        # ровно так же (команда читает с force, и `changed` там всегда да).
+        same = row.source_hash == source_hash
+        changed = force or not same
         if changed:
             row.items = parsed.items
             row.source_hash = source_hash
@@ -365,6 +474,7 @@ async def refresh(*, force: bool = False) -> dict:
     result = {
         "applied": True,
         "changed": changed,
+        "та же версия, что прочитана прошлый раз": same,
         "товаров": len(parsed.items),
         "в наличии": sum(1 for item in parsed.items if item["in_stock"]),
     }

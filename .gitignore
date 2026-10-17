@@ -7,3 +7,10 @@ __pycache__/
 .pytest_cache/
 .env.bot
 .claude/settings.local.json
+# Ключи сервисных аккаунтов Google — только в секретах на ВМ, не в git.
+*-sa.json
+*_sa.json
+*service-account*.json
+*service_account*.json
+dva-chainika-bot-*.json
+google-sa*.json
