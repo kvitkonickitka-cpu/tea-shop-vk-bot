@@ -46,3 +46,30 @@ Teapotwice Alerts (Профиль → Уведомления → Телегра�
 
 `/health` — блок `handle /health { respond "ok" 200 }` в `/etc/caddy/Caddyfile`
 на Aeza (с 15.10.2026): отвечает сам Caddy, без Anthropic и Telegram.
+
+## Баланс Aeza
+
+Если сервер Aeza не продлится за неуплату, бот замолчит так же, как при
+поломке, а монитор Timeweb заметит это, только когда сервер уже погас.
+Поэтому `aeza-balance.py` раз в день в 10:00 МСК спрашивает API Aeza
+(`/api/v2/accounts/me` и `/api/v2/services`, суммы в копейках). Тревога
+приходит в чат Ops от того же бота, что и у сторожа:
+
+- 💳 — до автопродления какой-то услуги осталось 14 дней или меньше, а
+  на счёте (с бонусами) меньше, чем стоят эти продления. Повторяется каждый
+  день, пока счёт не пополнят; за 3 дня и меньше — 🔴;
+- ⚠️ — услуга не в статусе `active`, или API не ответил (например, ключ
+  отозван: 401), чтобы проверка не замолчала незаметно.
+
+Ключ — `AEZA_API_KEY` и `AEZA_API_BASE` в `/etc/teashop-watchdog.env`.
+Выпускается в my.aeza.ru → Настройки → API ключи, записывается скриптом
+`/root/aeza_set_key.sh` на Aeza (ввод скрыт, ключ сначала проверяется).
+
+```
+install -m 755 aeza-balance.py /usr/local/bin/aeza-balance
+cp aeza-balance.cron /etc/cron.d/aeza-balance
+```
+
+Проверить, ничего не отправляя: `AEZA_BALANCE_DRY_RUN=1 aeza-balance`;
+`WARN_DAYS=60` — увидеть текст тревоги заранее. Журнал —
+`/var/log/aeza-balance.log`.

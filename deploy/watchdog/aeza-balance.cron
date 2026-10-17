@@ -1,0 +1,6 @@
+# Проверка баланса Aeza (deploy/watchdog/aeza-balance.py). Ставится на VPS Aeza:
+#   install -m 755 aeza-balance.py /usr/local/bin/aeza-balance
+#   cp aeza-balance.cron /etc/cron.d/aeza-balance
+# Часы сервера — UTC: 07:00 UTC = 10:00 по Москве (перехода на летнее время нет).
+SHELL=/bin/sh
+0 7 * * * root /usr/local/bin/aeza-balance >> /var/log/aeza-balance.log 2>&1
