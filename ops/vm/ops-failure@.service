@@ -1,0 +1,16 @@
+# Отметка мониторинга: задача %i завершилась с ошибкой.
+# Пара к ops-heartbeat@.service: тот пишет успех, этот — сбой, оба в
+# таблицу heartbeats. Тик бота сравнивает отметки и пишет в чат Ops
+# (app/modules/ops/cashflow_watch.py): сбой позже успеха — поломка.
+# Ловит то, до чего задача не дошла сама: не загрузились справочники,
+# не запустился скрипт (203/EXEC у копии 17.10.2026 — молча, без строчки).
+# Запускается только через OnFailure= у задачи (см. *.service.d/).
+#
+# Ставится на ВМ с базой: /etc/systemd/system/ops-failure@.service,
+# затем systemctl daemon-reload. Удалить — удалить файл и daemon-reload.
+[Unit]
+Description=Отметка мониторинга: %i упала
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec teashop-postgres psql -U teashop -d teashop -v ON_ERROR_STOP=1 -qc "insert into heartbeats (name, last_run_at, runs) values ('сбой:%i', now(), 1) on conflict (name) do update set last_run_at = excluded.last_run_at, runs = heartbeats.runs + 1"

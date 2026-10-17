@@ -15,3 +15,16 @@
     docker exec teashop-postgres psql -U teashop -d teashop -c "delete from heartbeats where name = 'selftest'"
 
 Откат: удалить три файла и `sudo systemctl daemon-reload`.
+
+Сбои юнитов — пара к отметке успеха: `ops-failure@.service` и
+`OnFailure=` у cashflow и копии. По ним тик бота пишет в чат Ops, что
+задача упала (`app/modules/ops/cashflow_watch.py`):
+
+    sudo cp ops-failure@.service /etc/systemd/system/
+    sudo cp cashflow.service.d/ops-failure.conf /etc/systemd/system/cashflow.service.d/
+    sudo cp cashflow-backup.service.d/ops-failure.conf /etc/systemd/system/cashflow-backup.service.d/
+    sudo systemctl daemon-reload
+    systemctl show cashflow.service -p OnFailure    # OnFailure=ops-failure@cashflow.service
+
+Откат: удалить эти три файла, `delete from heartbeats where name like 'сбой:%'` и
+`sudo systemctl daemon-reload`.

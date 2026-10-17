@@ -186,6 +186,10 @@ async def _run_scheduled() -> dict:
     # Сутки бота для Ops-чата — раз в день после девяти утра по Москве.
     result["ops_report"] = await _run_task("Отчёт для Ops", ops_report.send())
     result["disk"] = await _run_task("Диск ВМ с базой", ops_alerts.check_disk())
+    # Выгрузка Т-Банка и копия finance: cashflow сам в Telegram не пишет.
+    from app.modules.ops import cashflow_watch
+
+    result["cashflow"] = await _run_task("Cashflow: выгрузка и копия", cashflow_watch.check())
     # Отметка после всех задач: по ней видно, дошёл ли тик до конца или его
     # убили на середине — и firing ли триггер вообще.
     await heartbeat.note("расписание")

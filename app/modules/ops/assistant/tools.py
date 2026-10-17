@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -394,6 +394,62 @@ async def schedule_status() -> dict:
     })
 
 
+async def cashflow_status() -> dict:
+    """Выгрузка Т-Банка: итог по счетам, отметки systemd, текущие поломки.
+
+    Сумм, контрагентов и назначений здесь нет — только времена, статусы,
+    вид ошибки и последние 4 цифры счёта. Текст ошибки банка не отдаём: в
+    нём бывает ответ банка целиком.
+    """
+    from app.modules.ops import cashflow_watch
+
+    state = await cashflow_watch.read_state()
+    now = datetime.now(timezone.utc)
+    accounts = []
+    for account in state["accounts"]:
+        kind, code = cashflow_watch.error_kind(account.get("last_error")) if account.get("last_error") else (None, None)
+        holds_kind = (
+            cashflow_watch.error_kind(account["pending_error"])[0] if account.get("pending_error") else None
+        )
+        success = account.get("last_success_at")
+        accounts.append({
+            "account_last4": account["last4"],
+            "last_run_at": _t(account.get("last_run_at")),
+            "last_success_at": _t(success),
+            "hours_since_success": round((now - success).total_seconds() / 3600, 1) if success else None,
+            "last_status": account.get("last_status"),
+            "error_kind": kind, "error_http_code": code,
+            "synced_through": account.get("synced_through"),
+            "holds_checked_at": _t(account.get("pending_checked_at")),
+            "holds_error_kind": holds_kind,
+        })
+    latest = None
+    if state["accounts"]:
+        dates = await _rows(
+            """
+            select (select max(operation_date) from finance.raw_operations) as latest_operation_date,
+                   (select count(*) from finance.fact_operations where article_id = 'tech_unclassified')
+                       as unclassified_operations
+            """
+        )
+        latest = dates[0] if dates else None
+    beats = {
+        name: _t(moment) for name, moment in state["beats"].items()
+        if name in cashflow_watch.UNITS or name.startswith(cashflow_watch.FAILURE_PREFIX)
+    }
+    return _plain({
+        "schedule": "выгрузка 07:00 и 21:00 МСК, копия finance 06:30 МСК",
+        "accounts": accounts,
+        "systemd_marks": beats,
+        "data": latest,
+        "problems_now": [p.key for p in cashflow_watch.evaluate(state, now)],
+        "announced": {
+            name[len(cashflow_watch.NOTICE_PREFIX):]: _t(moment)
+            for name, moment in state["beats"].items() if name.startswith(cashflow_watch.NOTICE_PREFIX)
+        },
+    })
+
+
 def _plain(value):
     if isinstance(value, datetime):
         return _t(value)
@@ -403,6 +459,8 @@ def _plain(value):
         return [_plain(v) for v in value]
     if hasattr(value, "is_finite"):  # Decimal
         return float(value)
+    if isinstance(value, date):
+        return value.isoformat()
     return value
 
 
@@ -495,6 +553,18 @@ TOOLS = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "cashflow_status",
+        "description": (
+            "Выгрузка выписки Т-Банка (cashflow, systemd на ВМ, 07:00 и 21:00 МСК) и резервная копия схемы "
+            "finance (06:30): по каждому счёту (последние 4 цифры) — последний запуск и последний успех, "
+            "часов с успеха, статус, вид ошибки (auth — токен или IP, timeout, http_5xx…) и HTTP-код, по какую "
+            "дату выгружено, проверка холдов; отметки systemd об успехе и сбое юнитов; дата самой свежей "
+            "операции и число неразобранных; какие поломки видит проверка сейчас и о каких уже написано в чат. "
+            "Сумм, контрагентов и текста ошибки банка нет."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 from app.modules.ops.assistant import code as _code  # noqa: E402
@@ -512,6 +582,7 @@ _HANDLERS = {
     "order_status": order_status,
     "client_status": client_status,
     "schedule_status": schedule_status,
+    "cashflow_status": cashflow_status,
 }
 
 
