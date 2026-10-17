@@ -4,3 +4,4 @@ operation_id,article_id,comment
 # Пример:
 # 2f1c9b40-1111-2222-3333-444455556666,cfo_out_goods,Оплата чая наличным переводом
 b2ef7c61-2ed8-007f-9544-e6e07ce16161,cfo_out_other,Весы — разовая покупка в Ozon 06.10.2026
+6c7474fc-5016-0095-bd5e-2be15cfb5659,cfo_out_packaging,Мотки для печати этикеток — покупка в Ozon 16.10.2026
