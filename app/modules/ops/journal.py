@@ -34,6 +34,9 @@ VALIDATION = "validation"
 EMULATION = "эмуляция"
 
 _BUFFER: deque[dict] = deque(maxlen=2000)
+# Расход Claude по запросам — свой буфер и своя таблица (`llm_usage`):
+# журнал чистится через 30 дней, а расходы нужны дольше.
+_USAGE: deque[dict] = deque(maxlen=5000)
 _FLUSH_TIMEOUT_SECONDS = 2.0
 
 # Сколько секунд текущий ход клиента провёл в Claude: обёртка на вызовы
@@ -149,6 +152,29 @@ def note_pii_redacted(operation: str, count: int) -> None:
     # значений здесь нет — только где нашлись.
     for _ in range(count):
         _BUFFER.append({"at": _now(), "kind": "pii_redacted", "api": "claude", "operation": operation[:120]})
+
+
+def note_llm_usage(operation: str, model: str, response) -> None:
+    """Расход одного ответа Claude: токены и стоимость. Никогда не бросает."""
+    try:
+        from app.modules.ops import llm_prices
+
+        usage = getattr(response, "usage", None)
+        tokens = {
+            "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+            "cache_read_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+            "cache_write_tokens": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+        }
+        # Модель — из ответа: при повторе на запасной она другая, и цена тоже.
+        actual = str(getattr(response, "model", None) or model or "")
+        _USAGE.append({
+            "at": _now(), "operation": (operation or "")[:120], "model": actual[:80],
+            "cost_usd": llm_prices.cost_usd(actual, **tokens),
+            "stop_reason": getattr(response, "stop_reason", None), **tokens,
+        })
+    except Exception:
+        logger.debug("Не записали расход Claude", exc_info=True)
 
 
 def note_turn(total_seconds: float, llm_seconds: float, *, operation: str | None = None) -> None:
@@ -283,8 +309,35 @@ def pending() -> int:
     return len(_BUFFER)
 
 
+async def _flush_usage(session_factory, timeout: float) -> None:
+    if not _USAGE:
+        return
+    from app.modules.ops.models import LlmUsage
+
+    rows = list(_USAGE)
+    _USAGE.clear()
+
+    async def insert() -> None:
+        async with session_factory() as session:
+            session.add_all(LlmUsage(**row) for row in rows)
+            await session.commit()
+
+    try:
+        await asyncio.wait_for(insert(), timeout)
+    except Exception as error:
+        _USAGE.extendleft(reversed(rows))
+        logger.warning("Расход Claude не записался: %s", type(error).__name__)
+
+
 async def flush(timeout: float = _FLUSH_TIMEOUT_SECONDS) -> int:
     """Сбросить буфер в базу. Никогда не бросает; вернуть, сколько записали."""
+    if _USAGE:
+        try:
+            from app.core.database import get_session_factory
+
+            await _flush_usage(get_session_factory(), timeout)
+        except Exception:
+            logger.debug("Расход Claude не сбросили", exc_info=True)
     if not _BUFFER:
         return 0
     from app.core.database import get_session_factory

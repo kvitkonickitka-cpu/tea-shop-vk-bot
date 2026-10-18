@@ -774,9 +774,32 @@ V_ORDER_MARGIN = View(
     ),
 )
 
+V_LLM_USAGE = View(
+    name="v_llm_usage",
+    comment=(
+        "Расход Claude API по запросам: модель, токены и стоимость в долларах по ценам Anthropic "
+        "(app/modules/ops/llm_prices.py). Строка на каждый ответ API, включая повтор запасной моделью. "
+        "Тестовые диалоги тоже здесь: это реальный расход."
+    ),
+    columns=(
+        Column("at", "u.at", "Когда пришёл ответ, UTC."),
+        Column("date_msk", msk_date("u.at"), "Дата по Москве."),
+        Column("operation", "u.operation::text", "Что делал бот: ход диалога, ассистент Ops, пересказ диалога…"),
+        Column("model", "u.model::text", "Модель, которая ответила."),
+        Column("input_tokens", "u.input_tokens", "Токены входа без кэша."),
+        Column("output_tokens", "u.output_tokens", "Токены выхода, включая размышление."),
+        Column("cache_read_tokens", "u.cache_read_tokens", "Токены, прочитанные из кэша промпта (0,1 цены входа)."),
+        Column("cache_write_tokens", "u.cache_write_tokens", "Токены, записанные в кэш (1,25 цены входа)."),
+        Column("cost_usd", "u.cost_usd::numeric(12,6)", "Стоимость запроса, $. Пусто — цены модели нет в справочнике цен."),
+        Column("stop_reason", "u.stop_reason::text", "Чем закончился ответ: end_turn, tool_use, refusal…"),
+    ),
+    body="from llm_usage u",
+)
+
 # Порядок важен: справочники раньше представлений, которые к ним джойнятся.
 VIEWS = (DIM_STATUS, DIM_EVENT, V_ORDERS, V_ORDER_ITEMS, V_FUNNEL_EVENTS, V_TOUCHES, V_CLIENTS,
-         V_REF_PRODUCTS, V_REF_COSTS, V_REF_SETTINGS, V_REF_STOCK_MOVES, V_ORDER_ITEM_MARGIN, V_ORDER_MARGIN)
+         V_REF_PRODUCTS, V_REF_COSTS, V_REF_SETTINGS, V_REF_STOCK_MOVES, V_ORDER_ITEM_MARGIN, V_ORDER_MARGIN,
+         V_LLM_USAGE)
 
 
 def statements() -> list[str]:

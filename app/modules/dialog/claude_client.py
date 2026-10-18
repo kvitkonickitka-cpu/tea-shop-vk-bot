@@ -32,6 +32,7 @@ async def _create(operation: str, **request):
     """
     response = await _client.messages.create(**request)
     _log_cache(operation, response)
+    journal.note_llm_usage(operation, request.get("model", ""), response)
     if getattr(response, "stop_reason", None) != "refusal":
         return response
     details = getattr(response, "stop_details", None)
@@ -41,7 +42,10 @@ async def _create(operation: str, **request):
                    f" — повторяем на {fallback}" if fallback and fallback != request.get("model") else "")
     if not fallback or fallback == request.get("model"):
         return response
-    return await _client.messages.create(**{**request, "model": fallback})
+    retry = await _client.messages.create(**{**request, "model": fallback})
+    # Повтор оплачен отдельно — своя строка расхода.
+    journal.note_llm_usage(operation, fallback, retry)
+    return retry
 
 
 def _system_blocks(system: str, cache_upto: int | None):

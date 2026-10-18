@@ -206,3 +206,14 @@ views:
     - claude_api: numeric(12,2)
     - contribution_margin: numeric(12,2)
     - margin_pct: numeric(8,1)
+  v_llm_usage:
+    - at: timestamp with time zone
+    - date_msk: date
+    - operation: text
+    - model: text
+    - input_tokens: integer
+    - output_tokens: integer
+    - cache_read_tokens: integer
+    - cache_write_tokens: integer
+    - cost_usd: numeric(12,6)
+    - stop_reason: text
