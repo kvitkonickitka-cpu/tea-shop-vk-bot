@@ -50,6 +50,7 @@ F.update(sync_fields({
     "margin.paid_date_msk": ("v_order_margin", "paid_date_msk"),
     "items_margin.paid_date_msk": ("v_order_item_margin", "paid_date_msk"),
     "llm.date_msk": ("v_llm_usage", "date_msk"),
+    "bill.day": ("v_anthropic_costs", "day"),
 }))
 
 RUB = {"suffix": " ₽", "decimals": 0}
@@ -430,6 +431,34 @@ card("api_tbl", coll, "Claude API: на что ушло за 30 дней",
      "table", colfmt(**{"Расход, $": USD, "За запрос, $": {"prefix": "$", "decimals": 4}}),
      description="Вход из кэша — доля входных токенов, прочитанных из кэша промпта: он в 10 раз дешевле.")
 
+# --- Счёт Anthropic (Admin API cost_report) — то, что выставят к оплате ------------------------
+for days in (7, 14, 30):
+    card(f"bill_{days}d", coll, f"Счёт Anthropic за {days} дней, $",
+         f'select coalesce(round(sum(amount_usd), 2), 0) as "Счёт, $" from analytics.v_anthropic_costs '
+         f"where day >= current_date - {days - 1}",
+         "scalar", colfmt(**{"Счёт, $": USD}),
+         description=f"Сколько Anthropic выставит к оплате за последние {days} дней — по всей организации "
+                     "(бот, ассистент Ops, консоль). Обновляется раз в час, сегодняшний день — с задержкой.")
+card("bill_daily", coll, "Счёт Anthropic по дням, $",
+     'select day as "День", case token_type when \'output_tokens\' then \'выход\'\n'
+     "  when 'uncached_input_tokens' then 'вход' when 'cache_read_input_tokens' then 'чтение из кэша'\n"
+     "  when 'cache_creation.ephemeral_5m_input_tokens' then 'запись в кэш'\n"
+     "  when 'cache_creation.ephemeral_1h_input_tokens' then 'запись в кэш (1 ч)'\n"
+     "  else coalesce(cost_type, 'прочее') end as \"Статья\", round(sum(amount_usd), 4) as \"Счёт, $\"\n"
+     "from analytics.v_anthropic_costs where true [[and {{dates}}]] group by 1, 2 order by 1",
+     "bar", {"graph.dimensions": ["День", "Статья"], "graph.metrics": ["Счёт, $"],
+             "stackable.stack_type": "stacked", **colfmt(**{"Счёт, $": USD})}, "bill.day")
+card("bill_vs", coll, "Счёт Anthropic и учёт бота по дням",
+     "with bill as (select day, sum(amount_usd) as usd from analytics.v_anthropic_costs group by 1),\n"
+     "bot as (select (at at time zone 'UTC')::date as day, sum(cost_usd) as usd from analytics.v_llm_usage group by 1)\n"
+     'select coalesce(bill.day, bot.day) as "День (UTC)", round(bill.usd, 2) as "Счёт Anthropic, $",\n'
+     '  round(bot.usd, 2) as "Учёт бота, $", round(coalesce(bill.usd, 0) - coalesce(bot.usd, 0), 2) as "Разница, $"\n'
+     "from bill full join bot on bot.day = bill.day\n"
+     "where coalesce(bill.day, bot.day) >= current_date - 29 order by 1 desc",
+     "table", colfmt(**{"Счёт Anthropic, $": USD, "Учёт бота, $": USD, "Разница, $": USD}),
+     description="Разница — расходы не бота (консоль, другие ключи организации) или запросы, которые бот не "
+                 "записал. До 18.10.2026 учёта бота нет — там разница равна счёту.")
+
 # --- проверка: каждый вопрос выполняется без ошибки --------------------------------------------
 bad = 0
 for key, (cid, _, _) in CARDS.items():
@@ -521,13 +550,15 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     dc("m_margin", 0, 0, 6, 3, MT), dc("m_pct", 0, 6, 6, 3, MT), dc("m_cogs", 0, 12, 6, 3, MT),
     dc("m_avg", 0, 18, 6, 3, MT),
     dc("api_7d", 3, 0, 8, 3, MT), dc("api_14d", 3, 8, 8, 3, MT), dc("api_30d", 3, 16, 8, 3, MT),
-    dc("api_daily", 6, 0, 12, 6, MT), dc("api_tbl", 6, 12, 12, 6, MT),
-    dc("m_waterfall", 12, 0, 12, 12, MT), dc("ref_margin_chart", 12, 12, 12, 12, MT),
-    dc("ref_products", 24, 0, 24, 8, MT),
-    dc("m_by_product", 32, 0, 14, 6, MT), dc("m_missing", 32, 14, 10, 6, MT),
-    dc("m_orders", 38, 0, 24, 8, MT),
-    dc("ref_settings", 46, 0, 14, 9, MT), dc("ref_costs", 46, 14, 10, 9, MT),
-    dc("ref_stock", 55, 0, 24, 6, MT),
+    dc("bill_7d", 6, 0, 8, 3, MT), dc("bill_14d", 6, 8, 8, 3, MT), dc("bill_30d", 6, 16, 8, 3, MT),
+    dc("api_daily", 9, 0, 12, 6, MT), dc("bill_daily", 9, 12, 12, 6, MT),
+    dc("api_tbl", 15, 0, 12, 6, MT), dc("bill_vs", 15, 12, 12, 6, MT),
+    dc("m_waterfall", 21, 0, 12, 12, MT), dc("ref_margin_chart", 21, 12, 12, 12, MT),
+    dc("ref_products", 33, 0, 24, 8, MT),
+    dc("m_by_product", 41, 0, 14, 6, MT), dc("m_missing", 41, 14, 10, 6, MT),
+    dc("m_orders", 47, 0, 24, 8, MT),
+    dc("ref_settings", 55, 0, 14, 9, MT), dc("ref_costs", 55, 14, 10, 9, MT),
+    dc("ref_stock", 64, 0, 24, 6, MT),
 ], tabs=[{"id": v, "name": k} for k, v in T.items()], existing=OLD_DASHBOARD)
 
 # Прежние вопросы — в архив. Дашборд уже в новой коллекции, его это не задевает.

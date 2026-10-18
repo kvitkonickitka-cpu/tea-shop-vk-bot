@@ -45,6 +45,8 @@ CLIENT_UNREACHABLE = "client_unreachable"
 CATALOG_SHEET = "catalog_sheet"
 # Справочники из таблицы (себестоимость, настройки): строки не применены — в Ops-чат.
 REFERENCES = "references"
+# Счёт Anthropic не читается (админ-ключ) — в Ops-чат.
+ANTHROPIC_COSTS = "anthropic_costs"
 FEEDBACK = "feedback"
 
 

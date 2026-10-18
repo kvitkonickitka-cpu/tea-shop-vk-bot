@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.analytics import references as analytics_references
+from app.modules.ops import anthropic_costs
 from app.modules.analytics import service as analytics_service
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
@@ -175,6 +176,8 @@ async def _run_scheduled() -> dict:
     result["catalog_sheet"] = await _run_task("Каталог из таблицы", catalog_sheet.refresh())
     # Справочники (себестоимость, настройки) — та же таблица, раз в 15 минут.
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
+    # Счёт Anthropic по дням — раз в час, админ-ключом.
+    result["anthropic_costs"] = await _run_task("Счёт Anthropic", anthropic_costs.sync())
 
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
@@ -558,6 +561,20 @@ async def probe_vk_market(request: Request):
         result.get("получено за один запрос"),
     )
     return result
+
+
+@router.post("/internal/anthropic/costs")
+async def anthropic_costs_sync(request: Request):
+    """Прочитать счёт Anthropic сейчас, не дожидаясь часа.
+
+        scripts/api.sh anthropic/costs
+
+    Отвечает, за какие дни прочитано, сколько строк и итог в долларах — или
+    почему не прочитано. Ключ в ответ не попадает.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    return await anthropic_costs.sync(force=True)
 
 
 @router.post("/internal/references/sync")
