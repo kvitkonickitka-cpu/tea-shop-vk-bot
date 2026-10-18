@@ -108,6 +108,7 @@ async def clean(db):
         "heartbeats", "marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events", "ops_events",
         "order_ratings", "clients", "pii_vault", "catalog_snapshot",
         "ref_products", "ref_composition", "ref_costs", "ref_settings", "ref_stock_moves", "ref_sync",
+        "llm_usage",
     )
     async with db() as session:
         rows = (

@@ -1,6 +1,8 @@
 """Дашборд «Сводка» в Metabase (вкладки: Обзор, Деньги, Воронка, Заказы, Удержание, Ассортимент,
-Себестоимость и маржа). Повторный запуск архивирует прежнюю коллекцию
-«Дашборды» и собирает заново. Все вопросы — SQL к витринам analytics и finance (без ПДн)."""
+Себестоимость и маржа). Повторный запуск собирает вопросы заново в новой коллекции
+«Дашборды», а сам дашборд обновляет на месте — ссылка на него не меняется; прежняя
+коллекция с прежними вопросами уходит в архив. Все вопросы — SQL к витринам analytics
+и finance (без ПДн)."""
 import time
 import uuid
 from mbapi import call, BASE
@@ -47,9 +49,14 @@ def sync_fields(wanted):
 F.update(sync_fields({
     "margin.paid_date_msk": ("v_order_margin", "paid_date_msk"),
     "items_margin.paid_date_msk": ("v_order_item_margin", "paid_date_msk"),
+    "llm.date_msk": ("v_llm_usage", "date_msk"),
 }))
 
 RUB = {"suffix": " ₽", "decimals": 0}
+# Все строки графика, без «Other»: по умолчанию Metabase сворачивает хвост списка в
+# одну строку — сорта и статусы за десятым пропадали из виду. Строки, не влезшие по
+# высоте карточки, он всё равно сворачивает: карточке со списком нужна высота.
+ALL_ROWS = {"graph.max_categories_enabled": False}
 # Плавная кривая вместо ломаной у дневных графиков.
 SMOOTH = {"line.interpolate": "cardinal"}
 
@@ -111,10 +118,13 @@ def mbql(key, coll, name, table, aggregation, date_field, fmt=None, filter_=None
 
 
 # --- коллекция -----------------------------------------------------------------------------
-for c in call("GET", "/collection"):
-    if c.get("name") == COLLECTION and not c.get("archived") and c.get("id") != "root":
-        call("PUT", f"/collection/{c['id']}", {"archived": True})
-        print("старая коллекция в архиве:", c["id"])
+# Прежнюю коллекцию — в архив в самом конце, когда дашборд уже переехал в новую: так
+# дашборд остаётся тем же (та же ссылка), а архивируются только прежние вопросы.
+OLD_COLLECTIONS = [c["id"] for c in call("GET", "/collection")
+                   if c.get("name") == COLLECTION and not c.get("archived") and c.get("id") != "root"]
+OLD_DASHBOARD = next((item["id"] for cid in OLD_COLLECTIONS
+                      for item in call("GET", f"/collection/{cid}/items?models=dashboard").get("data", [])
+                      if item.get("name") == "Сводка"), None)
 coll = call("POST", "/collection", {"name": COLLECTION, "description": "Собрано Claude через API. Источник — схемы analytics и finance."})["id"]
 
 # --- Деньги --------------------------------------------------------------------------------
@@ -252,7 +262,7 @@ card("carriers", coll, "Перевозчики",
 card("statuses", coll, "Статусы заказов",
      "select status_label as \"Статус\", count(*) as \"Заказов\" from analytics.v_orders where true [[and {{dates}}]] "
      "group by 1 order by 2 desc",
-     "row", {"graph.dimensions": ["Статус"], "graph.metrics": ["Заказов"]}, "orders.created_date_msk",
+     "row", {"graph.dimensions": ["Статус"], "graph.metrics": ["Заказов"], **ALL_ROWS}, "orders.created_date_msk",
      description="Все заказы с выставленным счётом, по дате создания.")
 card("orders_tbl", coll, "Заказы",
      "select order_id as \"№\", created_date_msk as \"Создан\", paid_date_msk as \"Оплачен\", status_label as \"Статус\",\n"
@@ -292,7 +302,7 @@ card("ratings", coll, "Оценки заказов",
 ITEMS = "from analytics.v_order_items join analytics.v_orders o using (order_id) where o.is_paid and not o.is_refunded [[and {{dates}}]]"
 card("by_product", coll, "Выручка по сортам",
      f"select v_order_items.product as \"Сорт\", sum(v_order_items.amount) as \"Выручка\" {ITEMS} group by 1 order by 2 desc limit 20",
-     "row", {"graph.dimensions": ["Сорт"], "graph.metrics": ["Выручка"]}, "items.created_date_msk")
+     "row", {"graph.dimensions": ["Сорт"], "graph.metrics": ["Выручка"], **ALL_ROWS}, "items.created_date_msk")
 card("by_pack", coll, "Пачки по фасовкам",
      f"select coalesce(v_order_items.pack, 'без фасовки') as \"Фасовка\", sum(v_order_items.quantity) as \"Пачек\" {ITEMS} group by 1 order by 2 desc",
      "pie", {"pie.dimension": "Фасовка", "pie.metric": "Пачек"}, "items.created_date_msk")
@@ -376,7 +386,7 @@ card("ref_products", coll, "Справочник: себестоимость и 
 card("ref_margin_chart", coll, "Маржа на единицу по рознице",
      'select name as "Товар", unit_margin as "Маржа, ₽" from analytics.v_ref_products\n'
      "where active and unit_margin is not null order by 2 desc",
-     "row", {"graph.dimensions": ["Товар"], "graph.metrics": ["Маржа, ₽"], **colfmt(**{"Маржа, ₽": RUB})},
+     "row", {"graph.dimensions": ["Товар"], "graph.metrics": ["Маржа, ₽"], **ALL_ROWS, **colfmt(**{"Маржа, ₽": RUB})},
      description="Розничная цена справочника минус себестоимость единицы.")
 card("ref_settings", coll, "Настройки, действующие сегодня",
      'select name as "Параметр", case when unit = \'доля\' then round(value * 100, 2)::text || \' %\'\n'
@@ -394,6 +404,31 @@ card("ref_stock", coll, "Приходы и инвентаризация",
      '  amount as "Сумма", document as "Документ", comment as "Комментарий"\n'
      "from analytics.v_ref_stock_moves order by move_date desc, name",
      "table", colfmt(**{"Сумма": RUB2}))
+
+# --- Claude API: расход в долларах (llm_usage) ---------------------------------------------
+USD = {"prefix": "$", "decimals": 2}
+for days in (7, 14, 30):
+    card(f"api_{days}d", coll, f"Claude API за {days} дней, $",
+         f'select coalesce(round(sum(cost_usd), 2), 0) as "Расход, $" from analytics.v_llm_usage '
+         f"where at >= now() - interval '{days} days'",
+         "scalar", colfmt(**{"Расход, $": USD}),
+         description=f"Расход на Claude API за последние {days} дней, по ценам Anthropic: все запросы бота, "
+                     "ассистента Ops и пересказов, включая тестовые диалоги. Фильтр «Даты» здесь не действует.")
+card("api_daily", coll, "Claude API по дням, $",
+     'select date_msk as "День", operation as "На что", round(sum(cost_usd), 4) as "Расход, $"\n'
+     "from analytics.v_llm_usage where true [[and {{dates}}]] group by 1, 2 order by 1",
+     "bar", {"graph.dimensions": ["День", "На что"], "graph.metrics": ["Расход, $"],
+             "stackable.stack_type": "stacked", **colfmt(**{"Расход, $": USD})}, "llm.date_msk")
+card("api_tbl", coll, "Claude API: на что ушло за 30 дней",
+     'select operation as "На что", model as "Модель", count(*) as "Запросов",\n'
+     '  round(sum(cost_usd), 2) as "Расход, $", round(avg(cost_usd), 4) as "За запрос, $",\n'
+     '  sum(input_tokens) as "Вход", sum(output_tokens) as "Выход", sum(cache_read_tokens) as "Из кэша",\n'
+     '  sum(cache_write_tokens) as "В кэш",\n'
+     '  round(100.0 * sum(cache_read_tokens) / nullif(sum(input_tokens + cache_read_tokens + cache_write_tokens), 0), 1)\n'
+     '    as "Вход из кэша, %"\n'
+     "from analytics.v_llm_usage where at >= now() - interval '30 days' group by 1, 2 order by 4 desc nulls last",
+     "table", colfmt(**{"Расход, $": USD, "За запрос, $": {"prefix": "$", "decimals": 4}}),
+     description="Вход из кэша — доля входных токенов, прочитанных из кэша промпта: он в 10 раз дешевле.")
 
 # --- проверка: каждый вопрос выполняется без ошибки --------------------------------------------
 bad = 0
@@ -428,13 +463,19 @@ def dc(key, row, col, w, h, tab=None, params=("dates", "period")):
     return d
 
 
-def make(name, desc, parameters, dashcards, tabs=None):
-    did = call("POST", "/dashboard", {"name": name, "description": desc, "collection_id": coll})["id"]
+def make(name, desc, parameters, dashcards, tabs=None, existing=None):
+    """Собрать дашборд. `existing` — id прежнего: он переезжает в новую коллекцию и
+    получает новые карточки и вкладки, id и ссылка не меняются."""
+    if existing:
+        did = existing
+        call("PUT", f"/dashboard/{did}", {"name": name, "description": desc, "collection_id": coll})
+    else:
+        did = call("POST", "/dashboard", {"name": name, "description": desc, "collection_id": coll})["id"]
     body = {"parameters": parameters, "dashcards": dashcards}
     if tabs:
         body["tabs"] = tabs
     call("PUT", f"/dashboard/{did}", body)
-    print(f"{name}: {SITE}/dashboard/{did}")
+    print(f"{name}: {SITE}/dashboard/{did}" + (" (тот же дашборд, обновлён)" if existing else " (новый)"))
 
 
 # Один дашборд «Сводка»: вкладка «Обзор» — главное на одном экране (те же вопросы, что
@@ -475,13 +516,21 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     # Ассортимент
     dc("by_product", 0, 0, 12, 8, T["Ассортимент"]), dc("by_pack", 0, 12, 6, 6, T["Ассортимент"]),
     dc("upsell", 0, 18, 6, 3, T["Ассортимент"]), dc("assort_tbl", 8, 0, 24, 8, T["Ассортимент"]),
-    # Себестоимость и маржа
+    # Себестоимость и маржа. График маржи на единицу — высокий: строки, не влезшие по
+    # высоте, Metabase сворачивает в «Other», а товаров в справочнике 16.
     dc("m_margin", 0, 0, 6, 3, MT), dc("m_pct", 0, 6, 6, 3, MT), dc("m_cogs", 0, 12, 6, 3, MT),
     dc("m_avg", 0, 18, 6, 3, MT),
-    dc("m_waterfall", 3, 0, 12, 7, MT), dc("ref_margin_chart", 3, 12, 12, 7, MT),
-    dc("ref_products", 10, 0, 24, 8, MT),
-    dc("m_by_product", 18, 0, 14, 6, MT), dc("m_missing", 18, 14, 10, 6, MT),
-    dc("m_orders", 24, 0, 24, 8, MT),
-    dc("ref_settings", 32, 0, 14, 9, MT), dc("ref_costs", 32, 14, 10, 9, MT),
-    dc("ref_stock", 41, 0, 24, 6, MT),
-], tabs=[{"id": v, "name": k} for k, v in T.items()])
+    dc("api_7d", 3, 0, 8, 3, MT), dc("api_14d", 3, 8, 8, 3, MT), dc("api_30d", 3, 16, 8, 3, MT),
+    dc("api_daily", 6, 0, 12, 6, MT), dc("api_tbl", 6, 12, 12, 6, MT),
+    dc("m_waterfall", 12, 0, 12, 12, MT), dc("ref_margin_chart", 12, 12, 12, 12, MT),
+    dc("ref_products", 24, 0, 24, 8, MT),
+    dc("m_by_product", 32, 0, 14, 6, MT), dc("m_missing", 32, 14, 10, 6, MT),
+    dc("m_orders", 38, 0, 24, 8, MT),
+    dc("ref_settings", 46, 0, 14, 9, MT), dc("ref_costs", 46, 14, 10, 9, MT),
+    dc("ref_stock", 55, 0, 24, 6, MT),
+], tabs=[{"id": v, "name": k} for k, v in T.items()], existing=OLD_DASHBOARD)
+
+# Прежние вопросы — в архив. Дашборд уже в новой коллекции, его это не задевает.
+for cid in OLD_COLLECTIONS:
+    call("PUT", f"/collection/{cid}", {"archived": True})
+    print("прежняя коллекция с вопросами в архиве:", cid)

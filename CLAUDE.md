@@ -590,6 +590,9 @@ GTIN товара — поле `gtin` в `catalog.json`; коды — табли
 - **отказ модели** (`stop_reason: refusal`, у 5.5 категорий больше) —
   `claude_client._create` повторяет запрос на `ANTHROPIC_FALLBACK_MODEL`
   (`claude-sonnet-5`) и пишет категорию в лог;
+- **расход каждого ответа Claude** — в `llm_usage` (`journal.note_llm_usage`
+  в `claude_client._create`, цены — `ops/llm_prices.py`; новая модель — дописать
+  цену), в Metabase — `analytics.v_llm_usage`;
 - **запрос к Anthropic — только через `claude_client`**: там последний
   рубеж (`guard`), телефон или почта в запросе — `[REDACTED]` и строка в
   отчёте Ops. Строка появилась — метки что-то пропустили;
