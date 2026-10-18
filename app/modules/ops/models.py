@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Index, Integer, Numeric, String, func
+from sqlalchemy import Date, DateTime, Index, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -69,3 +69,35 @@ class LlmUsage(Base):
     # NULL — цены модели нет в `llm_prices.PRICES`: токены есть, стоимости нет.
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
     stop_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class AnthropicCost(Base):
+    """Строка счёта Anthropic за день — из отчёта о расходах (`cost_report`).
+
+    То, что Anthropic выставит к оплате, в отличие от `llm_usage` — оценки бота
+    по ценам. Строка — день × статья расходов (модель и вид токенов).
+    """
+
+    __tablename__ = "anthropic_costs"
+    __table_args__ = (Index("ix_anthropic_costs_day", "day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(Date)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    cost_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    token_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    service_tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnthropicCostSync(Base):
+    """Когда отчёт о расходах читался — чтобы не чаще раза в час."""
+
+    __tablename__ = "anthropic_cost_sync"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True)

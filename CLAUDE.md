@@ -592,7 +592,9 @@ GTIN товара — поле `gtin` в `catalog.json`; коды — табли
   (`claude-sonnet-5`) и пишет категорию в лог;
 - **расход каждого ответа Claude** — в `llm_usage` (`journal.note_llm_usage`
   в `claude_client._create`, цены — `ops/llm_prices.py`; новая модель — дописать
-  цену), в Metabase — `analytics.v_llm_usage`;
+  цену), в Metabase — `analytics.v_llm_usage`; **счёт Anthropic** —
+  `ops/anthropic_costs.py` (Admin API `cost_report`, ключ `ANTHROPIC_ADMIN_KEY`,
+  через `ANTHROPIC_BASE_URL`: напрямую с ВМ — 403) → `analytics.v_anthropic_costs`;
 - **запрос к Anthropic — только через `claude_client`**: там последний
   рубеж (`guard`), телефон или почта в запросе — `[REDACTED]` и строка в
   отчёте Ops. Строка появилась — метки что-то пропустили;

@@ -217,3 +217,11 @@ views:
     - cache_write_tokens: integer
     - cost_usd: numeric(12,6)
     - stop_reason: text
+  v_anthropic_costs:
+    - day: date
+    - description: text
+    - model: text
+    - cost_type: text
+    - token_type: text
+    - service_tier: text
+    - amount_usd: numeric(14,6)

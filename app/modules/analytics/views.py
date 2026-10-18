@@ -796,10 +796,29 @@ V_LLM_USAGE = View(
     body="from llm_usage u",
 )
 
+V_ANTHROPIC_COSTS = View(
+    name="v_anthropic_costs",
+    comment=(
+        "Счёт Anthropic по дням из отчёта о расходах (Admin API cost_report): то, что будет выставлено "
+        "к оплате, по всей организации. Строка — день × статья (модель и вид токенов). Сравнивать с "
+        "v_llm_usage — оценкой бота по ценам."
+    ),
+    columns=(
+        Column("day", "c.day", "День (UTC — так считает Anthropic)."),
+        Column("description", "c.description::text", "Статья счёта, как у Anthropic: «Claude Sonnet 5.5 Usage - Input Tokens»."),
+        Column("model", "c.model::text", "Модель. Пусто — не токены (веб-поиск, код)."),
+        Column("cost_type", "c.cost_type::text", "Вид расхода: tokens, web_search, code_execution…"),
+        Column("token_type", "c.token_type::text", "Вид токенов: uncached_input_tokens, output_tokens, cache_read_input_tokens…"),
+        Column("service_tier", "c.service_tier::text", "standard или batch."),
+        Column("amount_usd", "c.amount_usd::numeric(14,6)", "Сумма, $."),
+    ),
+    body="from anthropic_costs c",
+)
+
 # Порядок важен: справочники раньше представлений, которые к ним джойнятся.
 VIEWS = (DIM_STATUS, DIM_EVENT, V_ORDERS, V_ORDER_ITEMS, V_FUNNEL_EVENTS, V_TOUCHES, V_CLIENTS,
          V_REF_PRODUCTS, V_REF_COSTS, V_REF_SETTINGS, V_REF_STOCK_MOVES, V_ORDER_ITEM_MARGIN, V_ORDER_MARGIN,
-         V_LLM_USAGE)
+         V_LLM_USAGE, V_ANTHROPIC_COSTS)
 
 
 def statements() -> list[str]:
