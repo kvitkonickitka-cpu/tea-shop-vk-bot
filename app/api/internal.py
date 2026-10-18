@@ -10,6 +10,7 @@ from app.core import heartbeat, worktime
 from app.core.config import settings
 from app.messages import manager as manager_messages, templates
 from app.modules import events
+from app.modules.analytics import references as analytics_references
 from app.modules.analytics import service as analytics_service
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
@@ -172,6 +173,8 @@ async def _run_scheduled() -> dict:
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.
     result["catalog_sheet"] = await _run_task("Каталог из таблицы", catalog_sheet.refresh())
+    # Справочники (себестоимость, настройки) — та же таблица, раз в 15 минут.
+    result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
 
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
@@ -186,6 +189,10 @@ async def _run_scheduled() -> dict:
     # Сутки бота для Ops-чата — раз в день после девяти утра по Москве.
     result["ops_report"] = await _run_task("Отчёт для Ops", ops_report.send())
     result["disk"] = await _run_task("Диск ВМ с базой", ops_alerts.check_disk())
+    # Выгрузка Т-Банка и копия finance: cashflow сам в Telegram не пишет.
+    from app.modules.ops import cashflow_watch
+
+    result["cashflow"] = await _run_task("Cashflow: выгрузка и копия", cashflow_watch.check())
     # Отметка после всех задач: по ней видно, дошёл ли тик до конца или его
     # убили на середине — и firing ли триггер вообще.
     await heartbeat.note("расписание")
@@ -571,6 +578,20 @@ async def probe_vk_market(request: Request):
     return result
 
 
+@router.post("/internal/references/sync")
+async def references_sync(request: Request):
+    """Прочитать справочники из таблицы сейчас, не дожидаясь 15 минут.
+
+        scripts/api.sh references/sync
+
+    Отвечает, сколько строк применено по каждой вкладке и какие строки
+    пропущены и почему.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    return await analytics_references.sync(force=True)
+
+
 @router.post("/internal/catalog/sheet")
 async def catalog_from_sheet(request: Request):
     """Прочитать Google Таблицу каталога сейчас, не дожидаясь тика.
@@ -594,6 +615,15 @@ async def catalog_from_sheet(request: Request):
     result["источник"] = (
         "Google Таблица" if catalog_sheet.current_items() is not None else "catalog.json в образе"
     )
+    # Каким способом читается таблица — для проверки после переключения
+    # SHEETS_AUTH_MODE. Почта сервисного аккаунта не секрет, ключа здесь нет.
+    if catalog_sheet._mode() == catalog_sheet.SERVICE_ACCOUNT:
+        from app.core import google_sheets
+
+        account = google_sheets.client().account
+        result["доступ"] = "сервисный аккаунт" + (f" {account}" if account else "")
+    else:
+        result["доступ"] = "публичная ссылка (CSV)"
     return result
 
 

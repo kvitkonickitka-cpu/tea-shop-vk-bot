@@ -125,3 +125,84 @@ views:
     - unreachable: boolean
     - ref: character varying
     - ref_source: character varying
+  v_ref_products:
+    - code: text
+    - name: text
+    - kind: text
+    - weight_g: numeric(12,3)
+    - retail_price: numeric(12,2)
+    - unit_cost: numeric(12,2)
+    - cost_valid_from: date
+    - unit_margin: numeric(12,2)
+    - margin_pct: numeric(8,1)
+    - active: boolean
+    - role: text
+    - bot_name: text
+    - in_bot_catalog: boolean
+    - bot_price: numeric(12,2)
+    - bot_unit_margin: numeric(12,2)
+    - bot_margin_pct: numeric(8,1)
+    - bot_in_stock: boolean
+    - components: text
+    - supplier_sku: text
+  v_ref_costs:
+    - code: text
+    - name: text
+    - valid_from: date
+    - valid_to: date
+    - unit_cost: numeric(12,2)
+    - is_current: boolean
+    - source: text
+    - comment: text
+  v_ref_settings:
+    - key: text
+    - name: text
+    - value: numeric(16,6)
+    - unit: text
+    - valid_from: date
+    - source: text
+    - comment: text
+  v_ref_stock_moves:
+    - move_date: date
+    - operation: text
+    - code: text
+    - name: text
+    - quantity: numeric(14,3)
+    - unit: text
+    - amount: numeric(12,2)
+    - unit_amount: numeric(14,4)
+    - document: text
+    - comment: text
+  v_order_item_margin:
+    - order_id: integer
+    - line_no: integer
+    - paid_date_msk: date
+    - is_paid: boolean
+    - is_refunded: boolean
+    - item_name: text
+    - product_code: text
+    - product_name: text
+    - quantity: integer
+    - amount: numeric(10,2)
+    - unit_cost: numeric(12,2)
+    - cogs: numeric(12,2)
+    - gross_margin: numeric(12,2)
+    - has_cost: boolean
+  v_order_margin:
+    - order_id: integer
+    - created_date_msk: date
+    - paid_date_msk: date
+    - is_paid: boolean
+    - is_refunded: boolean
+    - total: numeric(10,2)
+    - items_total: numeric(10,2)
+    - cogs: numeric(12,2)
+    - lines_without_cost: integer
+    - acquiring: numeric(12,2)
+    - fiscalization: numeric(12,2)
+    - usn_reserve: numeric(12,2)
+    - delivery_expense: numeric(10,2)
+    - other_variable: numeric(12,2)
+    - claude_api: numeric(12,2)
+    - contribution_margin: numeric(12,2)
+    - margin_pct: numeric(8,1)

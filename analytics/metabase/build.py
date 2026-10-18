@@ -1,5 +1,7 @@
-"""Дашборд «Сводка» в Metabase (вкладки: Обзор, Деньги, Воронка, Заказы, Удержание, Ассортимент). Повторный запуск архивирует прежнюю коллекцию
+"""Дашборд «Сводка» в Metabase (вкладки: Обзор, Деньги, Воронка, Заказы, Удержание, Ассортимент,
+Себестоимость и маржа). Повторный запуск архивирует прежнюю коллекцию
 «Дашборды» и собирает заново. Все вопросы — SQL к витринам analytics и finance (без ПДн)."""
+import time
 import uuid
 from mbapi import call, BASE
 
@@ -18,6 +20,34 @@ F = {
 # Поля для вопросов-конструкторов (mbql): v_cash_summary, v_metrics, v_orders.
 CASH_CLOSING, CASH_CFO, CASH_FCF, METRICS_RUNWAY = 186, 190, 192, 225
 ORDERS_TOTAL, ORDERS_IS_PAID, ORDERS_IS_REFUNDED = 154, 142, 143
+
+
+
+def sync_fields(wanted):
+    """id полей новых представлений — по имени, а не вписанные руками.
+
+    Новое представление Metabase видит только после синхронизации схемы, поэтому
+    сначала просим её, потом ждём, пока поля появятся. Не появились — стоп до
+    того, как прежняя коллекция уйдёт в архив.
+    """
+    call("POST", f"/database/{DB}/sync_schema", {})
+    found = {}
+    for _ in range(40):
+        meta = call("GET", f"/database/{DB}/metadata")
+        found = {key: f["id"] for t in meta["tables"] if t.get("schema") == "analytics"
+                 for f in t["fields"] for key, (table, column) in wanted.items()
+                 if t["name"] == table and f["name"] == column}
+        if len(found) == len(wanted):
+            return found
+        time.sleep(3)
+    raise SystemExit(f"Metabase не видит {sorted(set(wanted) - set(found))}: бот с новыми представлениями "
+                     "задеплоен? Админ → Базы данных → «Синхронизировать схему» и запустить снова.")
+
+
+F.update(sync_fields({
+    "margin.paid_date_msk": ("v_order_margin", "paid_date_msk"),
+    "items_margin.paid_date_msk": ("v_order_item_margin", "paid_date_msk"),
+}))
 
 RUB = {"suffix": " ₽", "decimals": 0}
 # Плавная кривая вместо ломаной у дневных графиков.
@@ -277,6 +307,94 @@ card("upsell", coll, "Допродажа принята, %",
      "scalar", colfmt(**{"Принята, %": {"suffix": " %"}}), "orders.created_date_msk",
      description="Из заказов, где предлагали товар из «С чем советуем».")
 
+# --- Себестоимость и маржа: справочники из таблицы (Товары, Себестоимость, Настройки, Приходы) ---
+RUB2 = {"suffix": " ₽", "decimals": 2}
+PCT = {"suffix": " %", "decimals": 1}
+MARGIN = "from analytics.v_order_margin where is_paid and not is_refunded [[and {{dates}}]]"
+LINES = ("from analytics.v_order_item_margin where is_paid and not is_refunded [[and {{dates}}]]")
+card("m_margin", coll, "Маржинальная прибыль",
+     f'select coalesce(sum(contribution_margin), 0) as "Маржинальная прибыль" {MARGIN}',
+     "scalar", colfmt(**{"Маржинальная прибыль": RUB}), "margin.paid_date_msk",
+     description="Выручка оплаченных заказов без возвратов минус себестоимость, эквайринг, чеки, УСН, "
+                 "доставка, прочие расходы и Claude API — по ставкам «Настроек» на дату оплаты.")
+card("m_pct", coll, "Маржа, % выручки",
+     f'select round(100 * sum(contribution_margin) / nullif(sum(total), 0), 1) as "Маржа, %" {MARGIN} having count(*) > 0',
+     "scalar", colfmt(**{"Маржа, %": PCT}), "margin.paid_date_msk")
+card("m_cogs", coll, "Себестоимость проданного",
+     f'select coalesce(sum(cogs), 0) as "Себестоимость" {MARGIN}',
+     "scalar", colfmt(**{"Себестоимость": RUB}), "margin.paid_date_msk",
+     description="Себестоимость товаров в оплаченных заказах — по вкладке «Себестоимость» на дату оплаты.")
+card("m_avg", coll, "Маржа на заказ",
+     f'select round(avg(contribution_margin), 0) as "Маржа на заказ" {MARGIN} having count(*) > 0',
+     "scalar", colfmt(**{"Маржа на заказ": RUB}), "margin.paid_date_msk")
+card("m_waterfall", coll, "Из чего сложилась маржа",
+     f"with m as (select * {MARGIN})\n"
+     'select "Статья", "Сумма" from (\n'
+     "  select 1 as o, 'Выручка' as \"Статья\", sum(total) as \"Сумма\" from m\n"
+     "  union all select 2, 'Себестоимость товаров', -sum(cogs) from m\n"
+     "  union all select 3, 'Эквайринг', -sum(acquiring) from m\n"
+     "  union all select 4, 'Чеки', -sum(fiscalization) from m\n"
+     "  union all select 5, 'Резерв УСН', -sum(usn_reserve) from m\n"
+     "  union all select 6, 'Доставка', -sum(delivery_expense) from m\n"
+     "  union all select 7, 'Прочие на заказ', -sum(other_variable) from m\n"
+     "  union all select 8, 'Claude API', -sum(claude_api) from m\n"
+     ") x where \"Сумма\" is not null order by o",
+     "waterfall", {"graph.dimensions": ["Статья"], "graph.metrics": ["Сумма"], "waterfall.show_total": True},
+     "margin.paid_date_msk", description="Итог — маржинальная прибыль за выбранные даты.")
+card("m_orders", coll, "Маржа по заказам",
+     'select order_id as "№", paid_date_msk as "Оплачен", total as "Выручка", cogs as "Себестоимость",\n'
+     '  acquiring + fiscalization as "Эквайринг и чеки", usn_reserve as "УСН", delivery_expense as "Доставка",\n'
+     '  other_variable + claude_api as "Прочее", contribution_margin as "Маржа", margin_pct as "Маржа, %",\n'
+     '  lines_without_cost as "Строк без себестоимости"\n'
+     f"{MARGIN} order by order_id desc",
+     "table", colfmt(**{"Маржа, %": PCT}), "margin.paid_date_msk",
+     description="«Строк без себестоимости» больше нуля — товар не связан со справочником или себестоимость "
+                 "не задана, и маржа заказа завышена.")
+card("m_by_product", coll, "Маржа по товарам: продажи",
+     'select coalesce(product_name, item_name) as "Товар", sum(quantity) as "Продано, шт", sum(amount) as "Выручка",\n'
+     '  sum(cogs) as "Себестоимость", sum(gross_margin) as "Валовая маржа",\n'
+     '  round(100 * sum(gross_margin) / nullif(sum(amount), 0), 1) as "Валовая маржа, %"\n'
+     f"{LINES} and has_cost group by 1 order by 5 desc",
+     "table", colfmt(**{"Валовая маржа, %": PCT}), "items_margin.paid_date_msk",
+     description="Валовая — выручка товара минус его себестоимость, без эквайринга, налога и доставки.")
+card("m_missing", coll, "Продано без себестоимости",
+     'select item_name as "Товар в заказе", sum(quantity) as "Продано, шт", sum(amount) as "Выручка",\n'
+     "  case when product_code is null then 'не связан со справочником' else 'нет себестоимости на дату' end as \"Почему\"\n"
+     f"{LINES} and not has_cost group by 1, 4 order by 3 desc",
+     "table", {}, "items_margin.paid_date_msk",
+     description="Не связан — «Название в каталоге бота» на вкладке «Товары» не совпадает с названием в "
+                 "«Каталоге SKU».")
+card("ref_products", coll, "Справочник: себестоимость и маржа на единицу",
+     'select code as "Код", name as "Товар", kind as "Тип", retail_price as "Розница", unit_cost as "Себестоимость",\n'
+     '  unit_margin as "Маржа, ₽", margin_pct as "Маржа, %",\n'
+     "  case when in_bot_catalog then 'да' else '' end as \"Продаёт бот\", bot_price as \"Цена бота\",\n"
+     '  bot_unit_margin as "Маржа по цене бота, ₽", bot_margin_pct as "Маржа по цене бота, %", components as "Состав"\n'
+     "from analytics.v_ref_products where active order by kind, unit_margin desc nulls last",
+     "table", colfmt(**{"Маржа, %": PCT, "Маржа по цене бота, %": PCT}),
+     description="Вкладки «Товары», «Состав» и «Себестоимость» таблицы каталога, себестоимость — действующая "
+                 "сегодня. Маржа здесь — только цена минус себестоимость, без эквайринга, налога и доставки.")
+card("ref_margin_chart", coll, "Маржа на единицу по рознице",
+     'select name as "Товар", unit_margin as "Маржа, ₽" from analytics.v_ref_products\n'
+     "where active and unit_margin is not null order by 2 desc",
+     "row", {"graph.dimensions": ["Товар"], "graph.metrics": ["Маржа, ₽"], **colfmt(**{"Маржа, ₽": RUB})},
+     description="Розничная цена справочника минус себестоимость единицы.")
+card("ref_settings", coll, "Настройки, действующие сегодня",
+     'select name as "Параметр", case when unit = \'доля\' then round(value * 100, 2)::text || \' %\'\n'
+     "  else trim(trailing '.' from trim(trailing '0' from value::text)) || coalesce(' ' || unit, '') end as \"Значение\",\n"
+     '  valid_from as "Действует с", source as "Источник", comment as "Комментарий", key as "Ключ"\n'
+     "from analytics.v_ref_settings order by key",
+     "table", {}, description="Вкладка «Настройки»: по каждому ключу — строка с самой поздней наступившей датой.")
+card("ref_costs", coll, "История себестоимости",
+     'select name as "Товар", valid_from as "С", valid_to as "По", unit_cost as "Себестоимость",\n'
+     "  case when is_current then 'действует' else '' end as \"Сейчас\", source as \"Источник\"\n"
+     "from analytics.v_ref_costs order by name, valid_from desc",
+     "table", colfmt(**{"Себестоимость": RUB2}))
+card("ref_stock", coll, "Приходы и инвентаризация",
+     'select move_date as "Дата", operation as "Операция", name as "Сорт", quantity as "Количество", unit as "Ед.",\n'
+     '  amount as "Сумма", document as "Документ", comment as "Комментарий"\n'
+     "from analytics.v_ref_stock_moves order by move_date desc, name",
+     "table", colfmt(**{"Сумма": RUB2}))
+
 # --- проверка: каждый вопрос выполняется без ошибки --------------------------------------------
 bad = 0
 for key, (cid, _, _) in CARDS.items():
@@ -321,7 +439,9 @@ def make(name, desc, parameters, dashcards, tabs=None):
 
 # Один дашборд «Сводка»: вкладка «Обзор» — главное на одном экране (те же вопросы, что
 # на остальных вкладках), дальше вкладки по темам. Фильтр «Период» — только у финансовых.
-T = {"Обзор": -1, "Деньги": -2, "Воронка": -3, "Заказы": -4, "Удержание": -5, "Ассортимент": -6}
+T = {"Обзор": -1, "Деньги": -2, "Воронка": -3, "Заказы": -4, "Удержание": -5, "Ассортимент": -6,
+     "Себестоимость и маржа": -7}
+MT = T["Себестоимость и маржа"]
 make("Сводка", "Деньги и продажи на одном дашборде. Выписка обновляется в 07:00 и 21:00 МСК, заказы — сразу. "
      "Без тестовых клиентов и заказов.", [P_PERIOD, P_DATES], [
     # Обзор
@@ -355,4 +475,13 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     # Ассортимент
     dc("by_product", 0, 0, 12, 8, T["Ассортимент"]), dc("by_pack", 0, 12, 6, 6, T["Ассортимент"]),
     dc("upsell", 0, 18, 6, 3, T["Ассортимент"]), dc("assort_tbl", 8, 0, 24, 8, T["Ассортимент"]),
+    # Себестоимость и маржа
+    dc("m_margin", 0, 0, 6, 3, MT), dc("m_pct", 0, 6, 6, 3, MT), dc("m_cogs", 0, 12, 6, 3, MT),
+    dc("m_avg", 0, 18, 6, 3, MT),
+    dc("m_waterfall", 3, 0, 12, 7, MT), dc("ref_margin_chart", 3, 12, 12, 7, MT),
+    dc("ref_products", 10, 0, 24, 8, MT),
+    dc("m_by_product", 18, 0, 14, 6, MT), dc("m_missing", 18, 14, 10, 6, MT),
+    dc("m_orders", 24, 0, 24, 8, MT),
+    dc("ref_settings", 32, 0, 14, 9, MT), dc("ref_costs", 32, 14, 10, 9, MT),
+    dc("ref_stock", 41, 0, 24, 6, MT),
 ], tabs=[{"id": v, "name": k} for k, v in T.items()])
