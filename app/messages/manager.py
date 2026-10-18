@@ -43,6 +43,8 @@ CARRIER_FAILED = "carrier_failed"
 STOREFRONT_ORDER = "storefront_order"
 CLIENT_UNREACHABLE = "client_unreachable"
 CATALOG_SHEET = "catalog_sheet"
+# Справочники из таблицы (себестоимость, настройки): строки не применены — в Ops-чат.
+REFERENCES = "references"
 FEEDBACK = "feedback"
 
 

@@ -547,8 +547,236 @@ V_CLIENTS = View(
     ),
 )
 
+# --- справочники из таблицы: себестоимость и маржа ------------------------------
+# Источник — вкладки «Товары», «Себестоимость», «Настройки», «Приходы» той же
+# Google Таблицы, что каталог бота (`analytics/references.py` кладёт их в
+# public.ref_*). Себестоимость и ставки берутся на дату оплаты заказа: строка
+# с самой поздней датой «Действует с», не позже этой даты.
+
+_TODAY_MSK = "(now() at time zone 'Europe/Moscow')::date"
+
+
+def _cost_on(code: str, on_date: str) -> str:
+    return (f"(select c.unit_cost from ref_costs c where c.code = {code} and c.valid_from <= {on_date} "
+            "order by c.valid_from desc limit 1)")
+
+
+V_REF_PRODUCTS = View(
+    name="v_ref_products",
+    comment=(
+        "Товары из справочника (вкладка «Товары»), по строке на товар: розничная цена, себестоимость, "
+        "действующая сегодня, маржа на единицу, и то же по цене, по которой продаёт бот (каталог бота "
+        "связан по «Названию в каталоге бота»). Без продаж — это юнит-экономика справочника."
+    ),
+    columns=(
+        Column("code", "p.code::text", "Код товара — общий для всех вкладок справочников."),
+        Column("name", "p.name::text", "Название товара в справочнике."),
+        Column("kind", "p.kind::text", "Тип: пачка, блин, набор, сет."),
+        Column("weight_g", "p.weight_g::numeric(12,3)", "Вес, г."),
+        Column("retail_price", "p.retail_price::numeric(12,2)", "Розничная цена из справочника, руб."),
+        Column("unit_cost", "cost.unit_cost::numeric(12,2)",
+               "Себестоимость единицы, действующая сегодня, руб. Пусто — себестоимость не задана."),
+        Column("cost_valid_from", "cost.valid_from", "С какой даты действует эта себестоимость."),
+        Column("unit_margin", "(p.retail_price - cost.unit_cost)::numeric(12,2)",
+               "Маржа на единицу по розничной цене справочника, руб.: цена − себестоимость."),
+        Column("margin_pct", "round(100 * (p.retail_price - cost.unit_cost) / nullif(p.retail_price, 0), 1)::numeric(8,1)",
+               "Маржа по розничной цене справочника, % от цены."),
+        Column("active", "p.active", "Товар активен в справочнике."),
+        Column("role", "p.role::text", "Роль товара в ассортименте (первый заказ, допродажа…)."),
+        Column("bot_name", "p.bot_name::text", "Название в каталоге бота. Пусто — «нет в каталоге»."),
+        Column("in_bot_catalog", "bot.price is not null", "Бот сейчас продаёт этот товар (есть в «Каталоге SKU»)."),
+        Column("bot_price", "bot.price::numeric(12,2)", "Цена, по которой продаёт бот, руб."),
+        Column("bot_unit_margin", "(bot.price - cost.unit_cost)::numeric(12,2)",
+               "Маржа на единицу по цене бота, руб."),
+        Column("bot_margin_pct", "round(100 * (bot.price - cost.unit_cost) / nullif(bot.price, 0), 1)::numeric(8,1)",
+               "Маржа по цене бота, % от цены."),
+        Column("bot_in_stock", "bot.in_stock", "В каталоге бота отмечен «в наличии»."),
+        Column("components", "comp.list", "Состав набора или сета: сорта и количество (вкладка «Состав»)."),
+        Column("supplier_sku", "p.supplier_sku::text", "Артикул поставщика."),
+    ),
+    body=(
+        "from ref_products p\n"
+        "left join lateral (select c.unit_cost, c.valid_from from ref_costs c\n"
+        f"  where c.code = p.code and c.valid_from <= {_TODAY_MSK} order by c.valid_from desc limit 1) cost on true\n"
+        "left join lateral (select (e->>'price')::numeric as price,\n"
+        "    coalesce((e->>'in_stock')::boolean, true) as in_stock\n"
+        "  from catalog_snapshot s cross join lateral jsonb_array_elements(s.items::jsonb) e\n"
+        "  where p.bot_name is not null and lower(e->>'name') = lower(p.bot_name) limit 1) bot on true\n"
+        "left join lateral (select string_agg(coalesce(cp.name, x.component_code) || ' ' || x.quantity::float8 || "
+        "coalesce(' ' || x.unit, ''), ' · ' order by x.component_code) as list\n"
+        "  from ref_composition x left join ref_products cp on cp.code = x.component_code\n"
+        "  where x.product_code = p.code and x.component_code <> p.code) comp on true"
+    ),
+)
+
+V_REF_COSTS = View(
+    name="v_ref_costs",
+    comment="История себестоимости (вкладка «Себестоимость»): по строке на товар и дату «Действует с».",
+    columns=(
+        Column("code", "c.code::text", "Код товара."),
+        Column("name", "p.name::text", "Название товара."),
+        Column("valid_from", "c.valid_from", "Действует с этой даты."),
+        Column("valid_to", "(lead(c.valid_from) over (partition by c.code order by c.valid_from) - 1)",
+               "Действовала по эту дату включительно. Пусто — действует до сих пор."),
+        Column("unit_cost", "c.unit_cost::numeric(12,2)", "Себестоимость единицы, руб."),
+        Column("is_current", f"c.valid_from = max(c.valid_from) filter (where c.valid_from <= {_TODAY_MSK}) "
+               "over (partition by c.code)", "Это значение действует сегодня."),
+        Column("source", "c.source::text", "Откуда цифра (финмодель, счёт поставщика…)."),
+        Column("comment", "c.comment::text", "Из чего сложилась себестоимость."),
+    ),
+    body="from ref_costs c\nleft join ref_products p on p.code = c.code",
+)
+
+V_REF_SETTINGS = View(
+    name="v_ref_settings",
+    comment=(
+        "Параметры магазина, действующие сегодня (вкладка «Настройки»): эквайринг, чеки, УСН, упаковка, "
+        "CAC… Проценты — долей (0.034 = 3,4 %)."
+    ),
+    columns=(
+        Column("key", "s.key::text", "Ключ параметра."),
+        Column("name", "s.name::text", "Что это за параметр."),
+        Column("value", "s.value::numeric(16,6)", "Значение; для долей — 0.034 = 3,4 %."),
+        Column("unit", "s.unit::text", "Единица: ₽/заказ, ₽/шт, доля…"),
+        Column("valid_from", "s.valid_from", "Действует с этой даты."),
+        Column("source", "s.source::text", "Откуда значение."),
+        Column("comment", "s.comment::text", "Комментарий."),
+    ),
+    body=(
+        "from (select distinct on (key) * from ref_settings\n"
+        f"  where valid_from <= {_TODAY_MSK} order by key, valid_from desc) s"
+    ),
+)
+
+V_REF_STOCK_MOVES = View(
+    name="v_ref_stock_moves",
+    comment="Приходы, списания и инвентаризация сортов (вкладка «Приходы и инвентаризация»).",
+    columns=(
+        Column("move_date", "m.move_date", "Дата операции."),
+        Column("operation", "m.operation::text", "Операция: приход, списание, инвентаризация."),
+        Column("code", "m.code::text", "Код сорта."),
+        Column("name", "p.name::text", "Название сорта."),
+        Column("quantity", "m.quantity::numeric(14,3)", "Количество."),
+        Column("unit", "m.unit::text", "Единица: г, шт."),
+        Column("amount", "m.amount::numeric(12,2)", "Сумма партии, руб."),
+        Column("unit_amount", "round(m.amount / nullif(m.quantity, 0), 4)::numeric(14,4)", "Сумма за единицу (за грамм или штуку), руб."),
+        Column("document", "nullif(m.document, '')::text", "Документ: заявка, накладная."),
+        Column("comment", "m.comment::text", "Комментарий."),
+    ),
+    body="from ref_stock_moves m\nleft join ref_products p on p.code = m.code",
+)
+
+_ON_DATE = "coalesce(o.paid_date_msk, o.created_date_msk)"
+
+V_ORDER_ITEM_MARGIN = View(
+    name="v_order_item_margin",
+    comment=(
+        "Позиции заказов с себестоимостью на дату оплаты, без тестовых заказов. Товар связан со справочником "
+        "по «Названию в каталоге бота». Маржа строки — сумма минус себестоимость, без эквайринга, налога и "
+        "доставки (они — в v_order_margin)."
+    ),
+    columns=(
+        Column("order_id", "li.order_id", "Номер заказа."),
+        Column("line_no", "li.line_no", "Номер строки в заказе."),
+        Column("paid_date_msk", "o.paid_date_msk", "Дата оплаты по Москве."),
+        Column("is_paid", "o.is_paid", "Заказ оплачен."),
+        Column("is_refunded", "o.is_refunded", "По заказу был возврат."),
+        Column("item_name", "li.item_name", "Товар как в заказе."),
+        Column("product_code", "ref.code::text", "Код товара в справочнике. Пусто — не связан со справочником."),
+        Column("product_name", "ref.name::text", "Название в справочнике."),
+        Column("quantity", "li.quantity", "Количество."),
+        Column("amount", "li.amount", "Сумма по строке, руб."),
+        Column("unit_cost", f"{_cost_on('ref.code', _ON_DATE)}::numeric(12,2)",
+               "Себестоимость единицы на дату оплаты, руб. Пусто — себестоимость не задана."),
+        Column("cogs", f"(li.quantity * {_cost_on('ref.code', _ON_DATE)})::numeric(12,2)",
+               "Себестоимость строки, руб.: количество × себестоимость единицы."),
+        Column("gross_margin", f"(li.amount - li.quantity * {_cost_on('ref.code', _ON_DATE)})::numeric(12,2)",
+               "Валовая маржа строки, руб.: сумма − себестоимость."),
+        Column("has_cost", f"{_cost_on('ref.code', _ON_DATE)} is not null",
+               "Себестоимость найдена. Нет — товар не связан со справочником или себестоимость не задана."),
+    ),
+    body=(
+        f"from {SCHEMA}.v_order_items li\n"
+        f"join {SCHEMA}.v_orders o on o.order_id = li.order_id\n"
+        "left join lateral (select p.code, p.name from ref_products p\n"
+        "  where p.bot_name is not null and lower(p.bot_name) in (lower(li.item_name), lower(li.product))\n"
+        "  order by p.code limit 1) ref on true"
+    ),
+)
+
+
+def _setting(key: str) -> str:
+    return f"max(cur.value) filter (where cur.key = {_quote(key)})"
+
+
+V_ORDER_MARGIN = View(
+    name="v_order_margin",
+    comment=(
+        "Маржа по заказу, по строке на заказ, без тестовых. Выручка — total (товары + доставка для клиента); "
+        "из неё вычитаются себестоимость товаров, эквайринг с НДС на комиссию, чеки, резерв УСН, цена "
+        "перевозчика, прочие переменные расходы и Claude API — по ставкам «Настроек» на дату оплаты. "
+        "Считать по оплаченным без возврата (is_paid and not is_refunded)."
+    ),
+    columns=(
+        Column("order_id", "o.order_id", "Номер заказа."),
+        Column("created_date_msk", "o.created_date_msk", "Дата создания по Москве."),
+        Column("paid_date_msk", "o.paid_date_msk", "Дата оплаты по Москве."),
+        Column("is_paid", "o.is_paid", "Заказ оплачен."),
+        Column("is_refunded", "o.is_refunded", "По заказу был возврат."),
+        Column("total", "o.total", "Выручка заказа, руб.: товары + доставка для клиента."),
+        Column("items_total", "o.items_total", "Товары, руб."),
+        Column("cogs", "coalesce(li.cogs, 0)::numeric(12,2)", "Себестоимость товаров, руб."),
+        Column("lines_without_cost", "coalesce(li.missing, 0)::int",
+               "Строк без себестоимости: маржа заказа завышена на их себестоимость."),
+        Column("acquiring", f"round(o.total * coalesce({_setting('acquiring_cards_rate')}, 0) "
+               f"* (1 + coalesce({_setting('acquiring_vat_rate')}, 0)), 2)::numeric(12,2)",
+               "Эквайринг с НДС на комиссию, руб."),
+        Column("fiscalization", f"round(o.total * coalesce({_setting('fiscalization_rate')}, 0), 2)::numeric(12,2)",
+               "Чеки (фискализация), руб."),
+        Column("usn_reserve", f"round(o.total * coalesce({_setting('usn_reserve_rate')}, 0), 2)::numeric(12,2)",
+               "Резерв УСН, руб."),
+        Column("delivery_expense", "o.carrier_delivery_cost",
+               "Цена перевозчика, руб. (с надбавкой на эквайринг, которую бот кладёт в цену доставки)."),
+        Column("other_variable", f"coalesce({_setting('order_other_variable_rub')}, 0)::numeric(12,2)",
+               "Прочие переменные расходы на заказ (коробка, наполнитель…), руб."),
+        Column("claude_api", f"round(coalesce({_setting('api_usd_per_consultation')}, 0) "
+               f"* coalesce({_setting('usd_rub')}, 0), 2)::numeric(12,2)", "Claude API на консультацию, руб. (оценка)."),
+        Column(
+            "contribution_margin",
+            f"(o.total - coalesce(li.cogs, 0)"
+            f" - round(o.total * coalesce({_setting('acquiring_cards_rate')}, 0) * (1 + coalesce({_setting('acquiring_vat_rate')}, 0)), 2)"
+            f" - round(o.total * coalesce({_setting('fiscalization_rate')}, 0), 2)"
+            f" - round(o.total * coalesce({_setting('usn_reserve_rate')}, 0), 2)"
+            f" - o.carrier_delivery_cost - coalesce({_setting('order_other_variable_rub')}, 0)"
+            f" - round(coalesce({_setting('api_usd_per_consultation')}, 0) * coalesce({_setting('usd_rub')}, 0), 2))::numeric(12,2)",
+            "Маржинальная прибыль заказа, руб.: выручка минус все переменные расходы выше.",
+        ),
+        Column(
+            "margin_pct",
+            f"round(100 * (o.total - coalesce(li.cogs, 0)"
+            f" - round(o.total * coalesce({_setting('acquiring_cards_rate')}, 0) * (1 + coalesce({_setting('acquiring_vat_rate')}, 0)), 2)"
+            f" - round(o.total * coalesce({_setting('fiscalization_rate')}, 0), 2)"
+            f" - round(o.total * coalesce({_setting('usn_reserve_rate')}, 0), 2)"
+            f" - o.carrier_delivery_cost - coalesce({_setting('order_other_variable_rub')}, 0)"
+            f" - round(coalesce({_setting('api_usd_per_consultation')}, 0) * coalesce({_setting('usd_rub')}, 0), 2))"
+            " / nullif(o.total, 0), 1)::numeric(8,1)",
+            "Маржинальная прибыль, % выручки.",
+        ),
+    ),
+    body=(
+        f"from {SCHEMA}.v_orders o\n"
+        "left join lateral (select sum(m.cogs) as cogs, count(*) filter (where not m.has_cost) as missing\n"
+        f"  from {SCHEMA}.v_order_item_margin m where m.order_id = o.order_id) li on true\n"
+        "left join lateral (select distinct on (s.key) s.key, s.value from ref_settings s\n"
+        f"  where s.valid_from <= {_ON_DATE} order by s.key, s.valid_from desc) cur on true\n"
+        "group by o.order_id, o.created_date_msk, o.paid_date_msk, o.is_paid, o.is_refunded, o.total, o.items_total,\n"
+        "  o.carrier_delivery_cost, li.cogs, li.missing"
+    ),
+)
+
 # Порядок важен: справочники раньше представлений, которые к ним джойнятся.
-VIEWS = (DIM_STATUS, DIM_EVENT, V_ORDERS, V_ORDER_ITEMS, V_FUNNEL_EVENTS, V_TOUCHES, V_CLIENTS)
+VIEWS = (DIM_STATUS, DIM_EVENT, V_ORDERS, V_ORDER_ITEMS, V_FUNNEL_EVENTS, V_TOUCHES, V_CLIENTS,
+         V_REF_PRODUCTS, V_REF_COSTS, V_REF_SETTINGS, V_REF_STOCK_MOVES, V_ORDER_ITEM_MARGIN, V_ORDER_MARGIN)
 
 
 def statements() -> list[str]:
