@@ -40,6 +40,7 @@ from app.core.config import settings
 from app.core.database import get_session_factory
 from app.messages import client as client_messages, funnel, marketing, templates
 from app.messages.models import ClientNotice, ClientPreference, FunnelEvent
+from app.modules.consent import service as consent
 from app.modules.dialog import escalation_state, history as dialog_history
 from app.modules.dialog.models import ConversationMessage
 from app.modules.orders import repository as orders_repository, state
@@ -49,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 # Порядок — приоритет: созрело несколько, уходит первое.
 KINDS = (templates.FEEDBACK_ASK, templates.REPEAT_NUDGE, templates.SECOND_TOUCH, templates.REACTIVATION)
+# Реклама в смысле согласия на рассылку: предлагают купить ещё. Без согласия
+# (`consent.marketing_filter`) не уходят.
+ADVERTISING = (templates.REPEAT_NUDGE, templates.SECOND_TOUCH, templates.REACTIVATION)
 NAMES = {
     templates.FEEDBACK_ASK: "оценка",
     templates.REPEAT_NUDGE: "«Повторить заказ?»",
@@ -246,8 +250,17 @@ async def check(
 
     decisions: list[Decision] = []
     sent = 0
+    # Реклама — только тем, кто согласился на рассылку (журнал согласий).
+    # Просьба оценить заказ — не реклама, она идёт и без этого согласия.
+    allowed = await consent.marketing_filter(by_peer)
     for peer, queue in by_peer.items():
         queue.sort(key=lambda t: (KINDS.index(t.kind), t.due))
+        if peer not in allowed:
+            for touch in [t for t in queue if t.kind in ADVERTISING]:
+                decisions.append(Decision(touch.kind, peer, touch.order.id, "blocked", "нет согласия на рассылку"))
+            queue = [t for t in queue if t.kind not in ADVERTISING]
+            if not queue:
+                continue
         reason = await blocker(peer, now)
         if reason is not None:
             decisions += [Decision(t.kind, peer, t.order.id, "blocked", reason) for t in queue]

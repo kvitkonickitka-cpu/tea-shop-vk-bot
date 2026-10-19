@@ -183,8 +183,19 @@ async def is_unreachable(peer_id: int) -> bool:
     return bool(row and row.unreachable_at)
 
 
-async def opt_out(peer_id: int) -> None:
-    """Отписать от продающих сообщений. Повторная отписка ничего не меняет."""
+async def opt_out(peer_id: int, *, record_consent: bool = True) -> None:
+    """Отписать от продающих сообщений. Повторная отписка ничего не меняет.
+
+    «Стоп» и «не пишите» — это и отзыв согласия на рассылку: строка в журнал
+    согласий. `record_consent=False` — отзыв вызывающий уже записал сам.
+    """
+    if record_consent:
+        from app.modules.consent import service as consent
+
+        try:
+            await consent.revoke(peer_id, (consent.MARKETING,), method="stop")
+        except Exception:
+            logger.exception("Не записали отзыв согласия на рассылку peer_id=%s", peer_id)
     try:
         session_factory = get_session_factory()
     except RuntimeError:

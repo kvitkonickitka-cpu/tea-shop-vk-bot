@@ -61,6 +61,8 @@ SAMPLES = {
     "brewing": [{"name": "Те Гуань Инь", "text": "85 °C", "video": ""}], "hint": "", "per_point_prices": True,
     "shown": [{"n": 1, "address": "Краснодар, Ставропольская улица, 230", "price": 121}],
     "name": "Иванов Иван", "method": "ozon_pvz", "label": "Ozon, пункт выдачи: Краснодар, Красная, 1",
+    "buttons": True, "listed": "Те Гуань Инь × 1", "per_month": 2, "pd_active": True, "marketing_active": False,
+    "vk_user_id": 123456, "due": date(2026, 11, 3),
 }
 
 

@@ -23,6 +23,9 @@
 #   scripts/api.sh retention/delivery-stats   как часто доходит «вручено» по Ozon и СДЭКу
 #   scripts/api.sh pii/migrate            перенос истории на метки: пробный прогон (?apply=1 — применить)
 #   scripts/api.sh analytics/sync         что будет помечено тестовым (?apply=1 — пометить)
+#   scripts/api.sh consents/123456        журнал согласий покупателя (VK ID)
+#   scripts/api.sh 'consents/123456/revoke?source=email'   отзыв письмом (source=manager — менеджеру)
+#   scripts/api.sh 'clients/123456/anonymize'   обезличить после отзыва: пробный прогон (?apply=1 — применить)
 
 set -eu
 

@@ -62,6 +62,16 @@ async def set_draft(peer_id: int, draft: OrderDraft) -> None:
     # любой правки становится неактуальной — нажатие не сделает то, чего
     # клиент уже не видит.
     draft.details["version"] = int(draft.details.get("version") or 0) + 1
+    # Последний рубеж ворот согласия: без согласия на ПДн личное в черновик не
+    # пишется, откуда бы оно ни пришло (инструмент, кнопка, витрина).
+    from app.modules.consent import service as consent
+
+    if any(draft.details.get(key) for key in consent.PD_DETAIL_KEYS) or (
+        draft.delivery_method == "cdek_courier" and draft.details.get("address")
+    ):
+        if not await consent.has_pd(peer_id):
+            removed = consent.strip_pd(draft.details, draft.delivery_method)
+            logger.warning("peer_id=%s: без согласия на ПДн не записали в черновик %s", peer_id, ", ".join(removed))
     # Личное из черновика — сразу в метки: получатель из витрины или прошлого
     # заказа появится в сводке, истории и промпте, и везде должен стать меткой.
     from app import privacy

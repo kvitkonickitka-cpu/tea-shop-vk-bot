@@ -108,7 +108,7 @@ async def clean(db):
         "heartbeats", "marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events", "ops_events",
         "order_ratings", "clients", "pii_vault", "catalog_snapshot",
         "ref_products", "ref_composition", "ref_costs", "ref_settings", "ref_stock_moves", "ref_sync",
-        "llm_usage", "anthropic_costs", "anthropic_cost_sync",
+        "llm_usage", "anthropic_costs", "anthropic_cost_sync", "consents",
     )
     async with db() as session:
         rows = (
@@ -149,6 +149,32 @@ def daytime(monkeypatch):
     monkeypatch.setattr(
         worktime, "is_quiet", lambda moment=None: real(moment if moment is not None else noon)
     )
+
+
+@pytest.fixture(autouse=True)
+def consent_given(request, monkeypatch):
+    """Согласие на ПДн и на рассылку по умолчанию есть: сценарии заказа проверяют заказ.
+
+    Сами ворота согласия проверяет tests/test_consent.py — с маркером
+    `real_consent` там работает настоящий журнал.
+    """
+    if request.node.get_closest_marker("real_consent"):
+        return
+    from app.modules.consent import service as consent
+
+    async def yes(peer_id):
+        return True
+
+    async def everyone(peer_ids):
+        return {int(peer) for peer in peer_ids}
+
+    async def not_asked(peer_id):
+        return False
+
+    monkeypatch.setattr(consent, "has_pd", yes)
+    monkeypatch.setattr(consent, "marketing_allowed", yes)
+    monkeypatch.setattr(consent, "marketing_filter", everyone)
+    monkeypatch.setattr(consent, "ask_marketing_once", not_asked)
 
 
 @pytest.fixture(autouse=True)

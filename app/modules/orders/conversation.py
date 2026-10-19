@@ -13,6 +13,7 @@ from pathlib import Path
 from app import privacy
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
+from app.modules.consent import service as consent
 from app.modules.delivery import cdek_client, ozon_catalog, ozon_client, ozon_quote
 from app.modules.delivery import pricing as delivery_pricing
 from app.messages import client as client_messages, funnel, manager as manager_messages, marketing, templates
@@ -402,6 +403,8 @@ class ToolExecution:
     # детерминирован и не зависит от остального контекста реплики.
     tool_result: str
     client_reply: str | None = None
+    # Инструмент не выполнен: нет согласия на ПДн. К ответу — запрос согласия.
+    needs_consent: bool = False
 
 
 def _tools_for_stage(
@@ -766,6 +769,11 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
     result += upsell_line
     if recalc:
         return result + recalc
+    if not await consent.has_pd(peer_id):
+        # Без согласия на ПДн — только состав: ни «как в прошлый раз» по
+        # прошлым данным, ни вопроса «куда везти». Просьбу о согласии с
+        # кнопками код допишет к ответу сам.
+        return result + _NO_CONSENT_AFTER_PROPOSE
     # Пункт выдачи называем первым и объясняем почему: клиенту проще
     # согласиться на вариант, который уже предложен, чем выбирать из списка.
     # Первым идёт Ozon: на живом расчёте он вышел 121 руб против 397 у
@@ -2276,6 +2284,19 @@ async def _notify_manager(
     return await manager_messages.notify(kind, message, peer_id=peer_id, chat_id=chat_id)
 
 
+async def _for_manager(peer_id: int, text: str) -> str:
+    """Текст для телеграма — с метками вместо ФИО, телефона, почты и адреса."""
+    if not text:
+        return text
+    try:
+        masked = await privacy.tokenize(peer_id, text, names=False, addresses=True)
+    except Exception:
+        logger.exception("Метки: не заменили данные в вопросе менеджеру peer_id=%s", peer_id)
+        masked = text
+    # Без хранилища меток (флаг выключен) — хотя бы телефоны и почты.
+    return privacy.scrub(masked)[0]
+
+
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
     if await escalation_state.is_open(peer_id):
         return ToolExecution(
@@ -2297,8 +2318,11 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
             await feedback.mark_complaint(peer_id)
         except Exception:
             logger.exception("Не отметили жалобу у peer_id=%s", peer_id)
-    question = html.escape(question_raw)
-    reason = html.escape(reason_raw)
+    # Телеграм — за границей (и ходим к нему через прокси в Нидерландах):
+    # личное клиента туда не уходит. Модель писала метки, инструмент получил
+    # значения — для менеджера снова метки, настоящее видно в диалоге ВК.
+    question = html.escape(await _for_manager(peer_id, question_raw))
+    reason = html.escape(await _for_manager(peer_id, reason_raw))
     dialog_link = vk_client.dialog_link(peer_id)
     message = templates.manager_question(question, reason, dialog_link)
 
@@ -2472,7 +2496,32 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
     )
 
 
+# Инструменты, которые записывают или берут из прошлых заказов ФИО, телефон,
+# почту, адрес или пункт: без согласия на ПДн они не выполняются.
+_PD_TOOLS = {"set_delivery_method", "set_recipient", "confirm_order", "accept_offer", "repeat_order"}
+
+_NEED_CONSENT = (
+    "НЕ ВЫПОЛНЕНО: нет согласия клиента на обработку персональных данных, ничего не записано. "
+    "Не спрашивай ФИО, телефон, почту, адрес, город или пункт и не повторяй данные, если клиент "
+    "их прислал. Ответь коротко по сути (состав, цена, вопрос клиента); просьбу о согласии с "
+    "кнопками код допишет к твоему ответу сам — не пересказывай её."
+)
+_NO_CONSENT_AFTER_PROPOSE = (
+    "\nСогласия клиента на обработку персональных данных пока нет. Подтверди состав и сумму "
+    "одной-двумя фразами, допродажу можно. Не спрашивай, куда везти, и не проси данные: "
+    "просьбу о согласии с кнопками код допишет к твоему ответу сам."
+)
+
+
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
+    if name in _PD_TOOLS and not await consent.has_pd(peer_id):
+        # Ворота согласия — в коде, а не только в промпте: модель могла бы и
+        # не послушаться, а инструмент без согласия просто не сработает.
+        logger.info("peer_id=%s: %s без согласия на ПДн — не выполнен", peer_id, name)
+        return ToolExecution(_NEED_CONSENT, needs_consent=True)
+    if name == "propose_order" and not await consent.has_pd(peer_id):
+        tool_input = {key: value for key, value in tool_input.items()
+                      if key not in ("delivery_hint", "recipient_hint")}
     if name == "propose_order":
         result = await _execute_propose_order(peer_id, tool_input)
         return result if isinstance(result, ToolExecution) else ToolExecution(result)
@@ -2593,6 +2642,34 @@ _ASKED_NOT_TO_WRITE = (
 )
 
 
+_CONSENT_BLOCKED = "consent_blocked"
+_ORDER_TOOLS = {"propose_order", "add_to_order"}
+
+
+async def _with_consent_prompt(peer_id: int, text: str, called: set[str], spoken: str) -> str:
+    """Без согласия: к ответу — запрос согласия с кнопками, когда клиент идёт к заказу.
+
+    Когда: инструмент упёрся в ворота, ход собрал корзину, клиент прислал
+    данные (их код скрыл) или черновик есть, а запроса ещё не было. Просто
+    разговор о чае после запроса — без повторов.
+    """
+    from app.modules.orders import buttons
+
+    draft = await state.get_draft(peer_id)
+    # После «Не согласен» сам черновик о согласии не напоминает: только новая попытка заказа.
+    first_time = (draft is not None and not await consent.pd_prompt_pending(peer_id)
+                  and not await consent.pd_declined(peer_id))
+    pushing = _CONSENT_BLOCKED in called or called & _ORDER_TOOLS or consent.HIDDEN in (spoken or "")
+    if not (pushing or first_time):
+        return text
+    if draft is None and _CONSENT_BLOCKED not in called and consent.HIDDEN not in (spoken or ""):
+        return text
+    prompt, keyboard = await consent.pd_prompt(peer_id)
+    await consent.claim_pd_prompt(peer_id)
+    buttons.stash(peer_id, keyboard)
+    return f"{text}\n\n{prompt}"
+
+
 async def _with_buttons(peer_id: int, reply: str, *, consult: bool = False, with_points: bool = True) -> str:
     """Кнопки под ответом хода — по тому, чем ход закончился."""
     from app.modules.orders import buttons
@@ -2684,6 +2761,7 @@ async def _handle_turn(
 
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
+    pd_ok = await consent.has_pd(peer_id)
     storefront_note = ""
     if (
         (draft is None or draft.details.get("vk_order_id"))
@@ -2715,6 +2793,11 @@ async def _handle_turn(
     if bought:
         system_prompt += f"\n\n{await privacy.tokenize(peer_id, bought)}"
     system_prompt += f"\n\n{order_flow_prompt()}"
+    if not pd_ok:
+        declined = await consent.pd_declined(peer_id)
+        system_prompt += "\n\n" + (
+            templates.pd_consent_declined_note() if declined else templates.pd_consent_needed_note()
+        )
     system_prompt += f"\n\n{_describe_draft(draft)}"
     live = None
     if draft is None:
@@ -2725,7 +2808,7 @@ async def _handle_turn(
     if live is not None:
         system_prompt += "\n" + _describe_live_invoice(live)
     repeatable = None
-    if draft is None and live is None and repeat_one_tap.is_enabled():
+    if draft is None and live is None and pd_ok and repeat_one_tap.is_enabled():
         try:
             repeatable = await repeat_one_tap.repeatable_order(peer_id)
         except Exception:
@@ -2742,7 +2825,10 @@ async def _handle_turn(
         # Пояснение, почему повтор не выставил счёт, — один раз, этому ходу.
         draft.details.pop("repeat_note")
         await state.set_draft(peer_id, draft)
-    if draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
+    if not pd_ok:
+        # Без согласия прошлые пункт и получателя не предлагаем: это их данные.
+        pass
+    elif draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
         # То же предложение, что в ответе propose_order, — и для черновика
         # из витрины ВК, который собирается без propose_order.
         last = await repeat_delivery.last_for(peer_id)
@@ -2800,7 +2886,7 @@ async def _handle_turn(
     last_bot = next(
         (m["content"] for m in reversed(history) if m["role"] == "assistant" and isinstance(m["content"], str)), ""
     )
-    spoken = await privacy.tokenize(peer_id, spoken, stage=privacy.stages(draft, last_bot))
+    spoken = await privacy.tokenize(peer_id, spoken, stage=privacy.stages(draft, last_bot), addresses=True)
     system_prompt = system_prompt[:personal_from] + await privacy.tokenize(
         peer_id, system_prompt[personal_from:], names=False
     )
@@ -2864,6 +2950,8 @@ async def _handle_turn(
         # confirm_order: тот выставил счёт сам.
         names = {block.name for block, _ in executions}
         called |= names
+        if any(execution.needs_consent for _, execution in executions):
+            called.add(_CONSENT_BLOCKED)
         if (
             executions
             and executions[-1][1].client_reply is None
@@ -2944,6 +3032,8 @@ async def _handle_turn(
             text = await _ask_for_words(messages, system_prompt, response, spent, tools)
     if text is None:
         text = _NO_TEXT_FALLBACK
+    if not pd_ok and not stop_note:
+        text = await _with_consent_prompt(peer_id, text, called, spoken)
     if stop_note:
         # «Не пишите мне» — ответ без кнопок: ни пунктов, ни «Взять».
         reply = plain_text(text)

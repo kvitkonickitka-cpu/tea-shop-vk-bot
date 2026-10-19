@@ -48,6 +48,8 @@ REFERENCES = "references"
 # Счёт Anthropic не читается (админ-ключ) — в Ops-чат.
 ANTHROPIC_COSTS = "anthropic_costs"
 FEEDBACK = "feedback"
+# Покупатель отозвал согласие на ПДн — задача удалить данные в срок.
+PD_DELETE = "pd_delete"
 
 
 def _backoff(attempts: int) -> timedelta:

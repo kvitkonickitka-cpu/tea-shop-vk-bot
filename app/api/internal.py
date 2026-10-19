@@ -329,6 +329,65 @@ async def pii_migrate(request: Request):
     return await migrate.run(apply=request.query_params.get("apply") in ("1", "true", "да"))
 
 
+@router.post("/internal/consents/{vk_user_id}")
+async def consents_journal(vk_user_id: int, request: Request):
+    """Журнал согласий покупателя — по его запросу или для проверки.
+
+        scripts/api.sh consents/123456
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.consent import service as consent
+
+    return {
+        "vk_user_id": vk_user_id,
+        "действует": {"pd_processing": await consent.has_pd(vk_user_id),
+                      "marketing": await consent.marketing_allowed(vk_user_id)},
+        "редакция": settings.pd_consent_version,
+        "журнал": await consent.journal(vk_user_id),
+    }
+
+
+@router.post("/internal/consents/{vk_user_id}/revoke")
+async def consents_revoke(vk_user_id: int, request: Request):
+    """Отзыв, пришедший не через бота: письмом или менеджеру.
+
+        scripts/api.sh 'consents/123456/revoke?source=email'     (или source=manager)
+        scripts/api.sh 'consents/123456/revoke?source=email&only=marketing'   только рассылка
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.messages import marketing
+    from app.modules.consent import service as consent
+    from app.modules.orders import state
+
+    source = request.query_params.get("source") or consent.REVOKE_MANAGER
+    if source not in (consent.REVOKE_EMAIL, consent.REVOKE_MANAGER):
+        return Response(content="source — email или manager", media_type="text/plain", status_code=400)
+    only_marketing = request.query_params.get("only") == "marketing"
+    kinds = (consent.MARKETING,) if only_marketing else (consent.PD, consent.MARKETING)
+    await consent.revoke(vk_user_id, kinds, source=source, method="manual")
+    await marketing.opt_out(vk_user_id, record_consent=False)
+    if not only_marketing:
+        await state.clear_draft(vk_user_id)
+    return {"отозвано": list(kinds), "источник": source, "журнал": await consent.journal(vk_user_id)}
+
+
+@router.post("/internal/clients/{vk_user_id}/anonymize")
+async def clients_anonymize(vk_user_id: int, request: Request):
+    """Обезличить покупателя после отзыва согласия. Без apply — пробный прогон.
+
+        scripts/api.sh 'clients/123456/anonymize'            что изменится
+        scripts/api.sh 'clients/123456/anonymize?apply=1'    применить
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.consent import erase
+
+    flag = lambda name: request.query_params.get(name) in ("1", "true", "да")  # noqa: E731
+    return await erase.anonymize(vk_user_id, apply=flag("apply"), force=flag("force"))
+
+
 @router.post("/internal/retention/check")
 async def retention_check(request: Request):
     """Повторные касания для одного клиента — что ушло бы и почему нет.
