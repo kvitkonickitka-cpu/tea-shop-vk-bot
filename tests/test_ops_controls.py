@@ -155,3 +155,11 @@ async def test_ads_reminder_during_campaign(fin, db, sent):
 async def test_heartbeats_mark_daily_jobs(clean, sent):
     await controls.check_controls(now=NOW)
     assert await heartbeat.last_run("контроли: сводка") is not None
+
+
+async def test_morning_things_only_in_the_morning(clean, sent):
+    evening = datetime(2026, 11, 20, 19, 35, tzinfo=timezone.utc)  # 22:35 МСК
+    assert "сводка" not in await controls.check_controls(now=evening)
+    assert (await controls.morning_list(now=evening))["skipped"]
+    assert (await controls.ads_reminder(now=evening))["skipped"] == "не время"
+    assert sent == []

@@ -38,6 +38,13 @@ ADS_HOUR = 11
 MORNING_HOUR = 10
 CLOSE_HOUR = 10
 LIST_LIMIT = 10
+# Утреннее — только утром: после деплоя вечером «сегодня ещё не было» не должно
+# слать «дела на день» в 22:35. Пропустили окно — до завтра.
+MORNING_WINDOW_HOURS = 3
+
+
+def _in_window(local: datetime, start: int) -> bool:
+    return start <= local.hour < start + MORNING_WINDOW_HOURS
 
 
 @dataclass
@@ -142,7 +149,7 @@ async def check_controls(*, now: datetime | None = None, force_summary: bool = F
             alerted += 1
     result = {"тревог": alerted, "проблем": {c.key: len(c.orders) for c in checks if c.orders}}
     local = worktime.to_msk(now)
-    if force_summary or (local.hour >= SUMMARY_HOUR and not await _done_today("контроли: сводка", local)):
+    if force_summary or (_in_window(local, SUMMARY_HOUR) and not await _done_today("контроли: сводка", local)):
         await _ops(render_summary(checks, local))
         if not force_summary:
             await heartbeat.note("контроли: сводка")
@@ -179,8 +186,8 @@ async def ads_reminder(*, now: datetime | None = None, force: bool = False) -> d
 
     now = now or datetime.now(timezone.utc)
     local = worktime.to_msk(now)
-    if local.hour < ADS_HOUR and not force:
-        return {"skipped": "рано"}
+    if not force and not _in_window(local, ADS_HOUR):
+        return {"skipped": "не время"}
     if not await _exists("fin.ad_spend"):
         return {"skipped": "схемы fin нет"}
     yesterday = local.date() - timedelta(days=1)
@@ -206,7 +213,7 @@ async def morning_list(*, now: datetime | None = None, force: bool = False) -> d
     """Дела на день — менеджеру в 10:00 МСК. Пустые блоки не показываем."""
     now = now or datetime.now(timezone.utc)
     local = worktime.to_msk(now)
-    if not force and (local.hour < MORNING_HOUR or await _done_today("утренний список", local)):
+    if not force and (not _in_window(local, MORNING_HOUR) or await _done_today("утренний список", local)):
         return {"skipped": "не время или уже"}
     text_ = await render_morning(now)
     from app.messages import manager as manager_messages
