@@ -226,6 +226,46 @@ async def close_command(args: list[str], sender: dict, message: dict | None = No
     return "Чек-лист закрытия месяца отправлен."
 
 
+@command("codes", "/codes — партии; /codes <GTIN> <количество> — новая партия и файл для ЛК ЧЗ")
+async def codes_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.marking import circulation
+
+    if not args:
+        rows = await circulation.list_batches()
+        if not rows:
+            return "Партий кодов ещё нет."
+        return "<b>Партии кодов ЧЗ</b>\n" + "\n".join(
+            f"<code>{i}</code> GTIN {g}: {n} шт. — {st}, в заказах {used}" for i, g, n, st, used in rows)
+    if len(args) != 2 or not args[1].isdigit():
+        raise ValueError("Нужны GTIN и количество кодов.")
+    batch_id, rows = await circulation.create_batch(args[0], int(args[1]), by=who(sender))
+    _attachments[id(sender)] = [(f"chz_batch_{batch_id}.csv", circulation.export_csv(rows))]
+    return (f"Партия <code>{batch_id}</code>: GTIN {html.escape(args[0])}, {len(rows)} кодов — «не подан».\n"
+            "Файл ниже — для ввода в оборот в ЛК «Честного знака». Подали — "
+            f"<code>/circulation {batch_id} подан</code>, приняли — <code>/circulation {batch_id} принят</code>.")
+
+
+@command("circulation", "/circulation <партия> подан|принят")
+async def circulation_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.marking import circulation
+
+    if len(args) != 2 or not args[0].isdigit():
+        raise ValueError("Нужны номер партии и статус.")
+    if not await circulation.set_status(int(args[0]), args[1].casefold(), by=who(sender)):
+        return f"Партии {html.escape(args[0])} нет."
+    return f"Партия {args[0]}: {html.escape(args[1].casefold())}."
+
+
+@command("spoil", "/spoil <серийный номер или код> этикетка|брак|утеря|другое")
+async def spoil_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.marking import circulation
+
+    if len(args) < 2:
+        raise ValueError("Нужны код (или серийный номер) и причина.")
+    done = await circulation.write_off(" ".join(args[:-1]), args[-1], by=who(sender))
+    return f"Код списан: {html.escape(done)}. В заказ он попасть не должен — контроль это проверит."
+
+
 async def handle(message: dict, me: dict) -> bool:
     """Команда из чата Ops — выполнить и ответить. True — это была наша команда."""
     # Файл с подписью-командой (/act) — команда в caption.
