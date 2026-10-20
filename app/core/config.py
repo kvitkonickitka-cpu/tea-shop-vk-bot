@@ -507,6 +507,10 @@ class Settings(BaseSettings):
     # Сверка расхода Claude по учёту бота со счётом Anthropic за прошлый
     # месяц: расхождение больше этой доли — ⚠️ в Ops (app/modules/ops/anthropic_costs.py).
     anthropic_reconcile_tolerance: float = 0.05
+    # КУДиР (app/modules/payment/kudir.py): дата дохода по платежу ЮKassa —
+    # captured_at (покупатель оплатил) или payout_date (ЮKassa выплатила на
+    # счёт). Правило подтверждает бухгалтер; витрина пересоздаётся при старте.
+    kudir_income_date: str = "captured_at"
 
 
 settings = Settings()

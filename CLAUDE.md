@@ -714,6 +714,18 @@ Claude пишется с клиентом, сессией, заказом, эт�
 Воронка по шагам — `v_funnel_dialog_steps` / `v_funnel_steps`, время до
 счёта — `v_invoice_timing`, рубли Claude — `v_dialogs`, `v_llm_cost_by_dialog`.
 
+**Реестр ЮKassa и КУДиР** (`app/modules/payment/registry.py`, `kudir.py`):
+раз в день после выписки бот читает у ЮKassa платежи и возвраты (только
+GET) в `finance.yk_payments` / `yk_refunds` (комиссия — `fee` = amount −
+income_amount) и сверяет выплаты `cfo_in_yookassa` из выписки с днями
+платежей (`finance.yk_payouts`): расхождение > 1 ₽ или невыплаченное дольше
+3 рабочих дней — ⚠️ в Ops. Таблицы создаёт бот при старте, cashflow их не
+трогает. КУДиР — витрина `finance.v_yk_kudir` (брутто, возвраты минусом,
+прочая выручка выписки; вклады и переводы — не доход), выгрузка xlsx+csv —
+`/kudir 2026-10` в чате Ops. Дата дохода — `KUDIR_INCOME_DATE`
+(`captured_at` | `payout_date`), **правило подтвердить у бухгалтера**.
+Руками: `scripts/api.sh yookassa/registry`, `scripts/api.sh 'kudir?period=2026-10'`.
+
 ## Фича-флаги
 
 Новые клиентские механики — за флагом в базе (`app/core/flags.py`,
