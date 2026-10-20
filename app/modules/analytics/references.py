@@ -389,6 +389,8 @@ async def sync(*, force: bool = False, now: datetime | None = None) -> dict:
     """Прочитать справочники и разложить в базу. Раз в 15 минут; `force` — сейчас."""
     from app.modules.catalog import sheet as catalog_sheet
 
+    if not settings.references_sync_enabled:
+        return {"skipped": "загрузка справочников выключена (REFERENCES_SYNC_ENABLED)"}
     if catalog_sheet._mode() != catalog_sheet.SERVICE_ACCOUNT or not settings.catalog_sheet_id:
         return {"skipped": "справочники читаются только сервисным аккаунтом (SHEETS_AUTH_MODE, CATALOG_SHEET_ID)"}
     now = now or datetime.now(timezone.utc)

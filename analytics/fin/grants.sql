@@ -32,3 +32,6 @@ grant update (status, paid_amount, done_on, done_by, note) on fin.tax_calendar t
 -- 008: статус партии кодов (ввод в оборот) и списание — формами.
 grant update (status, submitted_at, accepted_at, packing_run_id, note) on fin.code_batches to metabase_fin;
 grant insert, update, delete on fin.code_writeoffs to metabase_fin;
+
+-- 009: разметка операции выписки — формой «Разметить операцию» (история — новой строкой).
+grant insert on fin.bank_marks to metabase_fin;

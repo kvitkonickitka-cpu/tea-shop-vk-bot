@@ -30,8 +30,10 @@ FINANCE_STUB_TABLES = ("finance.fact_operations", "finance.articles", "finance.v
                        "finance.v_pending_summary")
 FINANCE_STUB = """
 create schema if not exists finance;
-create table finance.articles (article_id text primary key, grp text, section text, is_capex boolean default false);
-create table finance.fact_operations (operation_date date, direction text, amount numeric, article_id text);
+create table finance.articles (article_id text primary key, grp text, section text, is_capex boolean default false,
+                               article text);
+create table finance.fact_operations (operation_date date, direction text, amount numeric, article_id text,
+                                      operation_id text not null default md5(random()::text), split_no smallint default 1);
 create table finance.v_daily_balance_total (day date, balance numeric);
 create table finance.v_pending_summary (account_last4 text, checked_at timestamptz, check_failed boolean, holds bigint,
                                         holds_out numeric, holds_in numeric, holds_signed numeric);
@@ -108,7 +110,7 @@ async def test_seed_matches_model(fin):
     assert {row["item"]: row["plan_amount"] for row in budget}["API тестов и консультаций до продаж"] is None
 
     assert await fin.fetchval("select fin.fmt_rub(173173.5975)") == "173 174 ₽"
-    assert await fin.fetchval("select fin.fmt_pct(0.05148)") == "5.1 %"
+    assert await fin.fetchval("select fin.fmt_pct(0.05148)") == "5,1 %"
     assert await fin.fetchval("select fin.fmt_rub(null)") == "нет данных"
 
     # Лист 1, строка 22: платёжная нагрузка 5,148 %.
