@@ -366,10 +366,10 @@ from finance.v_pending order by operation_date desc""", "table", colfmt(Сумм
          "Банк ещё не провёл: в остаток и ДДС не входят. Обновляется в 07:00 и 21:00 МСК.")
     card("c_claude", q, "Claude: счёт Anthropic против учёта бота", """
 select day as "День (UTC)", round(bill_rub) as "Счёт Anthropic", round(bot_rub) as "Учёт бота",
-       round(unaccounted_rub) as "Не учтено", case when bot_counted then 'да' else 'нет' end as "Бот вёл учёт"
+       case when bill_rub is not null then round(unaccounted_rub) end as "Не учтено", case when bot_counted then 'да' else 'нет' end as "Бот вёл учёт"
 from fin.v_claude_daily where day >= current_date - 29 order by day desc""", "table",
          colfmt(**{"Счёт Anthropic": RUB, "Учёт бота": RUB, "Не учтено": RUB}),
-         "В рублях по вводной «Курс доллара». Не учтено — консоль, другие ключи организации или запросы, которые бот "
+         "В рублях по вводной «Курс доллара». Счёт Anthropic приходит с задержкой в день-два: пока его нет, «не учтено» пусто. Не учтено — консоль, другие ключи организации или запросы, которые бот "
          "не записал. Доля за 7 дней (только дни, когда бот вёл учёт) > 20 % — строка в «Требует внимания».")
     card("c_yk", q, "Выплаты ЮKassa против реестра", """
 select payout_date as "Выплата", bank_amount as "По выписке", registry_amount as "По реестру", diff as "Разница",
@@ -436,10 +436,11 @@ select gate as "Ворота", check_name as "Проверка",
        period_end as "Срок" from fin.v_pilot_gates order by sort""", "table", None,
          "Неделя 2, неделя 6 и М3 пилота. Пороги — вводные «Ворота …».")
     card("r_stock", q, "Склад", """
-select product as "Товар", on_hand as "На руках", round(days_left) as "Хватит, дней",
-       case when order_now then '🔴 пора заказывать' when reorder then '🟡 мало' end as "Сигнал",
-       grams_left as "Чая осталось, г", packed as "Расфасовано"
-from fin.v_stock order by order_now desc nulls last, reorder desc, kind, product""", "table", None,
+select coalesce(n.display_name, s.product) as "Товар", s.on_hand as "На руках", round(s.days_left) as "Хватит, дней",
+       case when s.order_now then '🔴 пора заказывать' when s.reorder then '🟡 мало' end as "Сигнал",
+       s.grams_left as "Чая осталось, г", s.packed as "Расфасовано"
+from fin.v_stock s left join fin.product_names n using (product)
+order by s.order_now desc nulls last, s.reorder desc, s.kind, 1""", "table", None,
          "Точка заказа = (срок поставки + фасовка и маркировка + страховой запас) × продажи в день за 14 дней.")
     card("r_codes", q, "Коды «Честного знака»", """
 select gtin as "GTIN", imported as "Из СУЗ", available as "Свободно", used_in_orders as "В заказах",
