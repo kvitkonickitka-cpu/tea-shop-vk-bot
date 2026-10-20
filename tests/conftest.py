@@ -129,6 +129,11 @@ async def clean(db):
                 text(f"truncate {', '.join(existing)} restart identity cascade")
             )
             await session.commit()
+        # Реестр ЮKassa бота — в схеме finance, не в public.
+        for table in ("finance.yk_payments", "finance.yk_refunds", "finance.yk_payouts"):
+            if (await session.execute(text("select to_regclass(:t)"), {"t": table})).scalar():
+                await session.execute(text(f"truncate {table}"))
+        await session.commit()
     from app.core import flags
     from app.privacy import vault
 

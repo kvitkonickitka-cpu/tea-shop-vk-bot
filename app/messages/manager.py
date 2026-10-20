@@ -54,6 +54,10 @@ PD_DELETE = "pd_delete"
 YK_REGISTRY = "yk_registry"
 # Доставка: факт перевозчика отличается от котировки больше допустимого — в Ops.
 CARRIER_CHECK = "carrier_check"
+# Регламенты (app/modules/ops/controls.py): контроли и закрытие месяца — в Ops,
+# утренний список — менеджеру.
+OPS_CONTROLS = "ops_controls"
+MORNING_LIST = "morning_list"
 
 
 def _backoff(attempts: int) -> timedelta:
