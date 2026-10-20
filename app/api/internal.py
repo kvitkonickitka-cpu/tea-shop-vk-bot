@@ -195,6 +195,10 @@ async def _run_scheduled() -> dict:
 
     result["abandoned"] = await _run_task("Брошенные заказы: касание", abandoned.check())
     result["pickup"] = await _run_task("Посылка в пункте: напоминания", pickup_reminders.check())
+    # Награда пригласившему (если включена) — после вручения заказа друга и срока возврата.
+    from app.modules.referral import service as referral
+
+    result["referral_rewards"] = await _run_task("Рефералка: награды", referral.grant_rewards())
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.
@@ -1217,3 +1221,25 @@ async def ozon_approve_now(order_id: int, request: Request):
     from app.modules.delivery import ozon_approve
 
     return {"заказ": order_id, **(await ozon_approve.after_packed(order_id))}
+
+
+@router.post("/internal/referral/code")
+async def referral_code(request: Request):
+    """Код для друзей тестового аккаунта (проверка пакета D в бою).
+
+        scripts/api.sh 'referral/code?peer_id=<тестовый VK ID>'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.referral import service as referral
+
+    try:
+        peer_id = int(request.query_params.get("peer_id") or 0)
+    except ValueError:
+        return {"error": "peer_id — число"}
+    if peer_id not in await analytics_service.test_peer_ids():
+        return {"error": "только для тестовых аккаунтов (TEST_VK_IDS)"}
+    row = await referral.code_for(peer_id)
+    if row is None:
+        return {"код": None}
+    return {"код": row.code, "ссылка": referral.link(row.code), "id": row.id}

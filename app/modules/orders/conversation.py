@@ -396,6 +396,27 @@ TOOLS = [
 
 TOOLS.append(repeat_one_tap.TOOL)
 
+# Код друга (пакет D): только за флагом referral, отдельно от TOOLS — список
+# инструментов в кэше промпта у остальных клиентов не меняется.
+REFERRAL_TOOL = {
+    "name": "apply_referral_code",
+    "description": (
+        "Применить код друга (вида ЧАЙ-XXXX-XXXX), который прислал клиент. Скидку, её размер и условия "
+        "считает и проверяет код — сама скидку не обещай и не считай, передай клиенту то, что вернёт инструмент."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"code": {"type": "string", "description": "Код так, как его написал клиент"}},
+        "required": ["code"],
+    },
+}
+_INVITE = re.compile(r"^\s*(пригласить друга|код для друга|код для друзей|реферальн\w*( код)?)\s*[.!?]?\s*$",
+                     re.IGNORECASE)
+_REFERRAL_PROMPT = (
+    "Если клиент прислал код друга (ЧАЙ-XXXX-XXXX) — вызови apply_referral_code. Никаких скидок, промокодов "
+    "и «специальных цен» сама не предлагай и не придумывай."
+)
+
 
 @dataclass
 class ToolExecution:
@@ -802,6 +823,12 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
     result += upsell_line
+    # Код друга по ссылке или введённый раньше — применяется сам (пакет D).
+    from app.modules.referral import service as referral
+
+    fresh = await state.get_draft(peer_id)
+    if fresh is not None:
+        result += await referral.auto_apply(peer_id, fresh)
     if recalc:
         return result + recalc
     if not await consent.has_pd(peer_id):
@@ -1835,15 +1862,21 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
         if not match or not match.get("in_stock", True):
             missing.append(item["name"])
             continue
-        if float(match["price"]) != float(item["price"]):
+        # Со скидкой по коду друга в `price` — цена со скидкой, прайс — в `list_price`.
+        listed = "list_price" if "list_price" in item else "price"
+        if float(match["price"]) != float(item[listed]):
             # Цену в таблице поменяли, пока клиент выбирал: платит текущую.
-            item["price"] = match["price"]
+            item[listed] = match["price"]
     if missing:
         return (
             f"Счёт не выставлен: {', '.join(missing)} сейчас нет в наличии. Скажи "
             "клиенту и предложи похожее из ассортимента."
         )
-    draft.items_total = sum(float(i["price"]) * i["quantity"] for i in draft.items)
+    from app.modules.referral import pricing as referral_pricing, service as referral
+
+    referral_pricing.reprice(draft)
+    # Код друга: данные получателя не совпадают с владельцем и прежними покупателями.
+    referral_note = await referral.check_before_invoice(peer_id, draft)
 
     quoted_at = draft.details.get("quoted_at")
     if quoted_at is None or time.time() - float(quoted_at) > settings.delivery_quote_ttl_minutes * 60:
@@ -1862,7 +1895,8 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
     await state.set_draft(peer_id, draft)
     if seen is not None and abs(float(seen) - total) >= 0.01:
         return (
-            f"Счёт не выставлен: итог изменился — клиент видел {templates.amount(seen)} ₽, "
+            (f"{referral_note} " if referral_note else "")
+            + f"Счёт не выставлен: итог изменился — клиент видел {templates.amount(seen)} ₽, "
             f"теперь {templates.amount(total)} ₽ (товары {templates.amount(draft.items_total)} ₽, "
             f"доставка {templates.amount(draft.delivery_cost or 0)} ₽). Покажи клиенту новую "
             "сводку: состав, пункт, получатель, итог — и спроси «Оформляем?». После «да» "
@@ -2262,6 +2296,10 @@ async def _confirm_with_payment(
             if row.payment_id != payment.id:
                 await orders_repository.close_payment(row.payment_id)
         await funnel.record(peer_id, source, order_id=order.id, attempt=attempt, total=payment.amount)
+        # Скидка по коду друга — резерв на этот счёт (применится при оплате).
+        from app.modules.referral import service as referral
+
+        await referral.reserve(peer_id, draft, order.id)
     except Exception as error:
         # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
         # у нас не будет. Зовём человека, пока клиент ещё в диалоге.
@@ -2590,6 +2628,11 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return await _execute_escalate_to_manager(peer_id, tool_input)
     if name == "save_feedback":
         return ToolExecution(await feedback.save(peer_id, tool_input))
+    if name == "apply_referral_code":
+        from app.modules.referral import service as referral
+
+        _, said = await referral.apply(peer_id, str(tool_input.get("code") or ""))
+        return ToolExecution(said)
     return ToolExecution(f"Неизвестный инструмент: {name}")
 
 
@@ -2820,6 +2863,15 @@ async def _handle_turn(
         logger.info("peer_id=%s отписался от напоминаний", peer_id)
         return reply
 
+    if not (attached and attached.any) and _INVITE.search(user_text or ""):
+        # «Пригласить друга» словами — код и ссылка кодом, без модели (пакет D).
+        from app.modules.referral import service as referral
+
+        if await referral.enabled(peer_id):
+            reply = await referral.invite_text(peer_id)
+            await dialog_history.append_exchange(peer_id, user_text, reply)
+            return reply
+
     # «Отпишите меня», «не пишите» посреди заказа отвечает модель — по-человечески,
     # а код тихо гасит продающие напоминания: «заказ ждёт вас» после такой
     # просьбы был бы ровно тем, о чём просили не делать. Вернётся клиент сам —
@@ -2946,6 +2998,13 @@ async def _handle_turn(
         with_offer=bool(draft and draft.details.get("offer")),
         repeatable=repeatable is not None,
     )
+    from app.modules.referral import service as referral
+
+    referral_on = await referral.enabled(peer_id)
+    if referral_on:
+        # Код друга — только инструментом: скидку считает код, не модель (пакет D).
+        tools = tools + [REFERRAL_TOOL]
+        system_prompt += f"\n{_REFERRAL_PROMPT}"
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
     # кладём в историю. Иначе следующий ход увидит реплику клиента пустой и
@@ -3078,6 +3137,8 @@ async def _handle_turn(
             live_invoice=fresh_draft is None and live is not None,
             with_offer=bool(fresh_draft and fresh_draft.details.get("offer")),
         )
+        if referral_on:
+            tools = tools + [REFERRAL_TOOL]
 
         # Последний круг зовём без инструментов: модель обязана ответить
         # словами. Раньше здесь просто стояла заглушка «Записала, спасибо»,

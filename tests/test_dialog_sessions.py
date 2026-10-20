@@ -68,7 +68,7 @@ async def test_session_lifecycle(clean):
     assert len({first, second, third}) == 3
     rows = await select(clean, "select id, source, close_reason from dialog_sessions where peer_id = :p order by id", p=AD)
     assert [(r["source"], r["close_reason"]) for r in rows] == [
-        ("ad:autumn", None), ("organic", "payment"), ("referral:ABC", None)]
+        ("ad:autumn", None), ("organic", "payment"), ("referral:unknown", None)]
     # Событие воронки получает последнюю сессию клиента.
     [paid] = await select(clean, "select dialog_id from funnel_events where event = 'payment_succeeded'")
     assert paid["dialog_id"] == second

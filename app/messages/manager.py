@@ -58,6 +58,8 @@ CARRIER_CHECK = "carrier_check"
 # утренний список — менеджеру.
 OPS_CONTROLS = "ops_controls"
 MORNING_LIST = "morning_list"
+# Рефералка: лимит кода, сигналы злоупотребления.
+REFERRAL = "referral"
 
 
 def _backoff(attempts: int) -> timedelta:

@@ -191,6 +191,7 @@ def _import_models() -> None:
     from app.privacy import models as privacy_models  # noqa: F401
     from app.modules.queue import models as queue_models  # noqa: F401
     from app.modules.consent import models as consent_models  # noqa: F401
+    from app.modules.referral import models as referral_models  # noqa: F401
 
 
 async def _connect() -> bool:

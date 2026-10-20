@@ -531,6 +531,19 @@ class Settings(BaseSettings):
     # сам (кнопка «Опубликовал вручную»), wall — бот на стену сообщества
     # (wall.post; нужен право wall у токена — scripts/api.sh vk/token-permissions).
     review_publish_mode: str = "manual"
+    # Рефералка (пакет D, app/modules/referral): скидка другу на первый заказ —
+    # процент от товаров, потолок в рублях, минимальная сумма товаров (цена
+    # «Точки входа»); лимиты кода; всплеск применений за сутки — сигнал менеджеру.
+    referral_discount_percent: int = 10
+    referral_discount_cap: float = 500
+    referral_min_items_total: float = 1490
+    referral_limit_month: int = 5
+    referral_limit_total: int = 20
+    referral_spike_per_day: int = 3
+    # Награда пригласившему: off или percent:N — скидка N % на его следующий
+    # заказ после вручения заказа друга и срока возврата (дней) без возврата.
+    referrer_reward: str = "off"
+    referral_return_days: int = 14
 
 
 settings = Settings()

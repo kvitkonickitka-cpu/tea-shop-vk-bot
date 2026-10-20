@@ -61,6 +61,17 @@ def referral_source(code: str) -> str:
     return f"referral:{code or 'unknown'}"
 
 
+async def _referral_source_id(session, source: str) -> str:
+    """`referral:ABCDEFGH` → `referral:<id кода>`; кода нет — `referral:unknown`."""
+    from app.modules.referral import service as referral
+
+    code = referral.normalize(source.split(":", 1)[1])
+    if code is None:
+        return "referral:unknown"
+    found = (await session.execute(text("select id from referral_codes where code = :c"), {"c": code})).scalar()
+    return f"referral:{found}" if found else "referral:unknown"
+
+
 def _lock_key(peer_id: int) -> int:
     return int(peer_id) % 2_147_483_647
 
@@ -93,8 +104,15 @@ async def touch(peer_id: int, *, ref: str | None = None, ref_source: str | None 
                 ref=_clean(ref)[:200] if ref else None,
                 ref_source=_clean(ref_source)[:200] if ref_source else None,
             )
+            if fresh.source.startswith("referral:"):
+                # Источник рекомендации — номером кода, как в аналитике (referral:<code_id>).
+                fresh.source = await _referral_source_id(session, fresh.source)
             session.add(fresh)
             await session.commit()
+            if fresh.source.startswith("referral:"):
+                from app.messages import funnel
+
+                await funnel.record(peer_id, "referral_link_opened", source_=funnel.TEXT)
             return fresh.id
     except Exception:
         logger.exception("Не отметили сессию диалога peer_id=%s", peer_id)

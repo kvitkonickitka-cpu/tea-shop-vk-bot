@@ -73,6 +73,8 @@ SAMPLES.update({
     "trust": "Оплата через ЮKassa — картой или СБП. Чек по 54-ФЗ придёт на почту.",
     "delivery": "в пункт выдачи Ozon (Краснодар, Красная, 176)", "last_day": True,
     "score": 2, "composition_line": "Те Гуань Инь × 1", "variant": "named", "stars": 5, "author": "Иван", "wall": False,
+    "code": "ЧАЙ-ABCD-EFGH", "percent": 10,
+    "terms": {"active": True, "percent": 10, "discount": 150, "list_total": 1500, "min_total": 1490},
 })
 
 

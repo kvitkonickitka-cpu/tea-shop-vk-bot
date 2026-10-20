@@ -38,7 +38,8 @@ os.environ.setdefault("DELIVERY_ACQUIRING_PERCENT", "0")
 
 # Таблицы, которые чистит фикстура `clean` сверх основного списка: новые
 # механики дописывают сюда, не трогая общий список.
-EXTRA_CLEAN_TABLES = ("dialog_sessions", "feature_flags")
+EXTRA_CLEAN_TABLES = ("dialog_sessions", "feature_flags", "referral_rewards", "referral_redemptions",
+                      "referral_attempts", "referral_codes")
 
 
 @pytest.fixture(scope="session")
