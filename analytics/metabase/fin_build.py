@@ -1,4 +1,4 @@
-"""Коллекция «Финансы» в Metabase: пять дашбордов финмодели и формы ввода.
+"""Коллекция «Финансы» в Metabase: дашборд «Финансы» (пять вкладок) и формы ввода.
 
     MB_FIN_PW="$(cat /etc/teashop/metabase_fin_password)" python3 fin_build.py
 
@@ -6,12 +6,13 @@
 - подключение «Финмодель (ввод)» — роль metabase_fin, видит только схему fin,
   на нём включены действия (Actions): через него работают формы;
 - модели над таблицами ввода и по форме-действию на каждую;
-- дашборды «Деньги», «Юнитка», «Реклама и CAC», «Склад и коды», «Ввод данных».
+- дашборд «Финансы», вкладки «Деньги», «Юнитка», «Реклама и CAC», «Склад и коды»,
+  «Ввод данных».
   Вопросы — SQL к представлениям fin через прежнее подключение (metabase_ro).
 
 Повторный запуск: вопросы, модели и действия собираются заново в подколлекции
-«Финансы — вопросы» (прежняя уходит в архив), дашборды обновляются на месте —
-ссылки не меняются. Ручные правки дашбордов пропадут — правьте здесь.
+«Финансы — вопросы» (прежняя уходит в архив), дашборд обновляется на месте —
+ссылка не меняется. Ручные правки дашбордов пропадут — правьте здесь.
 «Сводку» (build.py) не трогает.
 """
 import os
@@ -167,9 +168,16 @@ def build_forms(qcoll, fin_db, tables):
     return models
 
 
+# Название вводной в списке формы: подпись из модели («Карты: эквайринг без НДС»),
+# а не ключ. Если подписи совпадают — к ней дописывается ключ. То же выражение
+# стоит в SQL формы «Изменить вводную»: по нему форма находит ключ.
+INPUT_TITLE = ("case when count(*) over (partition by coalesce(label, key)) > 1 "
+               "then coalesce(label, key) || ' · ' || key else coalesce(label, key) end")
+
+
 def input_keys(fin_db):
-    result = call("POST", "/dataset", {"database": fin_db, "type": "native",
-                                       "native": {"query": "select key, coalesce(label, key) from fin.inputs_current order by key"}})
+    result = call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query":
+                  f"select {INPUT_TITLE} as title from fin.inputs_current order by 1"}})
     return [row[0] for row in result["data"]["rows"]]
 
 
@@ -218,13 +226,14 @@ values ({{{{date}}}}::date, {{{{channel}}}}, {{{{spend_own}}}}, coalesce([[{{{{s
       field("impressions", "Показы", "number", required=False), field("clicks", "Клики", "number", required=False),
       NOTE, AUTHOR], "Расход рекламы записан.")
     action("input", models["inputs"], fin_db, "Изменить вводную", f"""
+with c as (select *, {INPUT_TITLE} as title from fin.inputs_current)
 insert into fin.inputs (key, label, value, value_text, unit, status, note, valid_from, entered_by)
 select c.key, c.label,
        coalesce([[{{{{value}}}}, ]]null::numeric),
        {OPT % 'value_text'},
        c.unit, 'Изменено формой', {OPT % 'note'},
        coalesce([[{{{{valid_from}}}}::date, ]]current_date), {{{{entered_by}}}}
-from fin.inputs_current c where c.key = {{{{key}}}}
+from c where c.title = {{{{key}}}}
 """, [field("key", "Вводная", "select", options=KEYS),
       field("value", "Новое значение (число; доли: 3,4 % = 0.034)", "number", required=False),
       field("value_text", "Или текст / дата (2026-11-15)", "text", required=False),
@@ -357,38 +366,53 @@ def cards_entry(q):
 select created_at as "Когда", entered_by as "Кто", form as "Форма", what as "Что", note as "Примечание"
 from fin.v_recent_entries""", "table")
     card("e_inputs", q, "Вводные сейчас", """
-select key as "Ключ", label as "Вводная", coalesce(value::text, value_text, 'нет данных') as "Значение", unit as "Ед.",
-       valid_from as "С", entered_by as "Кто", status as "Статус"
-from fin.inputs_current order by key""", "table")
+select label as "Вводная", coalesce(value::text, value_text, 'нет данных') as "Значение", unit as "Ед.",
+       valid_from as "С", entered_by as "Кто", status as "Статус", key as "Ключ"
+from fin.inputs_current order by label""", "table")
 
 
 _seq = [0]
 
 
-def dc(key, row, col, w, h):
+# Один дашборд «Финансы», по вкладке на тему — как «Сводка». Отрицательные id
+# вкладок — новые; Metabase заменит их своими.
+TABS = {"Деньги": -1, "Юнитка": -2, "Реклама и CAC": -3, "Склад и коды": -4, "Ввод данных": -5}
+DASHBOARD = "Финансы"
+# Дашборды до объединения (20.10.2026): «Деньги» становится «Финансами» — его
+# ссылка /dashboard/6 продолжает работать, — остальные уходят в архив.
+OLD_DASHBOARDS = ("Деньги", "Юнитка", "Реклама и CAC", "Склад и коды", "Ввод данных")
+
+
+def dc(key, tab, row, col, w, h):
     _seq[0] -= 1
-    return {"id": _seq[0], "card_id": CARDS[key], "row": row, "col": col, "size_x": w, "size_y": h,
-            "parameter_mappings": [], "visualization_settings": {}}
+    return {"id": _seq[0], "card_id": CARDS[key], "dashboard_tab_id": TABS[tab], "row": row, "col": col,
+            "size_x": w, "size_y": h, "parameter_mappings": [], "visualization_settings": {}}
 
 
 def button(key, label, row, col, w=6, h=2):
     _seq[0] -= 1
-    return {"id": _seq[0], "card_id": None, "action_id": ACTIONS[key], "row": row, "col": col, "size_x": w, "size_y": h,
-            "parameter_mappings": [],
+    return {"id": _seq[0], "card_id": None, "action_id": ACTIONS[key], "dashboard_tab_id": TABS["Ввод данных"],
+            "row": row, "col": col, "size_x": w, "size_y": h, "parameter_mappings": [],
             "visualization_settings": {"button.label": label, "actionDisplayType": "button",
                                        "virtual_card": {"display": "action", "visualization_settings": {},
                                                         "dataset_query": {}, "archived": False, "name": None}}}
 
 
-def dashboard(root, name, desc, dashcards):
-    existing = find(call("GET", f"/collection/{root}/items?models=dashboard")["data"], name=name)
+def dashboard(root, desc, dashcards):
+    items = call("GET", f"/collection/{root}/items?models=dashboard")["data"]
+    existing = find(items, name=DASHBOARD) or find(items, name=OLD_DASHBOARDS[0])
     if existing:
         did = existing["id"]
-        call("PUT", f"/dashboard/{did}", {"name": name, "description": desc})
+        call("PUT", f"/dashboard/{did}", {"name": DASHBOARD, "description": desc})
     else:
-        did = call("POST", "/dashboard", {"name": name, "description": desc, "collection_id": root})["id"]
-    call("PUT", f"/dashboard/{did}", {"dashcards": dashcards})
-    print(f"{name}: {SITE}/dashboard/{did}" + (" (обновлён)" if existing else " (новый)"))
+        did = call("POST", "/dashboard", {"name": DASHBOARD, "description": desc, "collection_id": root})["id"]
+    call("PUT", f"/dashboard/{did}", {"dashcards": dashcards,
+                                      "tabs": [{"id": tid, "name": name} for name, tid in TABS.items()]})
+    for item in items:
+        if item["name"] in OLD_DASHBOARDS and item["id"] != did:
+            call("PUT", f"/dashboard/{item['id']}", {"archived": True})
+            print(f"  в архив: {item['name']} (/dashboard/{item['id']})")
+    print(f"{DASHBOARD}: {SITE}/dashboard/{did}" + (" (обновлён)" if existing else " (новый)"))
     return did
 
 
@@ -420,29 +444,30 @@ if __name__ == "__main__":
     cards_stock(qcoll)
     cards_entry(qcoll)
 
-    dashboard(root, "Деньги", "Остаток по выписке и сверка, движение по неделям, известные расходы пилота против 300 000 ₽, "
-              "статус лимита пилота. Выписка — 07:00 и 21:00 МСК.", [
-        dc("m_status", 0, 0, 12, 6), dc("m_limit", 0, 12, 12, 6),
-        dc("m_check", 6, 0, 12, 5), dc("m_budget_progress", 6, 12, 12, 5),
-        dc("m_balance", 11, 0, 12, 6), dc("m_weekly", 11, 12, 12, 6),
-        dc("m_budget", 17, 0, 24, 9)])
-    dashboard(root, "Юнитка", "Маржа до CAC по продуктам — план и факт, заказы по марже, доля заказов от 2 пачек, P&L и "
-              "безубыточность.", [
-        dc("u_two", 0, 0, 6, 4), dc("u_hist", 0, 6, 18, 6), dc("u_margin_chart", 6, 0, 12, 10),
-        dc("u_breakeven", 6, 12, 12, 5), dc("u_margin", 16, 0, 24, 8), dc("u_pnl", 24, 0, 24, 7),
-        dc("u_orders", 31, 0, 24, 8)])
-    dashboard(root, "Реклама и CAC", "Расход своими и бонусами, клики, новые клиенты, CAC, первый заказ после CAC, "
-              "воронка бота. Реклама вносится формой «Реклама за день».", [
-        dc("c_weekly", 0, 0, 12, 6), dc("c_cac_line", 0, 12, 12, 6), dc("c_funnel", 6, 0, 24, 6),
-        dc("c_monthly", 12, 0, 24, 7)])
-    dashboard(root, "Склад и коды", "Остатки чая, пачек, сетов и кодов ЧЗ; «пора докупать» — пачек меньше чем на 14 дней.", [
-        dc("s_reorder", 0, 0, 10, 6), dc("s_codes", 0, 10, 14, 6), dc("s_stock", 6, 0, 24, 9)])
-    dashboard(root, "Ввод данных", "Формы финмодели. Каждая запись — с автором; вводные не перезаписываются, а дописываются.", [
+    dashboard(root, "Финмодель: деньги по выписке, юнитка, реклама и CAC, склад и коды, ввод данных формами. "
+              "Выписка — 07:00 и 21:00 МСК, заказы — сразу.", [
+        # Деньги
+        dc("m_status", "Деньги", 0, 0, 12, 6), dc("m_limit", "Деньги", 0, 12, 12, 6),
+        dc("m_check", "Деньги", 6, 0, 12, 5), dc("m_budget_progress", "Деньги", 6, 12, 12, 5),
+        dc("m_balance", "Деньги", 11, 0, 12, 6), dc("m_weekly", "Деньги", 11, 12, 12, 6),
+        dc("m_budget", "Деньги", 17, 0, 24, 9),
+        # Юнитка
+        dc("u_two", "Юнитка", 0, 0, 6, 4), dc("u_hist", "Юнитка", 0, 6, 18, 6),
+        dc("u_margin_chart", "Юнитка", 6, 0, 12, 10), dc("u_breakeven", "Юнитка", 6, 12, 12, 5),
+        dc("u_margin", "Юнитка", 16, 0, 24, 8), dc("u_pnl", "Юнитка", 24, 0, 24, 7),
+        dc("u_orders", "Юнитка", 31, 0, 24, 8),
+        # Реклама и CAC
+        dc("c_weekly", "Реклама и CAC", 0, 0, 12, 6), dc("c_cac_line", "Реклама и CAC", 0, 12, 12, 6),
+        dc("c_funnel", "Реклама и CAC", 6, 0, 24, 6), dc("c_monthly", "Реклама и CAC", 12, 0, 24, 7),
+        # Склад и коды
+        dc("s_reorder", "Склад и коды", 0, 0, 10, 6), dc("s_codes", "Склад и коды", 0, 10, 14, 6),
+        dc("s_stock", "Склад и коды", 6, 0, 24, 9),
+        # Ввод данных
         button("expense", "Добавить расход", 0, 0), button("capital", "Вклад / выплата партнёра", 0, 6),
         button("snapshot", "Остаток по выписке", 0, 12), button("lot", "Партия закупки", 0, 18),
         button("packing", "Фасовка", 2, 0), button("ads", "Реклама за день", 2, 6),
         button("input", "Изменить вводную", 2, 12),
-        dc("e_recent", 4, 0, 24, 8), dc("e_inputs", 12, 0, 24, 10)])
+        dc("e_recent", "Ввод данных", 4, 0, 24, 8), dc("e_inputs", "Ввод данных", 12, 0, 24, 10)])
 
     failed = verify()
     for c in old:
