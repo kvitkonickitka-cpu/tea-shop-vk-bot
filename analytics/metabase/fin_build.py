@@ -155,7 +155,8 @@ def build_forms(qcoll, fin_db, tables):
                          ("cash_snapshots", "Остатки по выписке"), ("purchase_lots", "Партии закупки"),
                          ("packing_runs", "Фасовка"), ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)"),
                          ("carrier_acts", "Акты перевозчиков"), ("supply_lead_times", "Сроки поставки"),
-                         ("tax_calendar", "Налоговый календарь")):
+                         ("tax_calendar", "Налоговый календарь"), ("code_batches", "Партии кодов ЧЗ"),
+                         ("code_writeoffs", "Списанные коды ЧЗ")):
         # Модель прямо на таблице, без SQL: только такой Metabase даёт действия
         # «Исправить» и «Удалить» (row/update, row/delete).
         body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
@@ -166,7 +167,7 @@ def build_forms(qcoll, fin_db, tables):
             # Исправить или удалить ошибочную строку — прямо в модели. Вводные — только дописываются;
             # налоговый календарь — только отмечается (оплачено, подано), не удаляется.
             for kind, name in (("row/update", "Исправить"), ("row/delete", "Удалить")):
-                if table == "tax_calendar" and kind == "row/delete":
+                if table in ("tax_calendar", "code_batches") and kind == "row/delete":
                     continue
                 call("POST", "/action", {"name": f"{name}: {title.lower()}", "type": "implicit", "kind": kind,
                                          "model_id": models[table]})
@@ -254,6 +255,12 @@ values ({{{{carrier}}}}, {{{{track}}}}, {{{{amount}}}}, {{{{kind}}}}, coalesce([
       field("kind", "Что", "select", options=["доставка", "возврат"]),
       field("act_date", "Дата акта", "date", required=False), field("act_number", "Номер акта", "text", required=False),
       AUTHOR], "Строка акта записана — сверка с котировкой на вкладке «Юнитка». Много строк — CSV командой /act в чате Ops.")
+    action("writeoff", models["code_writeoffs"], fin_db, "Списать код ЧЗ", f"""
+insert into fin.code_writeoffs (gtin, serial, reason, note, entered_by)
+values ({{{{gtin}}}}, {{{{serial}}}}, {{{{reason}}}}, {OPT % 'note'}, {{{{entered_by}}}})
+""", [field("gtin", "GTIN", "text"), field("serial", "Серийный номер", "text"),
+      field("reason", "Причина", "select", options=["испорчена этикетка", "брак печати", "утеря", "другое"]),
+      NOTE, AUTHOR], "Код списан — в заказ он попасть не должен.")
     action("lead", models["supply_lead_times"], fin_db, "Срок поставки", f"""
 insert into fin.supply_lead_times (scope, name, lead_days, valid_from, note, entered_by)
 values ({{{{scope}}}}, {{{{name}}}}, {{{{lead_days}}}}, coalesce([[{{{{valid_from}}}}::date, ]]current_date), {OPT % 'note'}, {{{{entered_by}}}})
@@ -453,8 +460,15 @@ select product as "Продукт", on_hand as "На руках", round(reorder_
 from fin.v_stock where order_now or (order_now is null and reorder) order by days_left""", "table")
     card("s_codes", q, "Коды «Честного знака»", """
 select gtin as "GTIN", imported as "Из СУЗ", used_in_orders as "В заказах", available as "Свободно",
-       returned as "Вернулось", coalesce(printed::text, 'нет данных') as "Напечатано"
-from fin.v_codes order by gtin""", "table")
+       returned as "Вернулось", printed as "В партиях", submitted as "Подано", in_circulation as "В обороте",
+       written_off as "Списано", sold_not_in_circulation as "В заказах без ввода"
+from fin.v_codes order by gtin""", "table",
+         description="Ввод в оборот — партиями: /codes <GTIN> <кол-во> в чате Ops даёт файл для ЛК ЧЗ, "
+                     "статус — /circulation или модель «Ввод: Партии кодов ЧЗ».")
+    card("s_batches", q, "Партии кодов: ввод в оборот", """
+select id as "Партия", created_at as "Заведена", gtin as "GTIN", product as "Товар", codes_count as "Кодов",
+       status as "Статус", submitted_at as "Подана", accepted_at as "Принята", used_in_orders as "В заказах"
+from fin.v_code_batches""", "table")
 
 
 def cards_entry(q):
@@ -564,13 +578,13 @@ if __name__ == "__main__":
         dc("c_referral", "Реклама и CAC", 19, 0, 24, 5),
         # Склад и коды
         dc("s_reorder", "Склад и коды", 0, 0, 10, 6), dc("s_codes", "Склад и коды", 0, 10, 14, 6),
-        dc("s_stock", "Склад и коды", 6, 0, 24, 9),
+        dc("s_stock", "Склад и коды", 6, 0, 24, 9), dc("s_batches", "Склад и коды", 15, 0, 24, 6),
         # Ввод данных
         button("expense", "Добавить расход", 0, 0), button("capital", "Вклад / выплата партнёра", 0, 6),
         button("snapshot", "Остаток по выписке", 0, 12), button("lot", "Партия закупки", 0, 18),
         button("packing", "Фасовка", 2, 0), button("ads", "Реклама за день", 2, 6),
         button("input", "Изменить вводную", 2, 12), button("act", "Акт перевозчика", 2, 18),
-        button("lead", "Срок поставки", 4, 0),
+        button("lead", "Срок поставки", 4, 0), button("writeoff", "Списать код ЧЗ", 4, 6),
         dc("e_recent", "Ввод данных", 6, 0, 24, 8), dc("e_inputs", "Ввод данных", 14, 0, 24, 10)])
 
     failed = verify()

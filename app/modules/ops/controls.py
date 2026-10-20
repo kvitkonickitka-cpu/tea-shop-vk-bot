@@ -99,8 +99,14 @@ async def collect(now: datetime | None = None) -> list[Check]:
     else:
         checks.append(Check("refund_no_receipt", "Возврат без чека возврата", known=False, note="реестра ЮKassa нет"))
 
-    checks.append(Check("codes_not_in_circulation", "Код ЧЗ в чеке не введён в оборот", known=False,
-                        note="появится с учётом ввода в оборот (пакет E)"))
+    from app.modules.marking import circulation
+
+    stray = await circulation.not_in_circulation()
+    if stray is None:
+        checks.append(Check("codes_not_in_circulation", "Код ЧЗ в чеке не введён в оборот", known=False,
+                            note="учёта ввода в оборот нет (миграция fin 008)"))
+    else:
+        checks.append(Check("codes_not_in_circulation", "Код ЧЗ в чеке не введён в оборот или списан", stray))
     return checks
 
 
@@ -338,7 +344,17 @@ async def month_items(month_start: date) -> list[Item]:
     items.append(Item("Чеки: предоплата у оплаченных, закрывающий у вручённых, у возвратов — чек возврата",
                       no_prepay == 0 and no_settle == 0 and no_refund == 0,
                       f"без чека предоплаты {no_prepay}, без закрывающего {no_settle}, возвратов без чека {no_refund}"))
-    items.append(Item("Выбывшие коды ЧЗ = проданные пачки", None, "после учёта ввода в оборот (пакет E)"))
+    from app.modules.marking import circulation
+
+    pair = await circulation.sold_vs_codes(_msk_start(month_start), _msk_start(month_end))
+    if pair is None:
+        items.append(Item("Выбывшие коды ЧЗ = проданные пачки", None, "учёта ввода в оборот нет (миграция fin 008)"))
+    else:
+        units, codes_out = pair
+        stray = await circulation.not_in_circulation(since=_msk_start(month_start), until=_msk_start(month_end)) or []
+        items.append(Item("Выбывшие коды ЧЗ = проданные пачки, все — из принятых партий",
+                          units == codes_out and not stray,
+                          f"пачек и сетов {units}, кодов в чеках {codes_out}, не в обороте — заказов {len(stray)}"))
     return items
 
 
