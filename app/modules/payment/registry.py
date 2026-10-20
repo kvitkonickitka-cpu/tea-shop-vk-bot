@@ -247,7 +247,9 @@ async def reconcile(*, now: datetime | None = None) -> dict:
 
     today = worktime.to_msk(now).date()
     unpaid = [(d, v) for d, v in days[i:] if d not in matched_days]
-    overdue = [(d, v) for d, v in unpaid if _business_days_between(d, today) > UNPAID_BUSINESS_DAYS]
+    # День в минусе (возврат больше выручки, комиссия ЮKassa не возвращается) —
+    # это долг магазина ЮKassa: его удержат из следующей выплаты. Не «невыплата».
+    overdue = [(d, v) for d, v in unpaid if v > 0 and _business_days_between(d, today) > UNPAID_BUSINESS_DAYS]
 
     async with get_session_factory()() as session:
         await session.execute(text("update finance.yk_payments set payout_date = null where payout_date is not null"))

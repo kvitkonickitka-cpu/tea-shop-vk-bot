@@ -228,3 +228,19 @@ async def test_kudir_command_sends_two_files(bank, yookassa, alerts, monkeypatch
     assert await commands.handle(message, {"username": "bot"})
     assert "записей 4" in sent[0] and "бухгалтер" in sent[0]
     assert files == ["kudir_20261101_20261130.xlsx", "kudir_20261101_20261130.csv"]
+
+
+async def test_refund_bigger_than_income_is_not_an_unpaid_day(bank, monkeypatch, alerts):
+    """26.09.2026: оплата 217 ₽ и полный возврат в тот же день — нетто −8,25 ₽, это не невыплата."""
+    async def fake_call(method, path, payload=None, key=""):
+        if path.startswith("/payments"):
+            return {"items": [payment("s1", 217, 208.75, "2026-09-26T10:00:00.000Z", "sberbank")]}
+        return {"items": [{"id": "r9", "payment_id": "s1", "status": "succeeded", "amount": {"value": "217.00"},
+                           "created_at": "2026-09-26T12:00:00.000Z"}]}
+
+    monkeypatch.setattr(yookassa_client, "_call", fake_call)
+    monkeypatch.setattr(settings, "yookassa_shop_id", "1")
+    monkeypatch.setattr(settings, "yookassa_secret_key", "k")
+    result = await registry.sync(force=True, now=datetime(2026, 10, 20, 19, 0, tzinfo=timezone.utc))
+    assert result["не выплачено дольше 3 рабочих дней"] == 0 and alerts == []
+    assert result["в пути, ₽"] == "-8.25"
