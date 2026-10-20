@@ -194,9 +194,10 @@ async def test_read_state_without_finance_schema(clean, db):
 
 async def test_read_state_reads_sync_state(clean, db):
     async with db() as session:
-        if (await session.execute(text("select to_regnamespace('finance')"))).scalar():
-            pytest.skip("схема finance уже есть — не трогаем чужие данные")
-        await session.execute(text("create schema finance"))
+        # Схема finance в тестовой базе есть всегда (реестр ЮKassa бота) — своя здесь только sync_state.
+        if (await session.execute(text("select to_regclass('finance.sync_state')"))).scalar():
+            pytest.skip("finance.sync_state уже есть — не трогаем чужие данные")
+        await session.execute(text("create schema if not exists finance"))
         await session.execute(text(
             "create table finance.sync_state (account_number text primary key, "
             "synced_through date, last_run_at timestamptz, last_success_at timestamptz, last_status text, "
@@ -214,7 +215,7 @@ async def test_read_state_reads_sync_state(clean, db):
         assert account["last4"] == "4673" and account["last_success_at"].tzinfo is not None
     finally:
         async with db() as session:
-            await session.execute(text("drop schema finance cascade"))
+            await session.execute(text("drop table finance.sync_state"))
             await session.commit()
 
 

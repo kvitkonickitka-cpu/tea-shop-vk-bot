@@ -50,6 +50,8 @@ ANTHROPIC_COSTS = "anthropic_costs"
 FEEDBACK = "feedback"
 # Покупатель отозвал согласие на ПДн — задача удалить данные в срок.
 PD_DELETE = "pd_delete"
+# Реестр ЮKassa: выплата не сходится с выпиской или платежи долго не выплачены — в Ops.
+YK_REGISTRY = "yk_registry"
 
 
 def _backoff(attempts: int) -> timedelta:

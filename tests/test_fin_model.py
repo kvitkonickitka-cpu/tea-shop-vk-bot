@@ -24,8 +24,12 @@ from app.core.config import settings
 
 FIN = Path(__file__).resolve().parents[1] / "analytics" / "fin"
 
+# Схему finance в тестовой базе создаёт сам бот (реестр ЮKassa), поэтому
+# заглушка выписки — по таблицам, и убираются после теста только они.
+FINANCE_STUB_TABLES = ("finance.fact_operations", "finance.articles", "finance.v_daily_balance_total",
+                       "finance.v_pending_summary")
 FINANCE_STUB = """
-create schema finance;
+create schema if not exists finance;
 create table finance.articles (article_id text primary key, grp text, section text, is_capex boolean default false);
 create table finance.fact_operations (operation_date date, direction text, amount numeric, article_id text);
 create table finance.v_daily_balance_total (day date, balance numeric);
@@ -52,7 +56,7 @@ async def fin(db, clean):
     created_finance = False
     try:
         await conn.execute("drop schema if exists fin cascade")
-        if not await conn.fetchval("select to_regnamespace('finance') is not null"):
+        if not await conn.fetchval("select to_regclass('finance.fact_operations') is not null"):
             await conn.execute(FINANCE_STUB)
             created_finance = True
         for name in ("metabase_fin", "metabase_ro"):
@@ -67,7 +71,7 @@ async def fin(db, clean):
     finally:
         await conn.execute("drop schema if exists fin cascade")
         if created_finance:
-            await conn.execute("drop schema finance cascade")
+            await conn.execute(f"drop table if exists {', '.join(FINANCE_STUB_TABLES)} cascade")
         await conn.close()
 
 

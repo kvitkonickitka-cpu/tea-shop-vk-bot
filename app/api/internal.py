@@ -178,6 +178,10 @@ async def _run_scheduled() -> dict:
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
     # Счёт Anthropic по дням — раз в час, админ-ключом.
     result["anthropic_costs"] = await _run_task("Счёт Anthropic", anthropic_costs.sync())
+    # Реестр ЮKassa и сверка выплат с выпиской — раз в день после выписки 07:00.
+    from app.modules.payment import registry as yk_registry
+
+    result["yk_registry"] = await _run_task("Реестр ЮKassa", yk_registry.sync())
     # Сверка учёта бота со счётом за прошлый месяц — с третьего числа, раз в месяц.
     result["anthropic_reconcile"] = await _run_task("Сверка Claude со счётом", anthropic_costs.reconcile_month())
 
@@ -1072,3 +1076,47 @@ async def smoke_dialog(request: Request):
             "select at, operation, dialog_id, order_id, stage, purpose, cost_usd from llm_usage "
             "where client_key = :k order by id desc limit 15"), {"k": client_key(peer_id)}))
     return {"клиент": client, "сессии": dialogs, "события": events, "claude": usage}
+
+
+@router.post("/internal/yookassa/registry")
+async def yookassa_registry(request: Request):
+    """Реестр ЮKassa сейчас: платежи и возвраты (только GET) и сверка выплат с выпиской.
+
+        scripts/api.sh yookassa/registry          за последние 14 дней (первый раз — 120)
+        scripts/api.sh 'yookassa/registry?days=60'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.payment import registry as yk_registry
+
+    try:
+        days = int(request.query_params["days"]) if request.query_params.get("days") else None
+    except ValueError:
+        return {"error": "days — число"}
+    try:
+        return await yk_registry.sync(force=True, days=days)
+    except Exception as error:
+        logger.exception("Реестр ЮKassa руками не собрался")
+        return {"error": f"{type(error).__name__}: {error}"[:300]}
+
+
+@router.post("/internal/kudir")
+async def kudir_export(request: Request):
+    """КУДиР за период строками (для проверки; файл — /kudir в чате Ops).
+
+        scripts/api.sh 'kudir?period=2026-10'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.core import worktime
+    from app.modules.payment import kudir
+
+    try:
+        start, end = kudir.parse_period((request.query_params.get("period") or "").split(),
+                                        worktime.to_msk(datetime.now(timezone.utc)).date())
+    except ValueError as error:
+        return {"error": str(error)}
+    records = await kudir.rows(start, end)
+    return {"период": f"{start} — {end}", "правило": kudir.RULES[kudir.rule()], "записей": len(records),
+            "итого": str(sum((r["income"] for r in records), 0)),
+            "записи": [{**r, "income": str(r["income"])} for r in records[:200]]}

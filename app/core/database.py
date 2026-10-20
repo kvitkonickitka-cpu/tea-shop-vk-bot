@@ -232,6 +232,15 @@ async def _connect() -> bool:
             await analytics_views.create(conn)
     except Exception:
         logger.exception("Не пересоздали схему analytics для DataLens")
+    # Реестр ЮKassa и витрина КУДиР в схеме finance — тоже отдельно: без них
+    # бот работает, нет только сверки выплат.
+    from app.modules.payment import registry as yk_registry
+
+    try:
+        async with engine.begin() as conn:
+            await yk_registry.ensure_tables(conn)
+    except Exception:
+        logger.exception("Не создали таблицы реестра ЮKassa в схеме finance")
     return True
 
 

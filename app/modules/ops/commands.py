@@ -115,6 +115,42 @@ async def own_command(args: list[str], sender: dict) -> str:
     return f"peer_id={peer_id}: помечен «свои» — в аналитике источник own, в CAC не входит."
 
 
+@command("registry", "/registry — забрать реестр ЮKassa сейчас и сверить выплаты с выпиской")
+async def registry_command(args: list[str], sender: dict) -> str:
+    from app.modules.payment import registry
+
+    result = await registry.sync(force=True)
+    if "skipped" in result:
+        return f"Реестр ЮKassa: {html.escape(result['skipped'])}"
+    return (
+        f"<b>Реестр ЮKassa</b> за {result['дней']} дн.: платежей {result['платежей']}, возвратов {result['возвратов']}\n"
+        + "\n".join(f"{html.escape(str(k))}: {html.escape(str(v))}" for k, v in result.items()
+                    if k not in ("дней", "платежей", "возвратов"))
+    )
+
+
+# Ответ на команду, которому нужен файл: handle отправит документы следом за текстом.
+_attachments: dict[int, list[tuple[str, bytes]]] = {}
+
+
+@command("kudir", "/kudir — за прошлый месяц; /kudir 2026-10; /kudir 2026; /kudir 2026-10-01 2026-12-31")
+async def kudir_command(args: list[str], sender: dict) -> str:
+    from datetime import datetime, timezone
+
+    from app.core import worktime
+    from app.modules.payment import kudir
+
+    start, end = kudir.parse_period(args, worktime.to_msk(datetime.now(timezone.utc)).date())
+    records = await kudir.rows(start, end)
+    total = sum((r["income"] for r in records), 0)
+    name = f"kudir_{start:%Y%m%d}_{end:%Y%m%d}"
+    _attachments[id(sender)] = [(f"{name}.xlsx", kudir.to_xlsx(records, start, end)), (f"{name}.csv", kudir.to_csv(records))]
+    return (
+        f"<b>КУДиР {start:%d.%m.%Y} – {end:%d.%m.%Y}</b>: записей {len(records)}, доходы {total} ₽.\n"
+        f"{html.escape(kudir.RULE_NOTE.format(rule=kudir.RULES[kudir.rule()]))}"
+    )
+
+
 async def handle(message: dict, me: dict) -> bool:
     """Команда из чата Ops — выполнить и ответить. True — это была наша команда."""
     parsed = parse(message.get("text") or "", me.get("username"))
@@ -125,8 +161,13 @@ async def handle(message: dict, me: dict) -> bool:
     reply = await run(name, args, sender)
     from app.modules.dialog import telegram_client
 
+    chat_id = str(message["chat"]["id"])
     try:
-        await telegram_client.reply(reply, chat_id=str(message["chat"]["id"]), reply_to=message["message_id"])
+        await telegram_client.reply(reply, chat_id=chat_id, reply_to=message["message_id"])
+        for filename, content in _attachments.pop(id(sender), []):
+            await telegram_client.send_document(filename, content, chat_id=chat_id, reply_to=message["message_id"])
     except Exception:
         logger.exception("Ops: ответ на команду /%s не ушёл", name)
+    finally:
+        _attachments.pop(id(sender), None)
     return True
