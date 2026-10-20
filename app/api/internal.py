@@ -84,6 +84,26 @@ async def _authorized(request: Request, body: str | None = None) -> bool:
     return bool(body) and expected in body
 
 
+async def _carrier_check() -> dict:
+    from app.modules.delivery import acts
+
+    return await acts.check()
+
+
+async def _daily(name: str, job, *, after_hour_msk: int = 10) -> dict:
+    """Задача раз в день после часа по Москве; отметка — в heartbeats (видна в отчёте Ops)."""
+    now = datetime.now(timezone.utc)
+    local = worktime.to_msk(now)
+    if local.hour < after_hour_msk:
+        return {"skipped": "рано"}
+    last = await heartbeat.last_run(name)
+    if last is not None and worktime.to_msk(last).date() == local.date():
+        return {"skipped": "сегодня уже"}
+    result = await job()
+    await heartbeat.note(name)
+    return result
+
+
 async def _retention_summary() -> dict:
     result = await retention.check()
     decisions = result.pop("decisions", [])
@@ -182,6 +202,8 @@ async def _run_scheduled() -> dict:
     from app.modules.payment import registry as yk_registry
 
     result["yk_registry"] = await _run_task("Реестр ЮKassa", yk_registry.sync())
+    # Факт доставки против котировки (акты и API) — раз в день, после реестра.
+    result["carrier_check"] = await _run_task("Сверка доставки с актами", _daily("сверка доставки", _carrier_check))
     # Сверка учёта бота со счётом за прошлый месяц — с третьего числа, раз в месяц.
     result["anthropic_reconcile"] = await _run_task("Сверка Claude со счётом", anthropic_costs.reconcile_month())
 

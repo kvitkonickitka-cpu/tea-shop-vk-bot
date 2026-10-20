@@ -5,7 +5,7 @@
 принимаются только в чате Ops и только от администраторов
 (`OPS_ADMIN_TG_IDS`, пусто — те же, кому можно спрашивать ассистента).
 
-Новая команда — функция `async (args, sender) -> str` в `COMMANDS`. Ответ —
+Новая команда — функция `async (args, sender, message) -> str` в `COMMANDS`. Ответ —
 HTML Telegram, данные клиентов в него не пишем: только идентификаторы.
 """
 
@@ -20,7 +20,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-Handler = Callable[[list[str], dict], Awaitable[str]]
+Handler = Callable[..., Awaitable[str]]
 COMMANDS: dict[str, tuple[Handler, str]] = {}
 
 
@@ -63,13 +63,13 @@ def who(sender: dict) -> str:
     return f"tg:{sender.get('id')}" + (f" {name}" if name else "")
 
 
-async def run(name: str, args: list[str], sender: dict) -> str:
+async def run(name: str, args: list[str], sender: dict, message: dict | None = None) -> str:
     if not is_admin(sender.get("id")):
         logger.info("Ops: команда /%s от tg_id=%s — не администратор", name, sender.get("id"))
         return "Эта команда — только для администраторов."
     handler, usage = COMMANDS[name]
     try:
-        return await handler(args, sender)
+        return await handler(args, sender, message)
     except ValueError as error:
         return f"{html.escape(str(error))}\nКак: <code>{html.escape(usage)}</code>"
     except Exception:
@@ -81,7 +81,7 @@ _MODE_MARK = {flags.OFF: "⚪️", flags.ALLOWLIST: "🧪", flags.ON: "🟢"}
 
 
 @command("flag", "/flag — список; /flag <имя> off|allowlist|on")
-async def flag_command(args: list[str], sender: dict) -> str:
+async def flag_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     if not args:
         lines = ["<b>Флаги</b> (off — выключен, allowlist — только тестовые аккаунты, on — всем)"]
         for row in await flags.describe():
@@ -100,7 +100,7 @@ async def flag_command(args: list[str], sender: dict) -> str:
 
 
 @command("own", "/own <peer_id> — пометить клиента «свои»; /own <peer_id> off — снять")
-async def own_command(args: list[str], sender: dict) -> str:
+async def own_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     from app.modules.dialog import sessions
 
     if not args or not args[0].lstrip("-").isdigit():
@@ -116,7 +116,7 @@ async def own_command(args: list[str], sender: dict) -> str:
 
 
 @command("registry", "/registry — забрать реестр ЮKassa сейчас и сверить выплаты с выпиской")
-async def registry_command(args: list[str], sender: dict) -> str:
+async def registry_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     from app.modules.payment import registry
 
     result = await registry.sync(force=True)
@@ -134,7 +134,7 @@ _attachments: dict[int, list[tuple[str, bytes]]] = {}
 
 
 @command("kudir", "/kudir — за прошлый месяц; /kudir 2026-10; /kudir 2026; /kudir 2026-10-01 2026-12-31")
-async def kudir_command(args: list[str], sender: dict) -> str:
+async def kudir_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     from datetime import datetime, timezone
 
     from app.core import worktime
@@ -151,14 +151,35 @@ async def kudir_command(args: list[str], sender: dict) -> str:
     )
 
 
+@command("act", "файл CSV с подписью /act: трек;сумма[;доставка|возврат;дата акта;номер акта]")
+async def act_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.delivery import acts
+    from app.modules.dialog import telegram_client
+
+    document = (message or {}).get("document")
+    if not document:
+        raise ValueError("Пришлите акт файлом CSV с подписью /act.")
+    rows, problems = acts.parse(await telegram_client.download_file(document["file_id"]))
+    if not rows:
+        raise ValueError("В файле нет строк акта. " + "; ".join(problems[:5]))
+    result = await acts.store(rows)
+    lines = [f"<b>Акт перевозчика</b>: записано строк {result['записано']} из {len(rows)}."]
+    if result["трек не найден"]:
+        lines.append("Трек не найден среди заказов: " + ", ".join(html.escape(t) for t in result["трек не найден"][:10]))
+    if problems:
+        lines.append("Пропущено: " + html.escape("; ".join(problems[:10])))
+    return "\n".join(lines)
+
+
 async def handle(message: dict, me: dict) -> bool:
     """Команда из чата Ops — выполнить и ответить. True — это была наша команда."""
-    parsed = parse(message.get("text") or "", me.get("username"))
+    # Файл с подписью-командой (/act) — команда в caption.
+    parsed = parse(message.get("text") or message.get("caption") or "", me.get("username"))
     if parsed is None:
         return False
     name, args = parsed
     sender = message.get("from") or {}
-    reply = await run(name, args, sender)
+    reply = await run(name, args, sender, message)
     from app.modules.dialog import telegram_client
 
     chat_id = str(message["chat"]["id"])

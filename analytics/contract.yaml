@@ -63,6 +63,8 @@ views:
     - first_source_kind: text
     - session_source: character varying
     - session_source_kind: text
+    - carrier_actual_cost: numeric(10,2)
+    - carrier_track: text
   v_order_items:
     - order_id: integer
     - client_key: character varying

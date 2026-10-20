@@ -280,6 +280,15 @@ card("llm_dialog", coll, "Claude на диалог, оплату и нового
      description="Весь расход Claude за месяц делится на оплаты: диалоги без покупки входят в цену покупки. "
                  "Курс — вводная usd_rub; пусто — курса нет.")
 
+# Ворота пилота — из финмодели (fin.v_pilot_gates), та же карточка, что на «Финансах».
+card("gates", coll, "Ворота пилота",
+     "select gate as \"Ворота\", check_name as \"Проверка\",\n"
+     "  case when unit = '%' then fin.fmt_pct(value) else fin.fmt_rub(value) end as \"Сейчас\",\n"
+     "  case when unit = '%' then fin.fmt_pct(threshold) else fin.fmt_rub(threshold) end as \"Порог\",\n"
+     "  case status when 'зелёный' then '🟢 зелёный' when 'красный' then '🔴 красный' else '⚪ нет данных' end as \"Статус\",\n"
+     "  period_end as \"Срок\" from fin.v_pilot_gates order by sort",
+     "table", {}, description="Неделя 2, неделя 6 и М3 пилота. Пороги — вводные gate_* на «Финансах».")
+
 # --- Продажи: Заказы ---------------------------------------------------------------------------
 PAID = "from analytics.v_orders where is_paid and not is_refunded [[and {{dates}}]]"
 PAID_MBQL = ["and", ["=", ["field", ORDERS_IS_PAID, None], True], ["=", ["field", ORDERS_IS_REFUNDED, None], False]]
@@ -560,6 +569,7 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     dc("daily_bal", 3, 0, 24, 6, T["Обзор"]),
     dc("fcf_chart", 9, 0, 12, 6, T["Обзор"]), dc("rev_daily", 9, 12, 12, 6, T["Обзор"]),
     dc("funnel", 15, 0, 12, 7, T["Обзор"]), dc("costs", 15, 12, 12, 7, T["Обзор"]),
+    dc("gates", 22, 0, 24, 5, T["Обзор"]),
     # Деньги
     dc("bal", 0, 0, 6, 3, T["Деньги"]), dc("fcf", 0, 6, 6, 3, T["Деньги"]), dc("cfo", 0, 12, 6, 3, T["Деньги"]),
     dc("runway", 0, 18, 6, 3, T["Деньги"]),

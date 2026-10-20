@@ -698,6 +698,11 @@ Ozon в каталоге есть координаты. Скриншоты бо�
 перезаписываются — новая строка, значение на дату — `fin.inp()`. Миграции
 не переписываются, применяет `analytics/fin/apply.sh`, сверка с v1.5 и
 права — `tests/test_fin_model.py`.
+Миграция 006 (контроль пилота): резерв УСН = прирост max(0; 6 % × доходы
+КУДиР − уплаченные взносы), взносы — деньгами (`fin.tax_calendar`,
+`fin.v_cash_forecast`); эквайринг — факт ЮKassa из реестра; доставка — акт
+(`fin.carrier_acts`, `/act`) или API СДЭКа; ворота пилота — `fin.v_pilot_gates`;
+сводка — `analytics/fin/README.md`.
 
 **Сессия диалога и источник** (`app/modules/dialog/sessions.py`): сессия
 (`dialog_sessions`, её номер — `dialog_id` в `funnel_events` и `llm_usage`)

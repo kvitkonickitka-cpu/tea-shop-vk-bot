@@ -24,3 +24,7 @@ grant insert on fin.inputs to metabase_fin;
 grant insert, update, delete on fin.expenses, fin.capital, fin.cash_snapshots, fin.purchase_lots,
       fin.packing_runs, fin.ad_spend, fin.plan to metabase_fin;
 grant usage on all sequences in schema fin to metabase_fin;
+
+-- 006: акт перевозчика и сроки поставки — формы; налоговый календарь — отметка формой.
+grant insert, update, delete on fin.carrier_acts, fin.supply_lead_times to metabase_fin;
+grant update (status, paid_amount, done_on, done_by, note) on fin.tax_calendar to metabase_fin;

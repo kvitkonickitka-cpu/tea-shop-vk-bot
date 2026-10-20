@@ -369,6 +369,10 @@ V_ORDERS = View(
         Column("session_source", _session_source("sess"),
                "Источник сессии, в которой выставлен счёт (last touch): ad:<метка>, referral:<код>, organic, own."),
         Column("session_source_kind", _kind(_session_source("sess")), "Вид источника сессии: ad, referral, organic, own."),
+        Column("carrier_actual_cost", "(o.details->>'carrier_actual_cost')::numeric(10,2)",
+               "Фактическая стоимость доставки у перевозчика, руб. (СДЭК по API). Пусто — факта нет, см. акты в fin."),
+        Column("carrier_track", "coalesce(o.details->>'cdek_number', o.ozon_posting)",
+               "Номер отправления у перевозчика: накладная СДЭК или отправление Ozon — для сверки с актами."),
     ),
     body=(
         "from orders o\n"
