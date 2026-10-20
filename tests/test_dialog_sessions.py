@@ -295,7 +295,7 @@ async def test_reconcile_warns_once_when_bill_differs(clean, monkeypatch):
     monkeypatch.setattr(manager_messages, "notify", notify)
     async with clean() as session:
         await session.execute(text(
-            "insert into llm_usage (at, operation, model, cost_usd" + TOKENS + ") values ('2026-10-10 12:00+00', 'ход диалога', 'm', 10" + ZEROS + ")"))
+            "insert into llm_usage (at, operation, model, cost_usd" + TOKENS + ") values ('2026-10-01 00:00+00', 'ход диалога', 'm', 10" + ZEROS + ")"))
         await session.execute(text(
             "insert into anthropic_costs (day, amount_usd) values ('2026-10-10', 10.3), ('2026-10-11', 1.0)"))
         await session.commit()
@@ -305,14 +305,41 @@ async def test_reconcile_warns_once_when_bill_differs(clean, monkeypatch):
     assert result["расхождение, %"] == "11.5" and result["sent"]
     again = await anthropic_costs.reconcile_month(now=now)
     assert again["skipped"] == "уже сообщали"
-    assert len(sent) == 1 and "2026-10" in sent[0]
+    assert len(sent) == 1 and "01.10–31.10" in sent[0]
 
 
 async def test_reconcile_quiet_within_tolerance(clean):
     async with clean() as session:
         await session.execute(text(
-            "insert into llm_usage (at, operation, model, cost_usd" + TOKENS + ") values ('2026-10-10 12:00+00', 'ход диалога', 'm', 10" + ZEROS + ")"))
+            "insert into llm_usage (at, operation, model, cost_usd" + TOKENS + ") values ('2026-10-01 00:00+00', 'ход диалога', 'm', 10" + ZEROS + ")"))
         await session.execute(text("insert into anthropic_costs (day, amount_usd) values ('2026-10-10', 10.4)"))
         await session.commit()
     result = await anthropic_costs.reconcile_month(now=datetime(2026, 11, 5, tzinfo=timezone.utc))
     assert result["ok"] is True
+
+
+async def test_reconcile_only_days_the_bot_tracked(clean, monkeypatch):
+    """Учёт бота начался 18.10.2026: сентябрь не сверяем, октябрь — с 19-го (первый полный день)."""
+    sent = []
+
+    async def notify(kind, text_, **kwargs):
+        sent.append(text_)
+        return True
+
+    from app.messages import manager as manager_messages
+
+    monkeypatch.setattr(manager_messages, "notify", notify)
+    async with clean() as session:
+        await session.execute(text(
+            "insert into llm_usage (at, operation, model, cost_usd" + TOKENS + ") values "
+            "('2026-10-18 15:00+00', 'ход диалога', 'm', 5" + ZEROS + "), "
+            "('2026-10-20 12:00+00', 'ход диалога', 'm', 10" + ZEROS + ")"))
+        await session.execute(text(
+            "insert into anthropic_costs (day, amount_usd) values ('2026-09-15', 2.33), "
+            "('2026-10-05', 3.0), ('2026-10-18', 5.0), ('2026-10-20', 10.1)"))
+        await session.commit()
+    september = await anthropic_costs.reconcile_month(now=datetime(2026, 10, 20, 19, 0, tzinfo=timezone.utc))
+    assert september["skipped"] == "бот не вёл учёт ни одного полного дня месяца"
+    october = await anthropic_costs.reconcile_month(now=datetime(2026, 11, 3, 8, 0, tzinfo=timezone.utc))
+    assert october["дни"] == "19.10–31.10" and october["ok"] is True
+    assert sent == []
