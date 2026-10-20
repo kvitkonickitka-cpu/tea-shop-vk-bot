@@ -58,6 +58,12 @@ async def set_draft(peer_id: int, draft: OrderDraft) -> None:
     # черновик (propose_order) приходит с пустыми details и получает новое
     # время — а с ним и право на своё напоминание.
     draft.details.setdefault("started_at", datetime.now(timezone.utc).isoformat())
+    # Скидка по коду друга — в ценах позиций (app/modules/referral/pricing.py):
+    # состав поменялся — пересчёт от прайса. Без скидки позиции не трогаем.
+    if draft.details.get("referral") or any("list_price" in item for item in draft.items or []):
+        from app.modules.referral import pricing as referral_pricing
+
+        referral_pricing.reprice(draft)
     # Версия черновика: кнопка помнит, при какой версии её отправили, и после
     # любой правки становится неактуальной — нажатие не сделает то, чего
     # клиент уже не видит.

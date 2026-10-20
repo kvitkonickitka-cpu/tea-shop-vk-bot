@@ -65,6 +65,9 @@ views:
     - session_source_kind: text
     - carrier_actual_cost: numeric(10,2)
     - carrier_track: text
+    - referral_discount: numeric(10,2)
+    - referral_code_id: integer
+    - items_list_total: numeric(10,2)
   v_order_items:
     - order_id: integer
     - client_key: character varying

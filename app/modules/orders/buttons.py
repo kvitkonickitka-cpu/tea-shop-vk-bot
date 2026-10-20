@@ -738,6 +738,13 @@ async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
 
+async def _on_invite(peer_id: int, payload: dict) -> Press:
+    """«Пригласить друга» (пакет D): код и ссылка — кодом, без модели."""
+    from app.modules.referral import service as referral
+
+    return Press(reply=await referral.invite_text(peer_id))
+
+
 async def _on_review_consent(peer_id: int, payload: dict) -> Press:
     """Согласие на публикацию отзыва (C7): с именем, анонимно, не публиковать."""
     from app.modules.orders import reviews
@@ -746,7 +753,15 @@ async def _on_review_consent(peer_id: int, payload: dict) -> Press:
     if not isinstance(order_id, int):
         return STALE
     reply = await reviews.on_consent(peer_id, order_id, str(payload.get("c") or ""))
-    return Press(reply=reply) if reply else STALE
+    if not reply:
+        return STALE
+    # После хорошего отзыва — предложить поделиться с другом (пакет D).
+    from app.modules.referral import service as referral
+
+    if await referral.enabled(peer_id):
+        return Press(reply=reply, keyboard=keyboards.inline([[keyboards.text_button(
+            "Пригласить друга", {"a": "ref_invite"}, "positive")]]))
+    return Press(reply=reply)
 
 
 _HANDLERS = {
@@ -766,6 +781,7 @@ _HANDLERS = {
     "edit": _to_model,
     "rate": _on_rate,
     "rv_consent": _on_review_consent,
+    "ref_invite": _on_invite,
     # «Подобрать чай» под реактивацией — консультация, её ведёт модель.
     "advise": _to_model,
     "other": _to_model,

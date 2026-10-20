@@ -428,6 +428,15 @@ from fin.v_cac where period_type = 'неделя' order by period_start""", "bar
          {"graph.dimensions": ["Неделя"], "graph.metrics": ["Диалоги", "Черновики", "Счета", "Первые оплаты"]})
 
 
+def cards_referral(q):
+    card("c_referral", q, "Рекомендации друзей: скидки и CAC канала", """
+select period_start as "Месяц", new_clients_referral as "Новые по коду друга", referral_discounts as "Скидки им",
+       cac_referral as "CAC канала", all_discounts as "Все скидки по кодам"
+from fin.v_referral_cac where period_type = 'месяц' order by period_start""", "table",
+         colfmt(**{"Скидки им": RUB, "CAC канала": RUB, "Все скидки по кодам": RUB}),
+         description="Скидка уже вычтена из выручки заказа (цены позиций); здесь — сколько она стоила на нового клиента.")
+
+
 def cards_stock(q):
     card("s_stock", q, "Склад", """
 select product as "Продукт", kind as "Тип", grams_bought as "Куплено, г", grams_used as "Израсходовано, г",
@@ -529,6 +538,7 @@ if __name__ == "__main__":
     cards_pilot(qcoll)
     cards_unit(qcoll)
     cards_cac(qcoll)
+    cards_referral(qcoll)
     cards_stock(qcoll)
     cards_entry(qcoll)
 
@@ -551,6 +561,7 @@ if __name__ == "__main__":
         # Реклама и CAC
         dc("c_weekly", "Реклама и CAC", 0, 0, 12, 6), dc("c_cac_line", "Реклама и CAC", 0, 12, 12, 6),
         dc("c_funnel", "Реклама и CAC", 6, 0, 24, 6), dc("c_monthly", "Реклама и CAC", 12, 0, 24, 7),
+        dc("c_referral", "Реклама и CAC", 19, 0, 24, 5),
         # Склад и коды
         dc("s_reorder", "Склад и коды", 0, 0, 10, 6), dc("s_codes", "Склад и коды", 0, 10, 14, 6),
         dc("s_stock", "Склад и коды", 6, 0, 24, 9),

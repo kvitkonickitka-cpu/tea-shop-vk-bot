@@ -507,6 +507,40 @@ def manager_complaint_from_rating(order, score: int, composition_line: str) -> s
             "Выясните, что не так, и ответьте в диалоге.")
 
 
+def referral_invite(code: str, link: str, *, percent: int) -> str:
+    """Пакет D. Персональный код и ссылка для друга."""
+    return (f"Ваш код для друзей: {code}\nДругу — скидка {percent} % на первый заказ: пусть напишет нам по ссылке "
+            f"{link} или пришлёт код в сообщении.\nСкидка — только на чай, не на доставку, одна на человека.")
+
+
+def referral_reward(percent: int) -> str:
+    return (f"Ваш друг получил заказ по вашему коду — спасибо, что советуете нас! 🍵 "
+            f"На ваш следующий заказ — скидка {percent} % на чай, применится сама.")
+
+
+def referral_not_yet() -> str:
+    return "Код для друзей появится после вашего первого полученного заказа 🙂"
+
+
+def referral_unavailable() -> str:
+    return "Приглашения друзей пока не работают — скоро запустим."
+
+
+def referral_pending(percent: int) -> str:
+    return (f"Код принят: скидка {percent} % на чай применится к заказу, как только соберём его. "
+            "Скажи клиенту это и продолжай консультацию.")
+
+
+def referral_applied(terms: dict) -> str:
+    """Для модели: что применилось — сумма скидки и итог считает код."""
+    if not terms.get("active"):
+        return (f"Код принят, но скидка начнёт действовать от суммы товаров {amount(terms.get('min_total'))} ₽ — "
+                "скажи клиенту, сколько не хватает, и предложи дополнить заказ.")
+    return (f"Код друга применён: скидка {terms.get('percent')} % на чай — −{amount(terms.get('discount'))} ₽, "
+            f"товары теперь {amount(float(terms.get('list_total') or 0) - float(terms.get('discount') or 0))} ₽. "
+            "Скажи клиенту именно эти цифры. На доставку скидка не действует.")
+
+
 def escalation_after_hours(phrase: str) -> str:
     """Для модели: вопрос передан ночью — когда ответит менеджер, и что продолжать."""
     return (

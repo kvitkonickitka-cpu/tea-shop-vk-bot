@@ -111,6 +111,12 @@ async def record(
             await session.commit()
     except Exception:
         logger.exception("Не записали событие воронки %s для peer_id=%s", event, peer_id)
+    if event in ("payment_succeeded", "invoice_expired", "invoice_canceled", "canceled_by_client",
+                 "payment_declined", "refunded"):
+        # Рефералка: резерв скидки по счёту — применить, снять или аннулировать.
+        from app.modules.referral import service as referral
+
+        await referral.on_event(peer_id, event, order_id)
     if event == "payment_succeeded":
         # После денег — новый разговор: следующее сообщение откроет новую сессию.
         await sessions.close(peer_id, "payment", at=at)

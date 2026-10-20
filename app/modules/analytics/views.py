@@ -157,6 +157,12 @@ EVENTS = [
     ("complaint_from_rating", "Жалоба из оценки 1–3", None, "Менеджер"),
     ("ozon_approve_dry_run", "Ozon: подтверждение отправления (dry-run)", None, "Доставка"),
     ("ozon_approved", "Ozon: отправление подтверждено автоматически", None, "Доставка"),
+    ("referral_code_issued", "Выдан код для друзей", None, "Рекомендации"),
+    ("referral_link_opened", "Друг пришёл по ссылке", None, "Рекомендации"),
+    ("referral_code_applied", "Код друга применён к черновику", None, "Рекомендации"),
+    ("referral_redeemed", "Оплачен заказ со скидкой по коду друга", None, "Рекомендации"),
+    ("referral_rejected", "Код друга отклонён", None, "Рекомендации"),
+    ("referral_reward_granted", "Награда пригласившему", None, "Рекомендации"),
 ]
 
 CHANNELS = {
@@ -388,6 +394,14 @@ V_ORDERS = View(
                "Фактическая стоимость доставки у перевозчика, руб. (СДЭК по API). Пусто — факта нет, см. акты в fin."),
         Column("carrier_track", "coalesce(o.details->>'cdek_number', o.ozon_posting)",
                "Номер отправления у перевозчика: накладная СДЭК или отправление Ozon — для сверки с актами."),
+        Column("referral_discount",
+               "coalesce(case when (o.details->'referral'->>'active')::boolean then (o.details->'referral'->>'discount')::numeric end, 0)::numeric(10,2)",
+               "Скидка по коду друга или награда пригласившему, руб. (уже вычтена из items_total и total). 0 — без скидки."),
+        Column("referral_code_id", "(o.details->'referral'->>'code_id')::int",
+               "Код друга, по которому дана скидка (referral_codes.id). Пусто — без кода."),
+        Column("items_list_total",
+               "coalesce((o.details->'referral'->>'list_total')::numeric, o.items_total)::numeric(10,2)",
+               "Товары по прайсу до скидки, руб."),
     ),
     body=(
         "from orders o\n"
