@@ -677,7 +677,10 @@ Ozon в каталоге есть координаты. Скриншоты бо�
 
 ## Аналитика: Metabase
 
-Дашборды (Metabase на ВМ Timeweb, `https://stats.teapotwice.ru`)
+Дашборды (Metabase на ВМ Timeweb, `https://stats.teapotwice.ru`) — с 21.10.2026
+«Пульс» (каждый день) и «Служебное» (ввод данных, сверки, отчёты, вводные), собирает
+`analytics/metabase/dash_build.py`; числа — из представлений `fin` (миграция 009),
+«Сводка» и «Финансы» в архиве. Витрины бота
 читают только схему `analytics` (`app/modules/analytics/views.py`).
 **Столбцы только добавляются в конец** — и в `views.py`, и в
 `analytics/contract.yaml`, иначе падает тест договора. Персональных данных

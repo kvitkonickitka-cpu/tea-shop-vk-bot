@@ -545,6 +545,10 @@ def verify():
 
 
 if __name__ == "__main__":
+    # С 21.10.2026 «Финансы» заменены «Пульсом» и «Служебным» (dash_build.py, формы — там же);
+    # пересборка вернула бы архивный дашборд.
+    if any(d.get("name") == "Пульс" for d in call("GET", "/dashboard/")):
+        raise SystemExit("«Финансы» заменены «Пульсом» и «Служебным» — собирайте их: dash_build.py.")
     fin_db, tables = fin_database()
     root, qcoll, old = collections()
     rows = call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query":

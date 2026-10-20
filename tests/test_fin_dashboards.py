@@ -213,13 +213,14 @@ async def test_pnl_report_and_pilot_status(fin):
 
 async def test_attention_says_all_is_well_when_nothing_is_wrong(fin):
     # Денег хватает, партия внесена, переводов нет — проверкам нечего сказать.
-    await _bank(fin, [(TODAY - timedelta(days=30), "in", 900000, "cff_owner_contribution")], "900000")
+    await _bank(fin, [(TODAY - timedelta(days=30), "in", 900000, "cff_owner_contribution", "capital-1")], "900000")
+    await fin.execute("insert into fin.bank_marks (operation_id, partner, entered_by) values ('capital-1', 'Илья', 'Илья')")
     await fin.execute("insert into fin.purchase_lots (date, sku_name, qty_units, price_per_unit, entered_by) "
                       "select current_date, sku_name, 1, 1000, 'Никита' from fin.sku limit 1")
     rows = await fin.fetch("select * from fin.v_attention")
     started = await fin.fetchval("select started from fin.v_pilot_status")
     if not started:
-        assert [r["text"] for r in rows] == ["Всё в порядке"]
+        assert [(r["level"], r["text"]) for r in rows] == [("Всё в порядке", "Проверки ничего не нашли")]
 
 
 async def test_new_views_are_readable_by_dashboards_and_marks_by_forms(bank):
@@ -251,3 +252,91 @@ async def test_payment_without_receipt_needs_attention(fin):
         assert "Чек не зарегистрирован у ЮKassa: 1 оплат(ы)" in texts
     finally:
         await fin.execute("delete from finance.yk_payments")
+
+
+# --- 010: доработки по ревью 21.10.2026 ---------------------------------------------------
+
+
+async def test_refunded_payment_is_not_in_transit(bank):
+    """«Придёт 219 992 ₽»: тестовый платёж 217 ₽ (нетто 208,75) с возвратом давал −8,25 ₽ в прогнозе."""
+    await bank.execute("delete from finance.yk_refunds; delete from finance.yk_payments")
+    try:
+        await bank.execute(
+            "insert into finance.yk_payments (id, status, amount, income_amount, payment_method, captured_at) values "
+            "('p-refunded', 'succeeded', 217, 208.75, 'bank_card', now() - interval '25 days'), "
+            "('p-live', 'succeeded', 1490, 1430.40, 'bank_card', now() - interval '1 hour')")
+        await bank.execute("insert into finance.yk_refunds (id, payment_id, status, amount, created_at) "
+                           "values ('r-1', 'p-refunded', 'succeeded', 217, now() - interval '25 days')")
+        assert await bank.fetchval("select sum(payouts_in) from fin.v_runway_daily") == Decimal("1430.40")
+        week = await bank.fetchrow("select * from fin.v_weekly_forecast where week_no = 1")
+        assert week["inflow"] == Decimal("220000") + Decimal("1430.40")
+    finally:
+        await bank.execute("delete from finance.yk_refunds; delete from finance.yk_payments")
+
+
+async def test_tea_and_vk_on_their_dates_and_forecast_without_capital(bank):
+    tea_day = await bank.fetchval("select greatest(fin.inp_date('tea_purchase_date'), current_date + 1)")
+    vk_day = await bank.fetchval("select greatest(fin.inp_date('vk_topup_date'), current_date + 1)")
+    tea = await bank.fetchval("select sum(left_amount) from fin.v_pilot_budget_status "
+                              "where item in ('Первая закупка чая', 'Доставка основной партии')")
+    on_tea_day = await bank.fetchval("select budget_out from fin.v_runway_daily where day = $1", tea_day)
+    assert on_tea_day >= tea
+    assert await bank.fetchval("select ads_out from fin.v_runway_daily where day = $1", vk_day) == 60000
+    assert await bank.fetchval("select count(*) from fin.v_runway_daily where ads_out > 0") == 1
+    money = await bank.fetchrow("select * from fin.v_money_now")
+    # Без вкладов 2 731 ₽ сверх резерва не хватит и на закупку чая.
+    assert money["runout_no_capital"] is not None and money["capital_remaining"] == 220000
+    chart = await bank.fetch("select day, count(*) over (partition by day) as n from fin.v_balance_chart")
+    assert all(r["n"] == 1 for r in chart)
+
+
+async def test_contribution_is_attributed_by_marking_the_bank_operation(fin):
+    """Ответ владельца: 80 000 ₽ — Никиты, разметкой операции, без второй записи о поступлении."""
+    await _bank(fin, [(date(2026, 9, 10), "in", 80000, "cff_owner_contribution", "capital-80"),
+                      (date(2026, 9, 21), "out", 1000, "tech_internal_transfer", "draw-1")], "79000")
+    await fin.execute("insert into fin.bank_marks (operation_id, budget_item, entered_by) values ('capital-80', 'Весы', 'Илья')")
+    await fin.execute("insert into fin.bank_marks (operation_id, partner, entered_by) values ('capital-80', 'Никита', 'Никита')")
+    rows = {r["partner"]: r for r in await fin.fetch("select * from fin.v_partner_capital")}
+    assert rows["Никита"]["contributed"] == 80000 and "Не указано, чей" not in rows
+    assert await fin.fetchval("select contributed from fin.v_capital_status") == 80000
+    # Поле «Чей вклад» не стирает статью, поставленную раньше.
+    assert await fin.fetchval("select budget_item from fin.v_bank_ops where operation_id = 'capital-80'") == "Весы"
+    # Перевод себе без разметки — «на покупки» по умолчанию и строка «проверьте».
+    texts = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
+    assert any(t.startswith("Переводы себе без разметки: 1 на 1 000 ₽") for t in texts)
+    await fin.execute("insert into fin.bank_marks (operation_id, transfer_kind, entered_by) "
+                      "values ('draw-1', 'вывод владельцем', 'Никита')")
+    op = await fin.fetchrow("select * from fin.v_bank_ops where operation_id = 'draw-1'")
+    assert (op["transfer_kind"], op["cash_class"], op["transfer_kind_default"]) == ("вывод владельцем", "Финансирование", False)
+    assert (await fin.fetchrow("select * from fin.v_card_reconcile_status"))["transferred"] == 0
+
+
+async def test_any_old_uncovered_transfer_is_overdue(fin):
+    """Непокрытый перевод старше N дней — даже если последний перевод свежий."""
+    await _bank(fin, [(TODAY - timedelta(days=30), "out", 1000, "tech_internal_transfer"),
+                      (TODAY, "out", 17953, "tech_internal_transfer")], "50000")
+    await fin.execute("delete from fin.expenses")
+    assert (await fin.fetchrow("select * from fin.v_card_reconcile_status"))["overdue"]
+    await fin.execute("insert into fin.expenses (date, category, amount, paid_from, entered_by) "
+                      "values (current_date, 'упаковка', 1000, 'мимо счёта', 'Никита')")
+    assert not (await fin.fetchrow("select * from fin.v_card_reconcile_status"))["overdue"]
+
+
+async def test_unmatched_spend_and_budget_before_and_in_pilot(bank):
+    texts = [r["text"] for r in await bank.fetch("select * from fin.v_attention")]
+    assert "Разметить 1 операц. на 5 000 ₽: статья бюджета не определена" in texts
+    services = await bank.fetchrow("select * from fin.v_pilot_budget_status where item = 'Сервисы за пилот'")
+    assert services["spent_before_start"] == services["spent"] and services["spent_in_pilot"] == 0
+
+
+async def test_inputs_display(fin):
+    rows = {r["key"]: r for r in await fin.fetch("select * from fin.v_inputs_display")}
+    assert rows["capital_plan"]["kind"] == "решение"
+    assert rows["ip_registration_date"]["theme"] == "3. Налоги" and rows["ip_registration_date"]["value_shown"] == "08.09.2026"
+    assert rows["ip_fixed_contrib_2026"]["comment"].startswith("Решение · Расчёт 21.10")
+    assert rows["acquiring_rate_bank_card"]["unused"] and not rows["acquiring_rate"]["unused"]
+    assert "Сохранять 30 тыс." in rows["min_cash_reserve"]["comment"]
+    assert rows["ip_fixed_contrib_2027"]["label"] == "Фиксированные взносы полного 2027 года"
+    assert rows["min_cash_reserve"]["since"] in ("с импорта v1.5",) or rows["min_cash_reserve"]["since"].endswith(".2026")
+    # Ставка для карт после пометки «не используется» — та же: acquiring_rate.
+    assert await fin.fetchval("select fin.payment_rate_for('bank_card')") == await fin.fetchval("select fin.payment_rate()")
