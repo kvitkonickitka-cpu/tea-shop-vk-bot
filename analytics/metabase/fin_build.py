@@ -153,7 +153,9 @@ def build_forms(qcoll, fin_db, tables):
     models = {}
     for table, title in (("expenses", "Расходы"), ("capital", "Вклады и выплаты партнёров"),
                          ("cash_snapshots", "Остатки по выписке"), ("purchase_lots", "Партии закупки"),
-                         ("packing_runs", "Фасовка"), ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)")):
+                         ("packing_runs", "Фасовка"), ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)"),
+                         ("carrier_acts", "Акты перевозчиков"), ("supply_lead_times", "Сроки поставки"),
+                         ("tax_calendar", "Налоговый календарь")):
         # Модель прямо на таблице, без SQL: только такой Metabase даёт действия
         # «Исправить» и «Удалить» (row/update, row/delete).
         body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
@@ -161,8 +163,11 @@ def build_forms(qcoll, fin_db, tables):
                                                    "query": {"source-table": tables[table]}}}
         models[table] = CARDS[f"model_{table}"] = call("POST", "/card", body)["id"]
         if table != "inputs":
-            # Исправить или удалить ошибочную строку — прямо в модели. Вводные — только дописываются.
+            # Исправить или удалить ошибочную строку — прямо в модели. Вводные — только дописываются;
+            # налоговый календарь — только отмечается (оплачено, подано), не удаляется.
             for kind, name in (("row/update", "Исправить"), ("row/delete", "Удалить")):
+                if table == "tax_calendar" and kind == "row/delete":
+                    continue
                 call("POST", "/action", {"name": f"{name}: {title.lower()}", "type": "implicit", "kind": kind,
                                          "model_id": models[table]})
     return models
@@ -239,6 +244,23 @@ from c where c.title = {{{{key}}}}
       field("value_text", "Или текст / дата (2026-11-15)", "text", required=False),
       field("valid_from", "Действует с", "date", required=False), NOTE, AUTHOR],
        "Новая строка вводной записана, прежнее значение осталось в истории.")
+    action("act", models["carrier_acts"], fin_db, "Акт перевозчика", f"""
+insert into fin.carrier_acts (carrier, track, amount, kind, act_date, act_number, entered_by)
+values ({{{{carrier}}}}, {{{{track}}}}, {{{{amount}}}}, {{{{kind}}}}, coalesce([[{{{{act_date}}}}::date, ]]null::date),
+        {OPT % 'act_number'}, {{{{entered_by}}}})
+""", [field("carrier", "Перевозчик", "select", options=["ozon", "cdek"]),
+      field("track", "Трек-номер (отправление Ozon или накладная СДЭК)", "text"),
+      field("amount", "Сумма по акту, ₽", "number"),
+      field("kind", "Что", "select", options=["доставка", "возврат"]),
+      field("act_date", "Дата акта", "date", required=False), field("act_number", "Номер акта", "text", required=False),
+      AUTHOR], "Строка акта записана — сверка с котировкой на вкладке «Юнитка». Много строк — CSV командой /act в чате Ops.")
+    action("lead", models["supply_lead_times"], fin_db, "Срок поставки", f"""
+insert into fin.supply_lead_times (scope, name, lead_days, valid_from, note, entered_by)
+values ({{{{scope}}}}, {{{{name}}}}, {{{{lead_days}}}}, coalesce([[{{{{valid_from}}}}::date, ]]current_date), {OPT % 'note'}, {{{{entered_by}}}})
+""", [field("scope", "Для чего", "select", options=["поставщик", "sku"]),
+      field("name", "Поставщик или SKU", "text", placeholder="I-TEA"),
+      field("lead_days", "Срок поставки, дней", "number"), field("valid_from", "Действует с", "date", required=False),
+      NOTE, AUTHOR], "Срок записан — точка заказа на вкладке «Склад и коды».")
 
 
 # --- дашборды ------------------------------------------------------------------------------
@@ -277,6 +299,48 @@ select day as "День", balance as "Остаток" from fin.v_cash where day 
          "line", {"graph.dimensions": ["День"], "graph.metrics": ["Остаток"], **colfmt(**{"Остаток": RUB})})
 
 
+def cards_pilot(q):
+    card("m_gates", q, "Ворота пилота", """
+select gate as "Ворота", check_name as "Проверка",
+       case when unit = '%' then fin.fmt_pct(value) else fin.fmt_rub(value) end as "Сейчас",
+       case when unit = '%' then fin.fmt_pct(threshold) else fin.fmt_rub(threshold) end as "Порог",
+       case status when 'зелёный' then '🟢 зелёный' when 'красный' then '🔴 красный' else '⚪ нет данных' end as "Статус",
+       period_end as "Срок", case when period_complete then 'итог' else 'идёт' end as "Период"
+from fin.v_pilot_gates order by sort""", "table",
+         description="Неделя 2: конверсия платного диалога в оплату. Неделя 6: платный CAC и маржа первого заказа после CAC. "
+                     "М3: повторы за 45 дней, маржа 90 дней − CAC, прибыль М3. Пороги — вводные gate_*.")
+    card("m_forecast", q, "Деньги на 8 недель", """
+select week_start as "Неделя с", opening as "На начало", payouts_in as "ЮKassa", -planned_expenses as "План расходов",
+       -ads as "Реклама", -taxes as "Налоги и взносы", -(bank_fee + services) as "Банк и сервисы",
+       closing as "На конец", lowest as "Минимум за неделю",
+       case when below_reserve then 'ниже резерва' end as "Резерв"
+from fin.v_cash_forecast order by week_no""", "table",
+         colfmt(**{k: RUB for k in ("На начало", "ЮKassa", "План расходов", "Реклама", "Налоги и взносы",
+                                    "Банк и сервисы", "На конец", "Минимум за неделю")}),
+         description="Остаток по выписке минус холды, плюс выплаты ЮKassa в пути, минус плановые расходы, реклама по "
+                     "дневному бюджету, налоги и взносы по сроку (налоговый календарь), банк с декабря, сервисы.")
+    card("m_forecast_line", q, "Прогноз остатка и резерв", """
+select day as "День", closing as "Остаток", fin.inp('min_cash_reserve') as "Резерв" from fin.v_cash_forecast_daily order by day""",
+         "line", {"graph.dimensions": ["День"], "graph.metrics": ["Остаток", "Резерв"],
+                  **colfmt(**{"Остаток": RUB, "Резерв": RUB})})
+    card("m_breach", q, "Когда остаток уйдёт ниже резерва", """
+select coalesce(to_char(max(reserve_breach_date), 'DD.MM.YYYY'), 'не в ближайшие 8 недель') as "Дата",
+       fin.fmt_rub(max(min_cash_reserve)) as "Резерв",
+       case when bool_or(ads_plan_missing) then 'дневной бюджет рекламы не задан — реклама не учтена' end as "Внимание"
+from fin.v_cash_forecast""", "object")
+    card("m_taxes", q, "Налоговый календарь", """
+select due_date as "Срок", event as "Событие", fin.fmt_rub(amount_hint) as "Ориентир", status as "Статус",
+       fin.fmt_rub(paid_amount) as "Уплачено", done_on as "Когда", note as "Примечание"
+from fin.tax_calendar order by due_date, event""", "table",
+         description="Отметка «оплачено» или «подано» — командой /tax в чате Ops или в модели «Ввод: Налоговый календарь».")
+    card("m_kudir", q, "КУДиР: доходы", """
+select income_date as "Дата дохода", doc_number as "Документ", doc_date as "Дата документа", content as "Содержание",
+       income as "Доход, ₽" from fin.v_kudir order by income_date, doc_date, doc_number""", "table",
+         colfmt(**{"Доход, ₽": {"decimals": 2}}),
+         description="Скачать — кнопкой выгрузки (xlsx/csv) или /kudir 2026-10 в чате Ops. Дата дохода — по правилу "
+                     "KUDIR_INCOME_DATE; правило подтвердить у бухгалтера.")
+
+
 def cards_unit(q):
     card("u_margin", q, "Маржа до CAC: план и факт", """
 select product as "Продукт", kind as "Тип", retail_price as "Цена", product_cost as "Себестоимость",
@@ -299,7 +363,8 @@ from fin.v_order_economics""", "object")
 select order_id as "Заказ", paid_date_msk as "Оплачен", is_first_order as "Первый", revenue as "Выручка",
        cogs_tea as "Чай", packaging_and_codes as "Упаковка и коды", carrier_cost as "Перевозчик",
        acquiring as "Эквайринг", usn_reserve as "УСН", api_cost as "Claude API", margin_before_cac as "Маржа до CAC",
-       margin_pct as "Маржа, %", warning as "Внимание"
+       margin_pct as "Маржа, %", warning as "Внимание", acquiring_source as "Эквайринг — откуда",
+       carrier_cost_source as "Доставка — откуда", carrier_return_cost as "Обратная доставка"
 from fin.v_order_economics order by paid_date_msk desc, order_id desc""", "table",
          colfmt(**{k: RUB for k in ("Выручка", "Чай", "Упаковка и коды", "Перевозчик", "Эквайринг", "УСН",
                                     "Claude API", "Маржа до CAC")}, **{"Маржа, %": PCT}))
@@ -308,15 +373,28 @@ select month_label as "Месяц", period_start as "С", orders as "Заказ�
        cogs_tea as "Чай", packaging_and_codes as "Упаковка и коды", delivery_subsidy as "Субсидия доставки",
        returns as "Возвраты", acquiring as "Эквайринг", margin_before_cac as "Маржа до CAC", ads as "Реклама",
        contractor as "Подрядчик", other_opex as "Прочие", usn_reserve as "Резерв УСН",
-       contributions_reserve as "Взносы", operating_profit as "Операционная прибыль", operating_margin as "Опер. маржа, %"
+       operating_profit as "Операционная прибыль", operating_margin as "Опер. маржа, %",
+       usn_income as "Доход УСН (КУДиР)", contributions_paid as "Взносы уплачены (деньги)",
+       contributions_reserve as "Взносы год/12 (справочно)"
 from fin.v_pnl_monthly order by month_no""", "table",
          colfmt(**{k: RUB for k in ("Выручка", "Чай", "Упаковка и коды", "Субсидия доставки", "Возвраты", "Эквайринг",
-                                    "Маржа до CAC", "Реклама", "Подрядчик", "Прочие", "Резерв УСН", "Взносы",
-                                    "Операционная прибыль")}, **{"Опер. маржа, %": PCT}))
+                                    "Маржа до CAC", "Реклама", "Подрядчик", "Прочие", "Резерв УСН",
+                                    "Операционная прибыль", "Доход УСН (КУДиР)", "Взносы уплачены (деньги)",
+                                    "Взносы год/12 (справочно)")}, **{"Опер. маржа, %": PCT}),
+         description="Резерв УСН = прирост max(0; 6 % × доходы КУДиР с начала года − уплаченные взносы). Взносы в прибыль "
+                     "не входят: это деньги (прогноз на 8 недель), а налог уже уменьшен на уплаченные.")
     card("u_breakeven", q, "Заказов для безубыточности", """
-select month_label as "Месяц", lead_product as "Lead-продукт", lead_margin as "Маржа lead",
+select month_label as "Месяц", margin_basis as "Маржа — по чему", margin_used as "Маржа",
        fixed_costs as "Постоянные", acquisition_ads as "Реклама", orders_to_break_even as "Заказов"
-from fin.v_breakeven order by month_no""", "table", colfmt(**{"Маржа lead": RUB, "Постоянные": RUB, "Реклама": RUB}))
+from fin.v_breakeven order by month_no""", "table", colfmt(**{"Маржа": RUB, "Постоянные": RUB, "Реклама": RUB}),
+         description="Фактическая средняя маржа заказа до CAC за 14 дней, если оплат ≥ 10; иначе — маржа lead-продукта.")
+    card("u_carrier", q, "Доставка: котировка и факт", """
+select month as "Месяц", carrier as "Перевозчик", orders as "Заказов с фактом", quote as "Котировки", actual as "Факт",
+       returns as "Обратная доставка", fin.fmt_pct(deviation) as "Отклонение",
+       case when over_limit then 'больше допуска' end as "Внимание"
+from fin.v_carrier_check_monthly order by month desc, carrier""", "table",
+         colfmt(**{"Котировки": RUB, "Факт": RUB, "Обратная доставка": RUB}),
+         description="Факт — акт перевозчика (форма или /act) или API СДЭКа. Отклонение больше carrier_deviation_max — ⚠️ в Ops.")
 
 
 def cards_cac(q):
@@ -324,10 +402,15 @@ def cards_cac(q):
 select period_start as "Месяц", spend_own as "Реклама свои", spend_bonus as "Бонусы", clicks as "Клики",
        contractor as "Подрядчик", new_clients as "Новые клиенты", cac as "CAC",
        first_order_margin as "Маржа 1-го заказа", first_order_after_cac as "1-й заказ после CAC",
+       new_clients_ad as "Новые из рекламы", cac_paid as "Платный CAC",
+       first_order_after_cac_paid as "1-й заказ после платного CAC",
        after_cac_low as "После CAC 300", after_cac_mid as "После CAC 500", after_cac_high as "После CAC 700"
 from fin.v_cac where period_type = 'месяц' order by period_start""", "table",
          colfmt(**{k: RUB for k in ("Реклама свои", "Бонусы", "Подрядчик", "CAC", "Маржа 1-го заказа", "1-й заказ после CAC",
-                                    "После CAC 300", "После CAC 500", "После CAC 700")}))
+                                    "Платный CAC", "1-й заказ после платного CAC",
+                                    "После CAC 300", "После CAC 500", "После CAC 700")}),
+         description="CAC — общий (реклама и подрядчик на всех новых клиентов). Платный CAC — реклама своими на новых "
+                     "клиентов, пришедших по рекламной ссылке (first touch ad:*).")
     card("c_weekly", q, "Реклама по неделям: свои и бонусы", """
 select period_start as "Неделя", coalesce(spend_own, 0) as "Свои", coalesce(spend_bonus, 0) as "Бонусы"
 from fin.v_cac where period_type = 'неделя' order by period_start""", "bar",
@@ -350,11 +433,15 @@ def cards_stock(q):
 select product as "Продукт", kind as "Тип", grams_bought as "Куплено, г", grams_used as "Израсходовано, г",
        grams_left as "Остаток, г", packed as "Расфасовано", sold as "Продано", refunded as "Возвращено",
        on_hand as "На руках", round(days_left) as "Хватит, дней",
-       case when reorder then 'пора докупать' end as "Сигнал"
-from fin.v_stock order by reorder desc, kind, product""", "table")
-    card("s_reorder", q, "Пора докупать", """
-select product as "Продукт", on_hand as "На руках", round(days_left) as "Хватит, дней"
-from fin.v_stock where reorder order by days_left""", "table")
+       case when order_now then 'пора заказывать' when reorder then 'мало' end as "Сигнал",
+       lead_days as "Поставка, дн.", round(reorder_point) as "Точка заказа",
+       case when not_in_bot then 'нет в каталоге бота' end as "Бот"
+from fin.v_stock order by order_now desc nulls last, reorder desc, kind, product""", "table",
+         description="Точка заказа = (срок поставки + фасовка и маркировка + страховой запас) × продажи в день за 14 дней. "
+                     "Пусто — сроки не заданы (вводные и форма «Срок поставки»).")
+    card("s_reorder", q, "Пора заказывать", """
+select product as "Продукт", on_hand as "На руках", round(reorder_point) as "Точка заказа", round(days_left) as "Хватит, дней"
+from fin.v_stock where order_now or (order_now is null and reorder) order by days_left""", "table")
     card("s_codes", q, "Коды «Честного знака»", """
 select gtin as "GTIN", imported as "Из СУЗ", used_in_orders as "В заказах", available as "Свободно",
        returned as "Вернулось", coalesce(printed::text, 'нет данных') as "Напечатано"
@@ -439,6 +526,7 @@ if __name__ == "__main__":
     models = build_forms(qcoll, fin_db, tables)
     make_actions(models, fin_db)
     cards_money(qcoll)
+    cards_pilot(qcoll)
     cards_unit(qcoll)
     cards_cac(qcoll)
     cards_stock(qcoll)
@@ -447,15 +535,19 @@ if __name__ == "__main__":
     dashboard(root, "Финмодель: деньги по выписке, юнитка, реклама и CAC, склад и коды, ввод данных формами. "
               "Выписка — 07:00 и 21:00 МСК, заказы — сразу.", [
         # Деньги
-        dc("m_status", "Деньги", 0, 0, 12, 6), dc("m_limit", "Деньги", 0, 12, 12, 6),
-        dc("m_check", "Деньги", 6, 0, 12, 5), dc("m_budget_progress", "Деньги", 6, 12, 12, 5),
-        dc("m_balance", "Деньги", 11, 0, 12, 6), dc("m_weekly", "Деньги", 11, 12, 12, 6),
-        dc("m_budget", "Деньги", 17, 0, 24, 9),
+        dc("m_gates", "Деньги", 0, 0, 24, 5),
+        dc("m_status", "Деньги", 5, 0, 12, 6), dc("m_limit", "Деньги", 5, 12, 12, 6),
+        dc("m_check", "Деньги", 11, 0, 12, 5), dc("m_budget_progress", "Деньги", 11, 12, 12, 5),
+        dc("m_balance", "Деньги", 16, 0, 12, 6), dc("m_weekly", "Деньги", 16, 12, 12, 6),
+        dc("m_breach", "Деньги", 22, 0, 8, 4), dc("m_forecast_line", "Деньги", 22, 8, 16, 6),
+        dc("m_forecast", "Деньги", 28, 0, 24, 6),
+        dc("m_taxes", "Деньги", 34, 0, 24, 6), dc("m_kudir", "Деньги", 40, 0, 24, 7),
+        dc("m_budget", "Деньги", 47, 0, 24, 9),
         # Юнитка
         dc("u_two", "Юнитка", 0, 0, 6, 4), dc("u_hist", "Юнитка", 0, 6, 18, 6),
         dc("u_margin_chart", "Юнитка", 6, 0, 12, 10), dc("u_breakeven", "Юнитка", 6, 12, 12, 5),
         dc("u_margin", "Юнитка", 16, 0, 24, 8), dc("u_pnl", "Юнитка", 24, 0, 24, 7),
-        dc("u_orders", "Юнитка", 31, 0, 24, 8),
+        dc("u_orders", "Юнитка", 31, 0, 24, 8), dc("u_carrier", "Юнитка", 39, 0, 24, 5),
         # Реклама и CAC
         dc("c_weekly", "Реклама и CAC", 0, 0, 12, 6), dc("c_cac_line", "Реклама и CAC", 0, 12, 12, 6),
         dc("c_funnel", "Реклама и CAC", 6, 0, 24, 6), dc("c_monthly", "Реклама и CAC", 12, 0, 24, 7),
@@ -466,8 +558,9 @@ if __name__ == "__main__":
         button("expense", "Добавить расход", 0, 0), button("capital", "Вклад / выплата партнёра", 0, 6),
         button("snapshot", "Остаток по выписке", 0, 12), button("lot", "Партия закупки", 0, 18),
         button("packing", "Фасовка", 2, 0), button("ads", "Реклама за день", 2, 6),
-        button("input", "Изменить вводную", 2, 12),
-        dc("e_recent", "Ввод данных", 4, 0, 24, 8), dc("e_inputs", "Ввод данных", 12, 0, 24, 10)])
+        button("input", "Изменить вводную", 2, 12), button("act", "Акт перевозчика", 2, 18),
+        button("lead", "Срок поставки", 4, 0),
+        dc("e_recent", "Ввод данных", 6, 0, 24, 8), dc("e_inputs", "Ввод данных", 14, 0, 24, 10)])
 
     failed = verify()
     for c in old:

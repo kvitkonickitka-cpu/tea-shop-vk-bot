@@ -52,6 +52,8 @@ FEEDBACK = "feedback"
 PD_DELETE = "pd_delete"
 # Реестр ЮKassa: выплата не сходится с выпиской или платежи долго не выплачены — в Ops.
 YK_REGISTRY = "yk_registry"
+# Доставка: факт перевозчика отличается от котировки больше допустимого — в Ops.
+CARRIER_CHECK = "carrier_check"
 
 
 def _backoff(attempts: int) -> timedelta:

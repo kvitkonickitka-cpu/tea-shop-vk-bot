@@ -126,7 +126,7 @@ def handle_update(update: dict, me: dict) -> bool:
         return False
     from app.modules.ops import commands
 
-    if commands.parse(message.get("text") or "", me.get("username")) is not None:
+    if commands.parse(message.get("text") or message.get("caption") or "", me.get("username")) is not None:
         # Команды администраторов (/flag, /own…) разбирает код, мимо модели.
         if _stale(message):
             return False
