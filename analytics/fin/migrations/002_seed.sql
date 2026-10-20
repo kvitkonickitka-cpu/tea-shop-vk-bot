@@ -107,14 +107,14 @@ select * from (values
 ) as v (key, label, value, value_text, unit, status, note, valid_from, entered_by)
 where not exists (select 1 from fin.inputs where entered_by = 'импорт v1.5');
 
-insert into fin.expenses (date, category, amount, description, is_plan, entered_by)
+insert into fin.expenses (date, category, amount, description, is_plan, paid_from, entered_by)
 select * from (values
-  ('2026-10-16'::date, 'оборудование', 4831::numeric, 'Термопринтер Xprinter XP-365B (Ozon)', False, 'Никита'),
-  ('2026-10-19'::date, 'оборудование', 12296::numeric, 'Весы с поверкой', False, 'Никита'),
-  ('2026-10-20'::date, 'упаковка', 253::numeric, 'Крафт-пакеты с окном 10×15, 50 шт', False, 'Никита'),
-  ('2026-10-20'::date, 'упаковка', 210::numeric, 'Дой-пак 15×24 с окном, 10 шт (АльКрафт)', False, 'Никита'),
-  ('2026-10-20'::date, 'упаковка', 3236::numeric, 'Коробки самосборные 26×17×8, 100 шт', False, 'Никита')
-) as v (date, category, amount, description, is_plan, entered_by)
+  ('2026-10-16'::date, 'оборудование', 4831::numeric, 'Термопринтер Xprinter XP-365B (Ozon)', False, 'счёт ИП', 'Никита'),
+  ('2026-10-19'::date, 'оборудование', 12296::numeric, 'Весы с поверкой', False, 'мимо счёта', 'Никита'),
+  ('2026-10-20'::date, 'упаковка', 253::numeric, 'Крафт-пакеты с окном 10×15, 50 шт', False, 'мимо счёта', 'Никита'),
+  ('2026-10-20'::date, 'упаковка', 210::numeric, 'Дой-пак 15×24 с окном, 10 шт (АльКрафт)', False, 'мимо счёта', 'Никита'),
+  ('2026-10-20'::date, 'упаковка', 3236::numeric, 'Коробки самосборные 26×17×8, 100 шт', False, 'мимо счёта', 'Никита')
+) as v (date, category, amount, description, is_plan, paid_from, entered_by)
 where not exists (select 1 from fin.expenses);
 
 insert into fin.cash_snapshots (date, balance, source, note, entered_by)

@@ -99,15 +99,15 @@ def main() -> None:
     out.append(") as v (key, label, value, value_text, unit, status, note, valid_from, entered_by)")
     out.append(f"where not exists (select 1 from fin.inputs where entered_by = {q(IMPORT)});\n")
 
-    out.append("insert into fin.expenses (date, category, amount, description, is_plan, entered_by)")
+    out.append("insert into fin.expenses (date, category, amount, description, is_plan, paid_from, entered_by)")
     out.append("select * from (values")
     values = [
         f"  ({q(r['date'])}::date, {q(r['category'])}, {num(r['amount'])}::numeric, {q(r['description'])}, "
-        f"{r['is_plan'].strip().lower() == 'true'}, {q(r['entered_by'])})"
+        f"{r['is_plan'].strip().lower() == 'true'}, {q(r.get('paid_from') or 'счёт ИП')}, {q(r['entered_by'])})"
         for r in rows("fin_expenses.csv")
     ]
     out.append(",\n".join(values))
-    out.append(") as v (date, category, amount, description, is_plan, entered_by)")
+    out.append(") as v (date, category, amount, description, is_plan, paid_from, entered_by)")
     out.append("where not exists (select 1 from fin.expenses);\n")
 
     out.append("insert into fin.cash_snapshots (date, balance, source, note, entered_by)")
