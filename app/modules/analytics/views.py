@@ -151,6 +151,12 @@ EVENTS = [
     ("pickup_reminder_2", "Напоминание: завтра последний день хранения", None, "Доставка"),
     ("free_delivery_nudge_shown", "Подсказка до бесплатной доставки показана", None, "Заказ"),
     ("free_delivery_nudge_accepted", "Пачка из подсказки добавлена", None, "Заказ"),
+    ("review_requested", "Попросили отзыв после оценки 4–5", None, "После покупки"),
+    ("review_consent", "Согласие на публикацию отзыва", None, "После покупки"),
+    ("review_published", "Отзыв опубликован", None, "После покупки"),
+    ("complaint_from_rating", "Жалоба из оценки 1–3", None, "Менеджер"),
+    ("ozon_approve_dry_run", "Ozon: подтверждение отправления (dry-run)", None, "Доставка"),
+    ("ozon_approved", "Ozon: отправление подтверждено автоматически", None, "Доставка"),
 ]
 
 CHANNELS = {

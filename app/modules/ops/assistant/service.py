@@ -118,6 +118,14 @@ def _forget_old_threads() -> None:
 
 def handle_update(update: dict, me: dict) -> bool:
     """Решить, наш ли это вопрос, и ответить в фоне. True — взяли в работу."""
+    if update.get("callback_query"):
+        # Кнопка под карточкой в Telegram (публикация отзыва) — разбирает код.
+        from app.modules.orders import reviews
+
+        task = asyncio.create_task(reviews.handle_callback(update["callback_query"]))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+        return True
     message = update.get("message") or {}
     if not message or not _chat_matches((message.get("chat") or {}).get("id")):
         return False

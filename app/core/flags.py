@@ -70,6 +70,7 @@ PAYMENT_RETRY = _register("payment_retry", "Банк отказал — сраз
 ABANDONED_TOUCH = _register("abandoned_touch", "Брошенный черновик или счёт: одно касание через ~20 ч (C3)")
 PICKUP_REMINDERS = _register("pickup_reminders", "Посылка в пункте: напоминание на 2-й день и за день до конца хранения (C4)")
 FREE_DELIVERY_NUDGE = _register("free_delivery_nudge", "Подсказка до бесплатной доставки Ozon с пачкой, закрывающей разницу (C5)")
+REVIEW_FLOW = _register("review_flow", "Отзывы: оценка 1–5, отзыв с согласием на публикацию или жалоба менеджеру (C7)")
 ESCALATION_AFTER_HOURS = _register("escalation_after_hours", "Вопрос менеджеру ночью: когда ответят, продажа продолжается (C6)")
 
 

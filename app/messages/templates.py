@@ -460,6 +460,53 @@ def pickup_reminder(order, *, carrier: str, address: str, storage_until, last_da
     return "\n".join(x for x in (head, f"Хранится до {day_month(storage_until)}.", code, tail) if x)
 
 
+REVIEW_VARIANTS = {"named": "С именем из ВК", "anonymous": "Анонимно", "no": "Не публиковать"}
+
+
+def review_request() -> str:
+    """C7. Оценка 4–5: короткий отзыв, согласие на публикацию — кнопками после текста."""
+    return ("Спасибо, очень приятно! 🙏 Напишите пару слов о чае — что понравилось. "
+            "Если разрешите, опубликуем отзыв в сообществе.")
+
+
+def review_consent_ask() -> str:
+    return "Можно опубликовать ваш отзыв в сообществе?"
+
+
+def review_consent_saved(variant: str) -> str:
+    if variant == "no":
+        return "Хорошо, не публикуем — отзыв останется только у нас. Спасибо, что написали! 🙏"
+    how = "с вашим именем из ВК" if variant == "named" else "без имени"
+    return f"Спасибо! Опубликуем {how}, когда менеджер проверит отзыв 🙏"
+
+
+def complaint_apology(phrase: str) -> str:
+    """C7. Оценка 1–3: извинение и обещание ответа — сразу, вопрос уже у менеджера."""
+    return ("Нам очень жаль, что чай не порадовал 😔 Передала ваш отзыв менеджеру — он разберётся "
+            f"и ответит здесь, в этом диалоге, {phrase}. Если хотите, напишите, что именно не так.")
+
+
+def review_publication(text: str, stars: int, author: str) -> str:
+    """Текст поста с отзывом. Только слова клиента и подпись, никаких правок."""
+    head = "⭐" * stars if stars else "Отзыв покупателя"
+    return f"{head}\n«{text.strip()}»\n— {author}"
+
+
+def manager_review_card(order_id, text: str, variant: str, stars, link: str, *, wall: bool) -> str:
+    """Отзыв с согласием на публикацию. `text` уже экранирован."""
+    how = REVIEW_VARIANTS.get(variant, variant)
+    action = ("Проверьте текст и нажмите «Опубликовать» — бот выложит отзыв на стену сообщества."
+              if wall else "Опубликуйте вручную (стена или обсуждение «Отзывы») и нажмите «Опубликовал вручную».")
+    return (f"⭐ <b>Отзыв по заказу №{order_id} — к публикации</b>\n"
+            + (f"Оценка: {stars} из 5\n" if stars else "")
+            + f"{text}\n\nПубликация: {how}\n{action}\n{link}")
+
+
+def manager_complaint_from_rating(order, score: int, composition_line: str) -> str:
+    return (f"Клиент поставил {score} из 5 заказу №{order.id} ({composition_line}). "
+            "Выясните, что не так, и ответьте в диалоге.")
+
+
 def escalation_after_hours(phrase: str) -> str:
     """Для модели: вопрос передан ночью — когда ответит менеджер, и что продолжать."""
     return (

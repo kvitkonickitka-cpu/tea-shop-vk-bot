@@ -112,6 +112,13 @@ async def finish(token: str, request: Request):
         current = await packing.finish(order_id, by=str(data.get("by") or ""))
     except packing.LinkError as error:
         return _error(str(error))
+    # Собран — подтвердить отправление Ozon (C8). Ошибка здесь сборку не отменяет.
+    from app.modules.delivery import ozon_approve
+
+    try:
+        await ozon_approve.after_packed(order_id)
+    except Exception:
+        logger.exception("Автоподтверждение Ozon после сборки заказа %s упало", order_id)
     return JSONResponse(
         {"ok": True, "message": f"Заказ №{order_id} собран, коды закреплены.",
          "state": current.as_dict()},

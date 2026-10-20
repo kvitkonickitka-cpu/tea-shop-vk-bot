@@ -1186,3 +1186,34 @@ async def ops_controls_now(request: Request):
     except Exception as error:
         logger.exception("Регламент %s руками не выполнился", what)
         return {"error": _hide_token(f"{type(error).__name__}: {error}")[:300]}
+
+
+@router.post("/internal/vk/token-permissions")
+async def vk_token_permissions(request: Request):
+    """Права токена сообщества (groups.getTokenPermissions) — только чтение.
+
+        scripts/api.sh vk/token-permissions
+
+    Нужно для отзывов (C7): есть право wall — бот может публиковать отзыв на стене
+    после кнопки менеджера (REVIEW_PUBLISH_MODE=wall), нет — только вручную.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.dialog import vk_client
+
+    try:
+        permissions = await vk_client.token_permissions()
+    except Exception as error:
+        return {"error": f"{type(error).__name__}: {str(error)[:200]}"}
+    return {"права": permissions, "стена (wall)": "wall" in permissions,
+            "режим публикации отзывов": settings.review_publish_mode}
+
+
+@router.post("/internal/orders/{order_id}/ozon-approve")
+async def ozon_approve_now(order_id: int, request: Request):
+    """Автоподтверждение Ozon по заказу (C8) — как после сборки. В allowlist — dry-run."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.delivery import ozon_approve
+
+    return {"заказ": order_id, **(await ozon_approve.after_packed(order_id))}
