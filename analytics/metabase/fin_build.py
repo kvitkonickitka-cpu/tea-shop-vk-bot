@@ -29,7 +29,8 @@ AUTHORS = ["Никита", "Илья"]
 CATEGORIES = ["закупка", "логистика", "упаковка", "оборудование", "реклама", "подрядчик", "сервисы",
               "налоги_взносы", "банк", "маркировка", "прочее"]
 
-RUB = {"suffix": " ₽", "decimals": 0}
+# Пробел между тысячами, как в «32 731 ₽», а не «32,731 ₽».
+RUB = {"suffix": " ₽", "decimals": 0, "number_separators": ", "}
 PCT = {"number_style": "percent", "decimals": 1}
 ALL_ROWS = {"graph.max_categories_enabled": False}
 
@@ -152,8 +153,12 @@ def build_forms(qcoll, fin_db, tables):
     for table, title in (("expenses", "Расходы"), ("capital", "Вклады и выплаты партнёров"),
                          ("cash_snapshots", "Остатки по выписке"), ("purchase_lots", "Партии закупки"),
                          ("packing_runs", "Фасовка"), ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)")):
-        models[table] = card(f"model_{table}", qcoll, f"Ввод: {title}",
-                             f"select * from fin.{table} order by created_at desc", "table", db=fin_db, model=True)
+        # Модель прямо на таблице, без SQL: только такой Metabase даёт действия
+        # «Исправить» и «Удалить» (row/update, row/delete).
+        body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
+                "type": "model", "dataset_query": {"type": "query", "database": fin_db,
+                                                   "query": {"source-table": tables[table]}}}
+        models[table] = CARDS[f"model_{table}"] = call("POST", "/card", body)["id"]
         if table != "inputs":
             # Исправить или удалить ошибочную строку — прямо в модели. Вводные — только дописываются.
             for kind, name in (("row/update", "Исправить"), ("row/delete", "Удалить")):
@@ -245,20 +250,22 @@ select pilot_status as "Статус", fin.fmt_rub(pilot_loss) as "Накопл�
        fin.fmt_rub(pilot_pause_loss) as "Пауза при", fin.fmt_rub(pilot_max_loss) as "Стоп новых трат при"
 from fin.v_cash_status""", "object")
     card("m_budget_progress", q, "Известные расходы пилота против капитала",
-         "select max(known_total) as known from fin.v_pilot_budget", "progress",
-         {"progress.goal": 300000, **colfmt(known=RUB)})
+         "select max(known_total) as \"Известные расходы\" from fin.v_pilot_budget", "progress",
+         {"progress.goal": 300000, **colfmt(**{"Известные расходы": RUB})})
     card("m_budget", q, "Бюджет пилота по статьям", """
 select item as "Статья", plan_amount as "План", max_amount as "Максимум", source as "Источник"
 from fin.v_pilot_budget order by line_no""", "table", colfmt(**{"План": RUB, "Максимум": RUB}))
     card("m_weekly", q, "Движение денег по неделям", """
-select date_trunc('week', day)::date as week, coalesce(sum(inflow), 0) as inflow,
-       -coalesce(sum(outflow) - coalesce(sum(transfers_out), 0), 0) as outflow, -coalesce(sum(transfers_out), 0) as transfers
-from fin.v_cash group by 1 order by 1""", "bar",
-         {"graph.dimensions": ["week"], "graph.metrics": ["inflow", "outflow", "transfers"], "stackable.stack_type": "stacked",
-          **colfmt(inflow=RUB, outflow=RUB, transfers=RUB)},
+select date_trunc('week', day)::date as "Неделя", coalesce(sum(inflow), 0) as "Приход",
+       -coalesce(sum(outflow) - coalesce(sum(transfers_out), 0), 0) as "Расход",
+       -coalesce(sum(transfers_out), 0) as "Переводы на свои счета"
+from fin.v_cash where day >= fin.inp_date('ip_registration_date') group by 1 order by 1""", "bar",
+         {"graph.dimensions": ["Неделя"], "graph.metrics": ["Приход", "Расход", "Переводы на свои счета"],
+          "stackable.stack_type": "stacked", **colfmt(**{"Приход": RUB, "Расход": RUB, "Переводы на свои счета": RUB})},
          description="Приход, расход и переводы на свои счета (так оплачивают покупки с карты) по выписке.")
-    card("m_balance", q, "Остаток по дням", "select day, balance from fin.v_cash order by day", "line",
-         {"graph.dimensions": ["day"], "graph.metrics": ["balance"], **colfmt(balance=RUB)})
+    card("m_balance", q, "Остаток по дням", """
+select day as "День", balance as "Остаток" from fin.v_cash where day >= fin.inp_date('ip_registration_date') order by day""",
+         "line", {"graph.dimensions": ["День"], "graph.metrics": ["Остаток"], **colfmt(**{"Остаток": RUB})})
 
 
 def cards_unit(q):
@@ -270,14 +277,15 @@ from fin.v_product_margin order by kind, plan_margin desc""", "table",
          colfmt(**{"Цена": RUB, "Себестоимость": RUB, "Маржа план": RUB, "Маржа факт": RUB, "Факт − план": RUB,
                    "Маржа план, %": PCT}))
     card("u_margin_chart", q, "Маржа до CAC на единицу, план", """
-select product, margin_before_cac from fin.v_unit_cost order by margin_before_cac desc""", "row",
-         {"graph.dimensions": ["product"], "graph.metrics": ["margin_before_cac"], **ALL_ROWS, **colfmt(margin_before_cac=RUB)})
+select product as "Продукт", margin_before_cac as "Маржа до CAC" from fin.v_unit_cost order by margin_before_cac desc""", "row",
+         {"graph.dimensions": ["Продукт"], "graph.metrics": ["Маржа до CAC"], **ALL_ROWS, **colfmt(**{"Маржа до CAC": RUB})})
     card("u_hist", q, "Заказы по марже до CAC", """
-select (floor(margin_before_cac / 100) * 100)::int as margin_from, count(*) as orders
+select (floor(margin_before_cac / 100) * 100)::int as "Маржа от", count(*) as "Заказов"
 from fin.v_order_economics where margin_before_cac is not null group by 1 order by 1""", "bar",
-         {"graph.dimensions": ["margin_from"], "graph.metrics": ["orders"], **colfmt(margin_from=RUB)})
+         {"graph.dimensions": ["Маржа от"], "graph.metrics": ["Заказов"], **colfmt(**{"Маржа от": RUB})})
     card("u_two", q, "Доля заказов от 2 пачек", """
-select fin.fmt_pct(avg(two_plus_packs::int)) as share, count(*) as orders from fin.v_order_economics""", "object")
+select fin.fmt_pct(avg(two_plus_packs::int)) as "Доля от 2 пачек", count(*) as "Оплаченных заказов"
+from fin.v_order_economics""", "object")
     card("u_orders", q, "Экономика заказов", """
 select order_id as "Заказ", paid_date_msk as "Оплачен", is_first_order as "Первый", revenue as "Выручка",
        cogs_tea as "Чай", packaging_and_codes as "Упаковка и коды", carrier_cost as "Перевозчик",
@@ -312,19 +320,20 @@ from fin.v_cac where period_type = 'месяц' order by period_start""", "table
          colfmt(**{k: RUB for k in ("Реклама свои", "Бонусы", "Подрядчик", "CAC", "Маржа 1-го заказа", "1-й заказ после CAC",
                                     "После CAC 300", "После CAC 500", "После CAC 700")}))
     card("c_weekly", q, "Реклама по неделям: свои и бонусы", """
-select period_start as week, coalesce(spend_own, 0) as own, coalesce(spend_bonus, 0) as bonus
+select period_start as "Неделя", coalesce(spend_own, 0) as "Свои", coalesce(spend_bonus, 0) as "Бонусы"
 from fin.v_cac where period_type = 'неделя' order by period_start""", "bar",
-         {"graph.dimensions": ["week"], "graph.metrics": ["own", "bonus"], "stackable.stack_type": "stacked",
-          **colfmt(own=RUB, bonus=RUB)})
+         {"graph.dimensions": ["Неделя"], "graph.metrics": ["Свои", "Бонусы"], "stackable.stack_type": "stacked",
+          **colfmt(**{"Свои": RUB, "Бонусы": RUB})})
     card("c_cac_line", q, "CAC и первый заказ после CAC по неделям", """
-select period_start as week, cac, first_order_after_cac from fin.v_cac where period_type = 'неделя' order by period_start""",
-         "line", {"graph.dimensions": ["week"], "graph.metrics": ["cac", "first_order_after_cac"],
-                  **colfmt(cac=RUB, first_order_after_cac=RUB)})
+select period_start as "Неделя", cac as "CAC", first_order_after_cac as "1-й заказ после CAC"
+from fin.v_cac where period_type = 'неделя' order by period_start""",
+         "line", {"graph.dimensions": ["Неделя"], "graph.metrics": ["CAC", "1-й заказ после CAC"],
+                  **colfmt(**{"CAC": RUB, "1-й заказ после CAC": RUB})})
     card("c_funnel", q, "Воронка бота по неделям", """
-select period_start as week, coalesce(dialogs_started, 0) as dialogs, coalesce(drafts, 0) as drafts,
-       coalesce(invoices, 0) as invoices, coalesce(first_paid, 0) as first_paid
+select period_start as "Неделя", coalesce(dialogs_started, 0) as "Диалоги", coalesce(drafts, 0) as "Черновики",
+       coalesce(invoices, 0) as "Счета", coalesce(first_paid, 0) as "Первые оплаты"
 from fin.v_cac where period_type = 'неделя' order by period_start""", "bar",
-         {"graph.dimensions": ["week"], "graph.metrics": ["dialogs", "drafts", "invoices", "first_paid"]})
+         {"graph.dimensions": ["Неделя"], "graph.metrics": ["Диалоги", "Черновики", "Счета", "Первые оплаты"]})
 
 
 def cards_stock(q):
@@ -413,13 +422,13 @@ if __name__ == "__main__":
 
     dashboard(root, "Деньги", "Остаток по выписке и сверка, движение по неделям, известные расходы пилота против 300 000 ₽, "
               "статус лимита пилота. Выписка — 07:00 и 21:00 МСК.", [
-        dc("m_status", 0, 0, 12, 4), dc("m_limit", 0, 12, 12, 4),
-        dc("m_check", 4, 0, 12, 4), dc("m_budget_progress", 4, 12, 12, 4),
-        dc("m_balance", 8, 0, 12, 6), dc("m_weekly", 8, 12, 12, 6),
-        dc("m_budget", 14, 0, 24, 8)])
+        dc("m_status", 0, 0, 12, 6), dc("m_limit", 0, 12, 12, 6),
+        dc("m_check", 6, 0, 12, 5), dc("m_budget_progress", 6, 12, 12, 5),
+        dc("m_balance", 11, 0, 12, 6), dc("m_weekly", 11, 12, 12, 6),
+        dc("m_budget", 17, 0, 24, 9)])
     dashboard(root, "Юнитка", "Маржа до CAC по продуктам — план и факт, заказы по марже, доля заказов от 2 пачек, P&L и "
               "безубыточность.", [
-        dc("u_two", 0, 0, 6, 3), dc("u_hist", 0, 6, 18, 6), dc("u_margin_chart", 6, 0, 12, 10),
+        dc("u_two", 0, 0, 6, 4), dc("u_hist", 0, 6, 18, 6), dc("u_margin_chart", 6, 0, 12, 10),
         dc("u_breakeven", 6, 12, 12, 5), dc("u_margin", 16, 0, 24, 8), dc("u_pnl", 24, 0, 24, 7),
         dc("u_orders", 31, 0, 24, 8)])
     dashboard(root, "Реклама и CAC", "Расход своими и бонусами, клики, новые клиенты, CAC, первый заказ после CAC, "
