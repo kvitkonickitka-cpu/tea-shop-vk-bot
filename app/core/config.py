@@ -501,6 +501,12 @@ class Settings(BaseSettings):
     ops_slow_min_turns: int = 3
     ops_disk_warn_percent: int = 80
     ops_disk_alarm_percent: int = 90
+    # Кому можно команды в чате Ops (/flag, /own…): Telegram ID через запятую.
+    # Пусто — те же, кому отвечает ассистент (ops_assistant_allowed_tg_ids).
+    ops_admin_tg_ids: str = ""
+    # Сверка расхода Claude по учёту бота со счётом Anthropic за прошлый
+    # месяц: расхождение больше этой доли — ⚠️ в Ops (app/modules/ops/anthropic_costs.py).
+    anthropic_reconcile_tolerance: float = 0.05
 
 
 settings = Settings()

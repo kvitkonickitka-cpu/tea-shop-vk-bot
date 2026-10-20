@@ -69,6 +69,14 @@ class LlmUsage(Base):
     # NULL — цены модели нет в `llm_prices.PRICES`: токены есть, стоимости нет.
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
     stop_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Чей это расход (journal.llm_scope): клиент псевдонимным ключом, сессия
+    # диалога, открытый заказ, этап воронки на момент вызова и назначение —
+    # sales_bot (продавец), ops_assistant (чат Ops), labeling (пересказ диалога).
+    client_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    dialog_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage: Mapped[str | None] = mapped_column(String, nullable=True)
+    purpose: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class AnthropicCost(Base):

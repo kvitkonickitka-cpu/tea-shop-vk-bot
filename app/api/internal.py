@@ -178,6 +178,8 @@ async def _run_scheduled() -> dict:
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
     # Счёт Anthropic по дням — раз в час, админ-ключом.
     result["anthropic_costs"] = await _run_task("Счёт Anthropic", anthropic_costs.sync())
+    # Сверка учёта бота со счётом за прошлый месяц — с третьего числа, раз в месяц.
+    result["anthropic_reconcile"] = await _run_task("Сверка Claude со счётом", anthropic_costs.reconcile_month())
 
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
@@ -998,3 +1000,75 @@ async def ops_emulate(request: Request):
     else:
         return {"error": f"нужен latency=секунды или api=одно из {', '.join(ops_journal.APIS)}"}
     return {"emulated": count, "pulse": await ops_pulse.run()}
+
+
+@router.post("/internal/flags")
+async def feature_flags(request: Request):
+    """Фича-флаги: список или переключение — то же, что /flag в чате Ops.
+
+        scripts/api.sh flags
+        scripts/api.sh 'flags?name=<флаг>&mode=allowlist'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.core import flags
+
+    name, mode = request.query_params.get("name"), request.query_params.get("mode")
+    if name and mode:
+        try:
+            previous = await flags.set_mode(name, mode.casefold(), by="api")
+        except ValueError as error:
+            return {"error": str(error)}
+        return {"флаг": name, "было": previous, "стало": mode.casefold()}
+    return {"флаги": await flags.describe()}
+
+
+@router.post("/internal/clients/{peer_id}/own")
+async def mark_own_client(peer_id: int, request: Request):
+    """Метка «свои» — то же, что /own в чате Ops. `?off=1` — снять."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.dialog import sessions
+
+    off = request.query_params.get("off") == "1"
+    found = await sessions.mark_own(peer_id, by="api", own=not off)
+    return {"peer_id": peer_id, "найден": found, "свои": found and not off}
+
+
+@router.post("/internal/smoke/dialog")
+async def smoke_dialog(request: Request):
+    """Проверка в бою: сессии, события воронки и расход Claude тестового аккаунта.
+
+        scripts/api.sh 'smoke/dialog?peer_id=<тестовый VK ID>'
+
+    Только для TEST_VK_IDS и без текстов: источники, отметки, коды событий, суммы.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    try:
+        peer_id = int(request.query_params.get("peer_id") or 0)
+    except ValueError:
+        return {"error": "peer_id — число"}
+    if peer_id not in await analytics_service.test_peer_ids():
+        return {"error": "только для тестовых аккаунтов (TEST_VK_IDS)"}
+    from sqlalchemy import text as sql
+
+    from app.core.client_key import client_key
+    from app.core.database import get_session_factory
+
+    async with get_session_factory()() as session:
+        def rows(result):
+            return [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in r._mapping.items()} for r in result]
+
+        client = rows(await session.execute(sql(
+            "select first_source, ref, own_at is not null as own, is_test from clients where peer_id = :p"), {"p": peer_id}))
+        dialogs = rows(await session.execute(sql(
+            "select id, started_at, last_message_at, source, close_reason, consult_started_at, consult_qualified_at "
+            "from dialog_sessions where peer_id = :p order by id desc limit 5"), {"p": peer_id}))
+        events = rows(await session.execute(sql(
+            "select created_at, event, dialog_id, order_id, source from funnel_events where peer_id = :p "
+            "order by id desc limit 30"), {"p": peer_id}))
+        usage = rows(await session.execute(sql(
+            "select at, operation, dialog_id, order_id, stage, purpose, cost_usd from llm_usage "
+            "where client_key = :k order by id desc limit 15"), {"k": client_key(peer_id)}))
+    return {"клиент": client, "сессии": dialogs, "события": events, "claude": usage}

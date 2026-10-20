@@ -28,6 +28,13 @@ class Client(Base):
     ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ref_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Первый источник (first touch): ad:<ref>, referral:<код>, organic — тоже
+    # один раз, при первом контакте (app/modules/dialog/sessions.py).
+    first_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # «Свои» — ручная метка командой /own в чате Ops: в аналитике источник own,
+    # в CAC такой клиент не входит.
+    own_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    own_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 # --- справочники из Google Таблицы (вкладки «Товары», «Состав», «Себестоимость»,

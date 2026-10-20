@@ -118,11 +118,13 @@ async def ensure_client(peer_id: int, *, ref: str | None = None, ref_source: str
         session_factory = get_session_factory()
     except RuntimeError:
         return
+    from app.modules.dialog import sessions
+
     is_test = peer_id in await test_peer_ids()
     statement = insert(Client).values(
         peer_id=peer_id, client_key=client_key(peer_id),
         ref=(ref or None) and str(ref)[:200], ref_source=(ref_source or None) and str(ref_source)[:200],
-        is_test=is_test,
+        first_source=sessions.classify(ref), is_test=is_test,
     ).on_conflict_do_nothing(index_elements=[Client.peer_id])
     try:
         async with session_factory() as session:

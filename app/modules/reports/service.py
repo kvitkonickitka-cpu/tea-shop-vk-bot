@@ -137,7 +137,10 @@ async def _report_one(session_factory, conversation: Conversation, reported_at: 
     transcript = await privacy.tokenize(
         conversation.peer_id, _build_transcript(conversation, messages, orders, escalations)
     )
-    summary = await claude_client.generate_dialog_report(transcript)
+    from app.modules.ops import journal
+
+    with journal.llm_scope(peer_id=conversation.peer_id, purpose="labeling"):
+        summary = await claude_client.generate_dialog_report(transcript)
 
     from app.modules.analytics import service as analytics
 

@@ -52,6 +52,63 @@ _received_at: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "ops_received_at", default=None
 )
 
+# Чей расход Claude внутри (llm_scope): клиент, сессия диалога, заказ, этап.
+_llm_scope: contextvars.ContextVar[dict | None] = contextvars.ContextVar("ops_llm_scope", default=None)
+
+# Назначение запроса по операции: продавец, ассистент Ops, разметка (пересказ
+# диалога). Неизвестная операция — без назначения, чтобы новая не попала в
+# продавца по ошибке.
+PURPOSES = {
+    "ход диалога": "sales_bot",
+    "ответ без инструментов": "sales_bot",
+    "ассистент Ops": "ops_assistant",
+    "мини-отчёт по диалогу": "labeling",
+}
+
+
+class llm_scope:
+    """Кому записать расход Claude внутри блока: `with journal.llm_scope(peer_id=…, stage=…):`.
+
+    Вложенный блок дополняет внешний: ход диалога задаёт клиента и сессию,
+    а этап можно уточнить позже через `update_llm_scope`.
+    """
+
+    def __init__(self, **fields):
+        self._fields = fields
+        self._token = None
+
+    def __enter__(self):
+        self._token = _llm_scope.set({**(_llm_scope.get() or {}), **self._fields})
+        return self
+
+    def __exit__(self, *exc):
+        _llm_scope.reset(self._token)
+        return False
+
+
+def update_llm_scope(**fields) -> None:
+    """Уточнить этап или заказ текущего хода (внутри llm_scope)."""
+    scope = _llm_scope.get()
+    if scope is not None:
+        scope.update({k: v for k, v in fields.items() if v is not None})
+
+
+def _scope_fields(operation: str) -> dict:
+    scope = dict(_llm_scope.get() or {})
+    peer_id = scope.pop("peer_id", None)
+    fields = {
+        "dialog_id": scope.get("dialog_id"), "order_id": scope.get("order_id"),
+        "stage": (scope.get("stage") or None) and str(scope["stage"])[:40],
+        "purpose": scope.get("purpose") or PURPOSES.get(operation),
+        "client_key": None,
+    }
+    if peer_id is not None:
+        from app.core.client_key import client_key
+
+        fields["client_key"] = client_key(peer_id)
+    return fields
+
+
 _HTTP_STATUS = re.compile(r"HTTP (\d{3})")
 # Отказы, в которых виноват ввод клиента, а не сервис.
 _VALIDATION_MARKERS = (
@@ -172,6 +229,7 @@ def note_llm_usage(operation: str, model: str, response) -> None:
             "at": _now(), "operation": (operation or "")[:120], "model": actual[:80],
             "cost_usd": llm_prices.cost_usd(actual, **tokens),
             "stop_reason": getattr(response, "stop_reason", None), **tokens,
+            **_scope_fields(operation),
         })
     except Exception:
         logger.debug("Не записали расход Claude", exc_info=True)

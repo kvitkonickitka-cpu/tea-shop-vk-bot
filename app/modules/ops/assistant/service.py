@@ -122,7 +122,19 @@ def handle_update(update: dict, me: dict) -> bool:
     if not message or not _chat_matches((message.get("chat") or {}).get("id")):
         return False
     sender = message.get("from") or {}
-    if sender.get("is_bot") or not addressed(message, me):
+    if sender.get("is_bot"):
+        return False
+    from app.modules.ops import commands
+
+    if commands.parse(message.get("text") or "", me.get("username")) is not None:
+        # Команды администраторов (/flag, /own…) разбирает код, мимо модели.
+        if _stale(message):
+            return False
+        task = asyncio.create_task(commands.handle(message, me))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+        return True
+    if not addressed(message, me):
         return False
     if not _allowed(sender.get("id")):
         logger.info("Ассистент Ops: вопрос от tg_id=%s не из списка разрешённых — молчим", sender.get("id"))
