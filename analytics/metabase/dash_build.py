@@ -51,6 +51,11 @@ def d(expr):
     return f"to_char({expr}, 'DD.MM.YYYY')"
 
 
+def rub(x):
+    """«30 000 ₽» для заголовков и подписей, которые собираются при сборке."""
+    return f"{round(float(x or 0)):,} ₽".replace(",", " ")
+
+
 def colfmt(**cols):
     return {"column_settings": {f'["name","{name}"]': fmt for name, fmt in cols.items()}}
 
@@ -156,7 +161,7 @@ def cards_today(q, links):
     free, reserve, left, _capital = (float(x or 0) for x in m)
     top = max(left * 1.5, free * 1.2, reserve)
     low = min(0.0, free * 1.2)
-    card("t_free", q, f"Свободно сверх резерва {round(reserve):,} ₽".replace(",", " "), """
+    card("t_free", q, f"Свободно сверх резерва {rub(reserve)}", """
 select free_cash as "Свободно" from fin.v_money_now""", "gauge",
          {"gauge.segments": [
              {"min": low, "max": 0, "color": RED, "label": "ниже резерва"},
@@ -184,8 +189,7 @@ select days_to_start from fin.v_pilot_status where not started""",
            "Сколько дней до старта пилота (вводная «Первый месяц календарного плана»). После старта на этом месте — "
            "убыток пилота против паузы и стопа.")
     loss = one_row("select pilot_pause_loss, pilot_max_loss from fin.v_pilot_status")
-    card("t_loss", q, f"Убыток пилота: пауза {round(float(loss[0] or 0)):,}, стоп {round(float(loss[1] or 0)):,} ₽"
-         .replace(",", " "), """
+    card("t_loss", q, f"Убыток пилота: пауза {rub(loss[0])}, стоп {rub(loss[1])}", """
 select pilot_loss as "Убыток" from fin.v_pilot_status where started and pilot_loss is not null""", "progress",
          {"progress.goal": float(loss[1] or 30000), "progress.color": RED, **colfmt(Убыток=RUB)},
          "Накопленный убыток М1–М3 по P&L против вводных «Убыток для паузы» и «Максимальный убыток». До старта "
@@ -212,7 +216,7 @@ select day as "День", actual as "Остаток", forecast as "Прогно�
          {"graph.dimensions": ["День"], "graph.metrics": ["Остаток", "Прогноз"],
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "Деньги, ₽", "line.marker_enabled": False,
           "graph.show_goal": True, "graph.goal_value": reserve,
-          "graph.goal_label": f"резерв {round(reserve):,} ₽".replace(",", " "),
+          "graph.goal_label": f"резерв {rub(reserve)}",
           "series_settings": {"Остаток": {"color": BLUE}, "Прогноз": {"color": GREY, "line.style": "dashed"}},
           **colfmt(Остаток=RUB, Прогноз=RUB, День=AXIS_DAY)},
          "Сплошная — остаток по выписке на конец дня, пунктир — прогноз до конца пилота + 30 дней, как в «Денег "
@@ -535,7 +539,7 @@ from fin.v_inputs_display where not unused order by theme, label""", "table",
          "допущение — оценка, уточнить. Изменить — форма «Изменить вводную»; прежнее значение остаётся в истории ниже.")
     card("i_history", q, "История вводных", f"""
 select regexp_replace(coalesce(label, key), '([А-Яа-яЁё])([0-9])', '\\1 \\2', 'g') as "Вводная",
-       coalesce(trim_scale(value)::text, value_text, 'нет данных') as "Значение",
+       coalesce(replace(trim_scale(value)::text, '.', ','), value_text, 'нет данных') as "Значение",
        {d("valid_from")} as "С какой даты", entered_by as "Кто",
        to_char(created_at at time zone 'Europe/Moscow', 'DD.MM.YYYY HH24:MI') as "Записано",
        regexp_replace(concat_ws(' · ', status, note), '([А-Яа-яЁё])([0-9])', '\\1 \\2', 'g') as "Комментарий"
