@@ -47,6 +47,10 @@ def find(items, **match):
 # --- подключение для форм -----------------------------------------------------------
 
 
+FORM_TABLES = ("expenses", "capital", "cash_snapshots", "purchase_lots", "packing_runs", "ad_spend", "inputs",
+               "carrier_acts", "supply_lead_times", "tax_calendar", "code_batches", "code_writeoffs")
+
+
 def fin_database():
     """Подключение metabase_fin к той же базе, что metabase_ro, но только к схеме fin."""
     password = os.environ.get("MB_FIN_PW")
@@ -70,7 +74,9 @@ def fin_database():
     call("POST", f"/database/{db}/sync_schema", {})
     for _ in range(40):
         tables = {t["name"]: t["id"] for t in call("GET", f"/database/{db}/metadata")["tables"] if t.get("schema") == "fin"}
-        if {"expenses", "inputs", "ad_spend"} <= set(tables):
+        # Ждём все таблицы форм: после новой миграции Metabase видит их не сразу,
+        # и сборка падала на KeyError посреди работы (21.10.2026, supply_lead_times).
+        if set(FORM_TABLES) <= set(tables):
             return db, tables
         time.sleep(3)
     raise SystemExit("Metabase не видит таблиц fin через metabase_fin: схема применена (analytics/fin/apply.sh)? "
