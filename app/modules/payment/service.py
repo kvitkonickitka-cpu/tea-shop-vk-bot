@@ -137,6 +137,8 @@ async def tell_about_closed_invoice(order, notice: str) -> bool:
     Первый раз — когда счёт закрылся; второй — утром, если закрылся он
     ночью и сообщение отложили.
     """
+    if notice == templates.PAYMENT_DECLINED and await _offer_new_link(order):
+        return True
     text = (
         templates.payment_declined(order)
         if notice == templates.PAYMENT_DECLINED
@@ -155,6 +157,38 @@ async def tell_about_closed_invoice(order, notice: str) -> bool:
             "Прислать новую ссылку", {"a": "new_link", "o": order.id}, "positive"
         )]]),
     )
+
+
+async def _offer_new_link(order) -> bool:
+    """Банк отказал — сразу новая ссылка на ту же сумму (C2, флаг payment_retry).
+
+    Клиент в эту минуту на странице оплаты: «напишите, пришлю ссылку» стоило
+    бы лишнего круга. Черновик уже возвращён со всем составом — счёт
+    выставляется тем же кодом, что в диалоге (перепроверка цен и доставки).
+    Не вышло (итог изменился, товара нет) — обычное сообщение с кнопкой.
+    """
+    from app.core import flags
+
+    if not await flags.enabled_for(flags.PAYMENT_RETRY, order.peer_id):
+        return False
+    from app.modules.orders import buttons, conversation
+    from app.modules.payment import methods
+
+    try:
+        invoiced = await conversation._auto_invoice(order.peer_id)
+    except Exception:
+        logger.exception("Заказ %s: новую ссылку после отказа банка не выставили", order.id)
+        return False
+    if invoiced is None or invoiced.client_reply is None:
+        return False
+    text = templates.payment_declined_new_link(order, await methods.enabled()) + "\n\n" + invoiced.client_reply
+    sent = await client_messages.send(
+        peer_id=order.peer_id, ref=client_messages.order_ref(order.id), event_type=templates.PAYMENT_DECLINED,
+        text=text, keyboard=buttons._stashed.pop(order.peer_id, None),
+    )
+    if sent:
+        await funnel.record(order.peer_id, "payment_method_switch_offered", order_id=order.id, source_=funnel.CODE)
+    return True
 
 
 async def restore_draft(order) -> None:

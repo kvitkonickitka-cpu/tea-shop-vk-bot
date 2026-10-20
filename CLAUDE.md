@@ -731,6 +731,18 @@ income_amount) и сверяет выплаты `cfo_in_yookassa` из выпи�
 (`captured_at` | `payout_date`), **правило подтвердить у бухгалтера**.
 Руками: `scripts/api.sh yookassa/registry`, `scripts/api.sh 'kudir?period=2026-10'`.
 
+**Пакет C — короткий путь и доверие** (флаги, по умолчанию `off`):
+`recipient_one_message` — получатель одним сообщением: метки `[NAME]`,
+`[PHONE]`, `[EMAIL]` разбирает код (`orders/recipient_fast.py`), недостающее
+переспрашивает, полный — `set_recipient` и счёт без модели; вопрос рядом с
+данными или неверная почта — модели. `payment_trust` — под счётом «Оплата
+через ЮKassa — <способы>, чек по 54-ФЗ» и реквизиты ИП (`REQUISITES_URL`);
+способы — `ENABLED_PAYMENT_METHODS`, пусто — `GET /v3/me`
+(`payment/methods.py`), модель называет только их. `payment_retry` — банк
+отказал: сразу новая ссылка на ту же сумму (`payment_method_switch_offered`).
+`escalation_after_hours` — вопрос менеджеру вне 10–23: модель говорит
+«ответит завтра с 10:00» и продолжает продажу (`escalation_after_hours`).
+
 ## Регламенты Ops
 
 `app/modules/ops/controls.py`, всё из тика, по разу (heartbeats и

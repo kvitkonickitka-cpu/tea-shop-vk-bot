@@ -64,6 +64,10 @@ def _register(name: str, title: str) -> str:
 
 
 OZON_AUTO_APPROVE = _register("ozon_auto_approve", "Автоподтверждение Ozon после сборки (C8); allowlist — dry-run")
+RECIPIENT_ONE_MESSAGE = _register("recipient_one_message", "Получатель одним сообщением: разбирает код, переспрашивает недостающее (C1)")
+PAYMENT_TRUST = _register("payment_trust", "Счёт: способы оплаты из ЮKassa, чек по 54-ФЗ, реквизиты ИП (C2)")
+PAYMENT_RETRY = _register("payment_retry", "Банк отказал — сразу новая ссылка той же суммы (C2)")
+ESCALATION_AFTER_HOURS = _register("escalation_after_hours", "Вопрос менеджеру ночью: когда ответят, продажа продолжается (C6)")
 
 
 _cache: dict[str, str] = {}

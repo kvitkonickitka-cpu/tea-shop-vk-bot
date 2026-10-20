@@ -190,6 +190,7 @@ def invoice_summary(
     button: bool = False,
     surcharge: bool = False,
     point_note: bool = False,
+    trust: str = "",
 ) -> str:
     """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
 
@@ -203,7 +204,8 @@ def invoice_summary(
     head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
     lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge,
                                  point_note)]
-    lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button)
+    lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button,
+                            extra=trust)
     return "\n".join(lines)
 
 
@@ -378,6 +380,67 @@ def pay_line(link: str, button: bool = False) -> str:
 
 def _link_noun(button: bool) -> str:
     return "Кнопка оплаты" if button else "Ссылка"
+
+
+# --- пакет C: короткий путь до оплаты и доверие ---------------------------------------
+
+# Названия способов оплаты ЮKassa (GET /me → payment_methods) для текста клиенту.
+PAYMENT_METHOD_NAMES = {
+    "bank_card": "картой", "sbp": "СБП", "sberbank": "SberPay", "tinkoff_bank": "T-Pay",
+    "yoo_money": "ЮMoney", "alfa_pay": "Alfa Pay", "mir_pay": "Mir Pay",
+}
+
+
+def payment_methods_phrase(methods: list[str]) -> str:
+    """«картой, СБП, SberPay или T-Pay» — только включённые в магазине способы."""
+    names = [PAYMENT_METHOD_NAMES[m] for m in methods if m in PAYMENT_METHOD_NAMES]
+    if not names:
+        return ""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " или " + names[-1]
+
+
+def payment_trust_line(methods: list[str], requisites_url: str = "") -> str:
+    """Строка доверия под счётом: кто принимает оплату, чек по 54-ФЗ, реквизиты ИП."""
+    how = payment_methods_phrase(methods)
+    line = "Оплата через ЮKassa" + (f" — {how}" if how else "") + ". Чек по 54-ФЗ придёт на почту."
+    if requisites_url:
+        line += f"\nРеквизиты ИП: {requisites_url}"
+    return line
+
+
+def recipient_missing(missing: list[str], recorded: list[str]) -> str:
+    """Получатель прислан не целиком: что записали и чего не хватает — одним вопросом."""
+    words = {"name": "ФИО получателя", "phone": "телефон", "email": "почту для чека"}
+    asked = [words[m] for m in missing]
+    ask = asked[0] if len(asked) == 1 else ", ".join(asked[:-1]) + " и " + asked[-1]
+    head = ""
+    if recorded:
+        names = {"name": "ФИО", "phone": "телефон", "email": "почту"}
+        got = [names[k] for k in recorded]
+        head = ("Записала " + (got[0] if len(got) == 1 else ", ".join(got[:-1]) + " и " + got[-1]) + ". ")
+    tail = " — на неё придёт чек, без неё оплату не выставить" if missing == ["email"] else ""
+    return f"{head}Пришлите, пожалуйста, {ask}{tail}."
+
+
+def payment_declined_new_link(order, methods: list[str]) -> str:
+    """Банк отказал — сразу новая ссылка на ту же сумму, другим способом."""
+    how = payment_methods_phrase([m for m in methods if m != "bank_card"])
+    other = f" другой картой или {how}" if how else " другой картой"
+    return (
+        f"Платёж по заказу №{order.id} не прошёл — банк отказал. Если сумма "
+        "заблокировалась на карте, она вернётся автоматически.\n"
+        f"Вот новая ссылка на ту же сумму — можно оплатить{other}:"
+    )
+
+
+def escalation_after_hours(phrase: str) -> str:
+    """Для модели: вопрос передан ночью — когда ответит менеджер, и что продолжать."""
+    return (
+        "Вопрос зафиксирован и передан менеджеру. Сейчас нерабочее время: менеджер на связи "
+        f"с 10:00 до 23:00 по Москве и ответит здесь {phrase}. Скажи клиенту об этом одной фразой "
+        "и продолжай: ответь на остальные вопросы, а если идёт заказ — веди оформление дальше, "
+        "черновик не трогай."
+    )
 
 
 def reminder_1(order, link: str, button: bool = False) -> str:
@@ -1268,6 +1331,7 @@ def returning_invoice(
     upsell_price=None,
     gap=None,
     button: bool = False,
+    trust: str = "",
 ) -> str:
     """Постоянному клиенту — заказ как в прошлый раз сразу со ссылкой.
 
@@ -1277,7 +1341,7 @@ def returning_invoice(
     lines = ["Как в прошлый раз — проверьте, всё ли верно:",
              *_order_block(items, delivery_method, delivery_label, delivery_cost, eta)]
     lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button,
-                            extra=upsell_line(upsell, upsell_price, gap))
+                            extra="\n".join(x for x in (upsell_line(upsell, upsell_price, gap), trust) if x))
     return "\n".join(lines)
 
 

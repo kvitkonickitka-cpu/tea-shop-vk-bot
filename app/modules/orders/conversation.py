@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app import privacy
+from app.core import flags, worktime
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
 from app.modules.consent import service as consent
@@ -42,6 +43,7 @@ from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
 from app.modules.orders import upgrade
 from app.modules.orders.state import OrderDraft
+from app.modules.payment import methods as payment_methods
 from app.modules.payment import service as payment_service
 from app.modules.payment import yookassa_client
 
@@ -1905,6 +1907,7 @@ async def _returning_invoice_reply(peer_id: int, draft: OrderDraft, payment, ord
         upsell_price=match["price"] if match else None,
         gap=_threshold_gap(draft.items_total) if item else None,
         button=await keyboards.shows_link_button(peer_id),
+        trust=await payment_methods.trust_line(peer_id),
     )
     # Ссылка — своим рядом: open_link ВК растягивает на всю ширину.
     rows = [[keyboards.link_button(f"Оплатить {templates.amount(total)} ₽", payment.confirmation_url)]]
@@ -2263,6 +2266,7 @@ async def _confirm_with_payment(
         button=await keyboards.shows_link_button(peer_id),
         surcharge=bool(draft.details.get(upgrade.SURCHARGE)),
         point_note=bool(draft.details.get("single_point")),
+        trust=await payment_methods.trust_line(peer_id),
     )
     return ToolExecution(reply, client_reply=reply)
 
@@ -2350,6 +2354,13 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
         logger.critical(
             "Вопрос клиента peer_id=%s нигде не сохранён: база недоступна", peer_id
         )
+
+    if not worktime.is_working() and await flags.enabled_for(flags.ESCALATION_AFTER_HOURS, peer_id):
+        # Ночью «менеджер ответит здесь» без срока читается как «ждите». Говорим,
+        # когда он будет, и не обрываем ход готовой фразой: модель отвечает на
+        # остальное и ведёт заказ дальше (C6).
+        await funnel.record(peer_id, "escalation_after_hours", source_=funnel.CODE)
+        return ToolExecution(tool_result=templates.escalation_after_hours(worktime.manager_back_phrase()))
 
     return ToolExecution(
         tool_result=(
@@ -2817,6 +2828,9 @@ async def _handle_turn(
     if bought:
         system_prompt += f"\n\n{await privacy.tokenize(peer_id, bought)}"
     system_prompt += f"\n\n{order_flow_prompt()}"
+    methods_note = await payment_methods.prompt_note(peer_id)
+    if methods_note:
+        system_prompt += f"\n{methods_note}"
     if not pd_ok:
         declined = await consent.pd_declined(peer_id)
         system_prompt += "\n\n" + (
@@ -2911,6 +2925,15 @@ async def _handle_turn(
         (m["content"] for m in reversed(history) if m["role"] == "assistant" and isinstance(m["content"], str)), ""
     )
     spoken = await privacy.tokenize(peer_id, spoken, stage=privacy.stages(draft, last_bot), addresses=True)
+    if pd_ok and not images:
+        # Получатель одним сообщением — разбирает код (C1): данные уже метками.
+        from app.modules.orders import recipient_fast
+
+        fast = await recipient_fast.try_handle(peer_id, draft, spoken)
+        if fast is not None:
+            reply = await _with_buttons(peer_id, plain_text(fast))
+            await dialog_history.append_exchange(peer_id, spoken, reply)
+            return await privacy.detokenize(peer_id, reply)
     system_prompt = system_prompt[:personal_from] + await privacy.tokenize(
         peer_id, system_prompt[personal_from:], names=False
     )

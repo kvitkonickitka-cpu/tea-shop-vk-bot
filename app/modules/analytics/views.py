@@ -142,6 +142,9 @@ EVENTS = [
     ("geo_button_shown", "Показана кнопка геопозиции", None, "Заказ"),
     ("geo_sent", "Геопозиция отправлена", None, "Заказ"),
     ("invoice_single_point", "Счёт сразу: на улице один пункт", None, "Счёт"),
+    ("recipient_one_message", "Получатель записан кодом из одного сообщения", None, "Заказ"),
+    ("payment_method_switch_offered", "После отказа банка — сразу новая ссылка", None, "Счёт"),
+    ("escalation_after_hours", "Вопрос менеджеру вне рабочего времени", None, "Менеджер"),
 ]
 
 CHANNELS = {
