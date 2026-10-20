@@ -211,6 +211,19 @@ async def reconcile_month(*, now: datetime | None = None, force: bool = False) -
         return {"skipped": "сверяем с третьего числа"}
     start, end = _previous_month(now.date())
     month = start.strftime("%Y-%m")
+    async with get_session_factory()() as session:
+        first_noted = (await session.execute(text("select min(at) from llm_usage"))).scalar()
+    # Учёт расхода бот ведёт с 18.10.2026 (llm_usage): дни до первой записи
+    # сравнивать не с чем — счёт за них был бы «расхождением на 100 %».
+    if first_noted is None:
+        return {"месяц": month, "skipped": "учёта расхода у бота ещё нет"}
+    # Первый полный день учёта: день первой записи — неполный (сутки по UTC, как у Anthropic).
+    first_utc = first_noted.astimezone(timezone.utc)
+    first_full_day = first_utc.date() if first_utc.time() == time() else first_utc.date() + timedelta(days=1)
+    covered_from = max(start, first_full_day)
+    if covered_from >= end:
+        return {"месяц": month, "skipped": "бот не вёл учёт ни одного полного дня месяца"}
+    start = covered_from
     lo, hi = datetime.combine(start, time(), timezone.utc), datetime.combine(end, time(), timezone.utc)
     async with get_session_factory()() as session:
         bot = (await session.execute(text(
@@ -221,8 +234,9 @@ async def reconcile_month(*, now: datetime | None = None, force: bool = False) -
         ), {"s": start, "e": end})).one()
     days, bill = int(bill_days[0] or 0), Decimal(bill_days[1] or 0)
     bot = Decimal(bot or 0)
-    result = {"месяц": month, "учёт бота, $": str(round(bot, 2)), "счёт Anthropic, $": str(round(bill, 2)),
-              "дней в счёте": days}
+    period = f"{start:%d.%m}–{end - timedelta(days=1):%d.%m}"
+    result = {"месяц": month, "дни": period, "учёт бота, $": str(round(bot, 2)),
+              "счёт Anthropic, $": str(round(bill, 2)), "дней в счёте": days}
     if days == 0:
         return {**result, "skipped": "счёта за месяц нет (не задан ключ или не загружен)"}
     if bot == 0 and bill == 0:
@@ -239,7 +253,7 @@ async def reconcile_month(*, now: datetime | None = None, force: bool = False) -
     side = "счёт больше учёта бота" if bill > bot else "учёт бота больше счёта"
     await manager_messages.notify(
         manager_messages.ANTHROPIC_COSTS,
-        f"⚠️ <b>Claude API за {month}: учёт бота и счёт Anthropic расходятся на {result['расхождение, %']} %</b>\n"
+        f"⚠️ <b>Claude API за {period}: учёт бота и счёт Anthropic расходятся на {result['расхождение, %']} %</b>\n"
         f"Учёт бота (llm_usage): ${round(bot, 2)} · счёт Anthropic: ${round(bill, 2)} — {side}.\n"
         "Счёт — по всей организации: проверьте, кто ещё пользуется ключом, и цены в llm_prices.py.",
         chat_id=settings.telegram_ops_chat_id or None,
