@@ -88,13 +88,15 @@ async def test_seed_matches_model(fin):
     # Лист 2, Q4: себестоимость пачки Те Гуань Инь ЭКО — 85,63 ₽.
     assert r2(unit["Те Гуань Инь ЭКО (XFI0044)"]["product_cost"]) == Decimal("85.63")
     # Лист 4, R5 и R7: маржа до CAC набора «Точка входа» и сета «Шу и Шен».
-    assert r2(unit["Набор «Точка входа»"]["margin_before_cac"]) == Decimal("788.79")
-    assert r2(unit["Сет «Шу и Шен»"]["margin_before_cac"]) == Decimal("784.73")
+    # С миграцией 009 НДС начисляется и на плату за чек (ответ бухгалтера 21.10.2026):
+    # нагрузка 5,368 % вместо 5,148 % в v1.5 — маржа чуть ниже таблицы (там 788,79 и 784,73).
+    assert r2(unit["Набор «Точка входа»"]["margin_before_cac"]) == Decimal("785.07")
+    assert r2(unit["Сет «Шу и Шен»"]["margin_before_cac"]) == Decimal("780.36")
     # Лист 3, L13: блин продаётся целым — без потерь и дой-пака.
     assert r2(unit["Пуэр Банжань Гушу >3лет, 357гр (IT-75)"]["product_cost"]) == Decimal("850.33")
     assert unit["Пуэр Банжань Гушу >3лет, 357гр (IT-75)"]["kind"] == "блин"
     # Лист 3, G4: порог цены при CAC 0.
-    assert r2(unit["Те Гуань Инь ЭКО (XFI0044)"]["price_floor_cac0"]) == Decimal("352.53")
+    assert r2(unit["Те Гуань Инь ЭКО (XFI0044)"]["price_floor_cac0"]) == Decimal("353.90")
     assert {row["kind"] for row in unit.values()} == {"пачка", "блин", "сет", "набор"}
 
     # Лист 5, B37: заказов для безубыточности М1 — 27.
@@ -111,8 +113,8 @@ async def test_seed_matches_model(fin):
     assert await fin.fetchval("select fin.fmt_pct(0.05148)") == "5.1 %"
     assert await fin.fetchval("select fin.fmt_rub(null)") == "нет данных"
 
-    # Лист 1, строка 22: платёжная нагрузка 5,148 %.
-    assert await fin.fetchval("select fin.payment_rate()") == Decimal("0.05148")
+    # Лист 1, строка 22: в v1.5 — 5,148 %; с 009 — (3,4 % + 1 % за чек) × 1,22 = 5,368 %.
+    assert await fin.fetchval("select fin.payment_rate()") == Decimal("0.05368")
 
 
 async def test_empty_fact_is_no_data_not_zero(fin):
@@ -194,16 +196,16 @@ async def test_orders_economics_pack_set_bundle_refund(fin, db):
     assert r2(e[pack]["cogs_tea"]) == Decimal("149.55")
     assert r2(e[pack]["packaging_and_codes"]) == Decimal("122.01")
     assert r2(e[pack]["carrier_cost"]) == Decimal("200.00") and r2(e[pack]["delivery_subsidy"]) == 0
-    assert r2(e[pack]["margin_before_cac"]) == Decimal("294.19")
+    assert r2(e[pack]["margin_before_cac"]) == Decimal("292.03")
     assert e[pack]["is_first_order"] and e[pack]["two_plus_packs"]
 
-    # Набор с бесплатной доставкой: маржа модели 788,79 + комиссия с доставки 22,30 − доставка 400.
-    assert r2(e[bundle]["margin_before_cac"]) == Decimal("411.09")
+    # Набор с бесплатной доставкой: маржа модели 785,07 + комиссия с доставки 22,74 − доставка 400.
+    assert r2(e[bundle]["margin_before_cac"]) == Decimal("407.81")
     assert r2(e[bundle]["delivery_subsidy"]) == Decimal("400.00") and e[bundle]["free_delivery"]
 
     # Сет — повторный заказ того же клиента: API не считается; возврат помечен.
     assert not e[refund]["is_first_order"] and e[refund]["is_refunded"]
-    assert r2(e[refund]["api_cost"]) == 0 and r2(e[refund]["margin_before_cac"]) == Decimal("878.59")
+    assert r2(e[refund]["api_cost"]) == 0 and r2(e[refund]["margin_before_cac"]) == Decimal("873.99")
 
     # Позиция без справочника: себестоимость и маржа — «нет данных», а не маржа по известной части.
     assert e[unknown]["cogs_tea"] is None and e[unknown]["margin_before_cac"] is None
@@ -216,7 +218,7 @@ async def test_orders_economics_pack_set_bundle_refund(fin, db):
     assert r2(pnl["other_opex"]) == Decimal("2000.00")
 
     margins = {row["product"]: row for row in await fin.fetch("select * from fin.v_product_margin")}
-    assert r2(margins["Набор «Точка входа»"]["fact_margin_per_unit"]) == Decimal("411.09")
+    assert r2(margins["Набор «Точка входа»"]["fact_margin_per_unit"]) == Decimal("407.81")
     assert margins["Набор «Точка входа»"]["units_sold"] == 1
 
 
