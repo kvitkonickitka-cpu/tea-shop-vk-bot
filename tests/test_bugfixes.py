@@ -66,6 +66,14 @@ SAMPLES = {
 }
 
 
+# Пакет C: способы оплаты, недостающие данные получателя, срок ответа менеджера.
+SAMPLES.update({
+    "methods": ["bank_card", "sbp", "sberbank"], "requisites_url": "https://vk.com/@teapotwice-rekvizity",
+    "missing": ["phone", "email"], "recorded": ["name"], "phrase": "завтра с 10:00",
+    "trust": "Оплата через ЮKassa — картой или СБП. Чек по 54-ФЗ придёт на почту.",
+})
+
+
 def _render_all():
     for name, func in inspect.getmembers(templates, inspect.isfunction):
         if func.__module__ != templates.__name__ or name.startswith("_"):

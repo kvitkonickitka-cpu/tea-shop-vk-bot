@@ -110,6 +110,14 @@ def working_day_phrase(moment: datetime | None = None) -> str:
     return "сегодня" if is_working(moment) else "в ближайший рабочий день"
 
 
+def manager_back_phrase(moment: datetime | None = None) -> str:
+    """Когда менеджер ответит вне рабочего времени: «сегодня с 10:00» или «завтра с 10:00»."""
+    local = to_msk(moment or now_msk())
+    start = settings.manager_work_hours_start
+    day = "сегодня" if local.hour < start else "завтра"
+    return f"{day} с {start:02d}:00"
+
+
 def parse_hour(value: int, default: int) -> int:
     return value if 0 <= value <= 23 else default
 

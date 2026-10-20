@@ -511,6 +511,11 @@ class Settings(BaseSettings):
     # captured_at (покупатель оплатил) или payout_date (ЮKassa выплатила на
     # счёт). Правило подтверждает бухгалтер; витрина пересоздаётся при старте.
     kudir_income_date: str = "captured_at"
+    # Способы оплаты, которые бот называет клиенту (C2): через запятую, как в
+    # ЮKassa (bank_card, sbp, sberbank, tinkoff_bank…). Пусто — из GET /v3/me.
+    enabled_payment_methods: str = ""
+    # Ссылка на реквизиты ИП в сообществе ВК — строкой под счётом (C2). Пусто — без строки.
+    requisites_url: str = ""
 
 
 settings = Settings()
