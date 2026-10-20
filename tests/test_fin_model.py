@@ -131,6 +131,8 @@ async def test_input_history_is_kept(fin):
     )
     assert await fin.fetchval("select count(*) from fin.inputs where key = 'code_price'") == 2
     assert await fin.fetchval("select fin.inp('code_price')") == Decimal("0.70")
+    # В «Последних записях» — название и единица, а не ключ.
+    assert await fin.fetchval("select what from fin.v_recent_entries where form = 'Вводная'") == "Код DataMatrix: 0.7 ₽/код"
     # Прежнее значение не перезаписано — лежит рядом, с автором «импорт v1.5».
     assert await fin.fetchval("select value from fin.inputs where key = 'code_price' and entered_by = 'импорт v1.5'") == Decimal("0.61")
     with pytest.raises(asyncpg.CheckViolationError):
