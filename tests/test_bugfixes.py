@@ -72,6 +72,7 @@ SAMPLES.update({
     "missing": ["phone", "email"], "recorded": ["name"], "phrase": "завтра с 10:00",
     "trust": "Оплата через ЮKassa — картой или СБП. Чек по 54-ФЗ придёт на почту.",
     "delivery": "в пункт выдачи Ozon (Краснодар, Красная, 176)", "last_day": True,
+    "score": 2, "composition_line": "Те Гуань Инь × 1", "variant": "named", "stars": 5, "author": "Иван", "wall": False,
 })
 
 

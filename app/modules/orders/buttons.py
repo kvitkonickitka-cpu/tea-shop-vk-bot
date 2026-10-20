@@ -708,6 +708,12 @@ async def _on_rate(peer_id: int, payload: dict) -> Press:
 
     rating = payload.get("r")
     order = await orders_repository.by_id(payload.get("o")) if isinstance(payload.get("o"), int) else None
+    if rating in ("1", "2", "3", "4", "5") and order is not None and order.peer_id == peer_id \
+            and order.payment_status == orders_repository.PAID and order.delivered_at is not None:
+        # Оценка 1–5 (C7): отзыв или жалоба — решает код.
+        from app.modules.orders import reviews
+
+        return Press(reply=await reviews.on_star(peer_id, order, int(rating)))
     if (
         rating not in templates.RATINGS
         or order is None
@@ -732,6 +738,17 @@ async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
 
+async def _on_review_consent(peer_id: int, payload: dict) -> Press:
+    """Согласие на публикацию отзыва (C7): с именем, анонимно, не публиковать."""
+    from app.modules.orders import reviews
+
+    order_id = payload.get("o")
+    if not isinstance(order_id, int):
+        return STALE
+    reply = await reviews.on_consent(peer_id, order_id, str(payload.get("c") or ""))
+    return Press(reply=reply) if reply else STALE
+
+
 _HANDLERS = {
     "pt": _on_point,
     "ship": _on_ship,
@@ -748,6 +765,7 @@ _HANDLERS = {
     "add_item": _on_add_item,
     "edit": _to_model,
     "rate": _on_rate,
+    "rv_consent": _on_review_consent,
     # «Подобрать чай» под реактивацией — консультация, её ведёт модель.
     "advise": _to_model,
     "other": _to_model,

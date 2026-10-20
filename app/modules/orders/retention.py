@@ -193,7 +193,8 @@ async def blocker(peer_id: int, now: datetime) -> str | None:
             return f"по последнему заказу №{last_order.id} возврат"
         if last_order.not_delivered_at is not None:
             return f"последний заказ №{last_order.id} не вручён"
-        if details.get("complaint_at"):
+        # Жалоба из оценки (C7) закрывается ответом менеджера — дальше касания можно.
+        if details.get("complaint_at") and not details.get("complaint_closed_at"):
             return f"по последнему заказу №{last_order.id} жалоба"
         reactivated = await sent_at(peer_id, (templates.REACTIVATION,))
         if reactivated is not None and reactivated > aware(last_order.created_at):

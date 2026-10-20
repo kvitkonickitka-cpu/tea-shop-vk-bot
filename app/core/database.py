@@ -152,6 +152,10 @@ _MISSING_COLUMNS = (
     "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS order_id INTEGER",
     "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS stage VARCHAR",
     "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS purpose VARCHAR",
+    # Отзывы (C7): оценка 1–5 рядом с прежней great/ok/no, публикация отзыва.
+    "ALTER TABLE order_ratings ADD COLUMN IF NOT EXISTS score INTEGER",
+    "ALTER TABLE order_feedback ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ",
+    "ALTER TABLE order_feedback ADD COLUMN IF NOT EXISTS published_how VARCHAR",
     # Попытки оплаты: способ и сколько получит магазин — из уведомлений ЮKassa.
     "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR",
     "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS income_amount NUMERIC(10, 2)",

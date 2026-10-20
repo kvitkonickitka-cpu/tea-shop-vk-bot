@@ -524,6 +524,13 @@ class Settings(BaseSettings):
     # Сверить с договорами: у Ozon и СДЭКа сроки зависят от пункта и тарифа.
     pickup_storage_days_ozon: int = 7
     pickup_storage_days_cdek: int = 7
+    # C8: настоящий /v1/posting/approve — только при флаге ozon_auto_approve = on
+    # И этой настройке. Иначе — dry-run (запрос в лог). Включать осознанно, на ВМ.
+    ozon_approve_live: bool = False
+    # C7: как публиковать отзыв после «Опубликовать» менеджера: manual — менеджер
+    # сам (кнопка «Опубликовал вручную»), wall — бот на стену сообщества
+    # (wall.post; нужен право wall у токена — scripts/api.sh vk/token-permissions).
+    review_publish_mode: str = "manual"
 
 
 settings = Settings()

@@ -142,7 +142,8 @@ async def get_me() -> dict:
 
 async def get_updates(offset: int | None, *, wait_seconds: int) -> list[dict]:
     """Длинный опрос: Telegram держит запрос до wait_seconds, пока нет нового."""
-    payload: dict = {"timeout": wait_seconds, "allowed_updates": ["message"]}
+    # callback_query — кнопки под карточками (публикация отзыва, C7).
+    payload: dict = {"timeout": wait_seconds, "allowed_updates": ["message", "callback_query"]}
     if offset is not None:
         payload["offset"] = offset
     return await call("getUpdates", payload, timeout=wait_seconds + 15)
