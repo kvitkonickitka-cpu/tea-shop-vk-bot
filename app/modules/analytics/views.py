@@ -145,6 +145,12 @@ EVENTS = [
     ("recipient_one_message", "Получатель записан кодом из одного сообщения", None, "Заказ"),
     ("payment_method_switch_offered", "После отказа банка — сразу новая ссылка", None, "Счёт"),
     ("escalation_after_hours", "Вопрос менеджеру вне рабочего времени", None, "Менеджер"),
+    ("abandoned_touch", "Касание по брошенному заказу (~20 ч)", None, "Касания"),
+    ("abandoned_touch_order", "Оплата после касания по брошенному заказу (7 дней)", None, "Касания"),
+    ("pickup_reminder_1", "Напоминание: посылка в пункте (2-й день)", None, "Доставка"),
+    ("pickup_reminder_2", "Напоминание: завтра последний день хранения", None, "Доставка"),
+    ("free_delivery_nudge_shown", "Подсказка до бесплатной доставки показана", None, "Заказ"),
+    ("free_delivery_nudge_accepted", "Пачка из подсказки добавлена", None, "Заказ"),
 ]
 
 CHANNELS = {
@@ -1103,11 +1109,41 @@ V_INVOICE_TIMING = View(
     ),
 )
 
+V_DELIVERY_OUTCOMES = View(
+    name="v_delivery_outcomes",
+    comment=(
+        "Исход доставки по месяцам прибытия в пункт и перевозчику, без тестовых: сколько посылок в пункте, "
+        "вручено, не выкуплено, доля невыкупа = не выкуплено / (вручено + не выкуплено), напоминания (C4)."
+    ),
+    columns=(
+        Column("month", "date_trunc('month', coalesce(o.at_pickup_at, o.handed_over_at) at time zone 'Europe/Moscow')::date",
+               "Месяц прибытия в пункт (или передачи перевозчику), по Москве."),
+        Column("carrier", "case when o.ozon_posting is not null then 'ozon' else 'cdek' end", "Перевозчик: ozon, cdek."),
+        Column("at_pickup", "count(*) filter (where o.at_pickup_at is not null)::int", "Посылок дошло до пункта выдачи."),
+        Column("delivered", "count(*) filter (where o.delivered_at is not null)::int", "Вручено."),
+        Column("not_delivered", "count(*) filter (where o.not_delivered_at is not null)::int", "Не выкуплено (вернулось)."),
+        Column("non_pickup_share",
+               "round(count(*) filter (where o.not_delivered_at is not null)::numeric / nullif(count(*) filter "
+               "(where o.delivered_at is not null or o.not_delivered_at is not null), 0), 4)::numeric(6,4)",
+               "Доля невыкупа: не выкуплено / (вручено + не выкуплено). Пусто — исходов ещё нет."),
+        Column("reminded", "count(*) filter (where exists (select 1 from funnel_events e where e.order_id = o.id"
+                           " and e.event in ('pickup_reminder_1', 'pickup_reminder_2')))::int",
+               "Посылок, по которым ушло напоминание о пункте выдачи."),
+    ),
+    body=(
+        "from orders o\n"
+        "left join clients c on c.peer_id = o.peer_id\n"
+        "where o.payment_status = 'succeeded' and (o.at_pickup_at is not null or o.handed_over_at is not null)\n"
+        f"  and {_REAL_ORDER}\n"
+        "group by 1, 2"
+    ),
+)
+
 # Порядок важен: справочники раньше представлений, которые к ним джойнятся.
 VIEWS = (DIM_STATUS, DIM_EVENT, V_ORDERS, V_ORDER_ITEMS, V_FUNNEL_EVENTS, V_TOUCHES, V_CLIENTS,
          V_REF_PRODUCTS, V_REF_COSTS, V_REF_SETTINGS, V_REF_STOCK_MOVES, V_ORDER_ITEM_MARGIN, V_ORDER_MARGIN,
          V_LLM_USAGE, V_ANTHROPIC_COSTS, V_DIALOGS, V_LLM_COST_BY_DIALOG, V_FUNNEL_DIALOG_STEPS, V_FUNNEL_STEPS,
-         V_INVOICE_TIMING)
+         V_INVOICE_TIMING, V_DELIVERY_OUTCOMES)
 
 
 def statements() -> list[str]:

@@ -71,6 +71,7 @@ SAMPLES.update({
     "methods": ["bank_card", "sbp", "sberbank"], "requisites_url": "https://vk.com/@teapotwice-rekvizity",
     "missing": ["phone", "email"], "recorded": ["name"], "phrase": "завтра с 10:00",
     "trust": "Оплата через ЮKassa — картой или СБП. Чек по 54-ФЗ придёт на почту.",
+    "delivery": "в пункт выдачи Ozon (Краснодар, Красная, 176)", "last_day": True,
 })
 
 

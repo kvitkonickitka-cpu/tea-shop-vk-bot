@@ -190,6 +190,11 @@ async def _run_scheduled() -> dict:
     # Повторные касания после вручения: оценка, «Повторить», второй шанс,
     # реактивация — общим фильтром и по одному на клиента.
     result["retention"] = await _run_task("Повторные касания", _retention_summary())
+    # Брошенный черновик или счёт — касание через ~20 ч; посылка в пункте — напоминания (C3, C4).
+    from app.modules.orders import abandoned, pickup_reminders
+
+    result["abandoned"] = await _run_task("Брошенные заказы: касание", abandoned.check())
+    result["pickup"] = await _run_task("Посылка в пункте: напоминания", pickup_reminders.check())
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.

@@ -566,6 +566,30 @@ def _offer_upsell(draft: OrderDraft, catalog: list[dict]) -> str:
     return "".join(f"\n{line}" for line in lines)
 
 
+async def _free_delivery_nudge(peer_id: int, draft: OrderDraft, catalog: list[dict]) -> str:
+    """C5: сколько не хватает до бесплатной доставки в пункт Ozon и какая пачка это закроет.
+
+    Пачку выбирает код — самую дешёвую в наличии из тех, что одна закрывают
+    разницу. Один раз на черновик; у СДЭКа бесплатной доставки не обещаем.
+    """
+    if draft.details.get("free_delivery_nudge") or draft.delivery_method in ("cdek_pvz", "cdek_courier"):
+        return ""
+    gap = _threshold_gap(draft.items_total)
+    if gap is None or not await flags.enabled_for(flags.FREE_DELIVERY_NUDGE, peer_id):
+        return ""
+    fitting = [item for item in catalog
+               if item.get("in_stock", True) and float(item.get("price") or 0) >= gap]
+    if not fitting:
+        return ""
+    pick = min(fitting, key=lambda item: float(item["price"]))
+    draft.details["free_delivery_nudge"] = {"item": pick["name"], "gap": gap}
+    return (
+        f"\nДо бесплатной доставки в пункт Ozon не хватает {templates.amount(gap)} ₽ — разницу закроет "
+        f"{pick['name']} ({templates.amount(pick['price'])} ₽). Скажи это одной фразой; если предлагаешь "
+        "дополнить заказ — в том же предложении, отдельным сообщением не надо. Согласится — add_to_order."
+    )
+
+
 def _threshold_gap(items_total: float) -> float | None:
     """Сколько не хватает до бесплатной доставки. None — порога нет или он пройден."""
     threshold = free_delivery_threshold()
@@ -748,6 +772,11 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         )
     was_draft = live is not None or await state.get_draft(peer_id) is not None
     upsell_line = _offer_upsell(draft, catalog)
+    nudge_line = await _free_delivery_nudge(peer_id, draft, catalog)
+    if nudge_line:
+        # Подсказка с конкретной пачкой заменяет общее «не хватает N ₽».
+        upsell_line = "".join(f"\n{line}" for line in upsell_line.split("\n")
+                              if line and not line.startswith("До бесплатной доставки не хватает")) + nudge_line
     origin = None
     if not was_draft:
         # Откуда черновик: «беру» словами, «Взять», «Повторить», витрина —
@@ -763,6 +792,10 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         await funnel.record(peer_id, "draft_created", origin=origin)
     if draft.details.get("upsell_item"):
         await funnel.record(peer_id, "upsell_offered", source_=funnel.CODE, item=draft.details["upsell_item"])
+    if nudge_line:
+        await funnel.record(peer_id, "free_delivery_nudge_shown", source_=funnel.CODE,
+                            item=draft.details["free_delivery_nudge"]["item"],
+                            gap=draft.details["free_delivery_nudge"]["gap"])
 
     lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} ₽" for i in resolved]
     result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} ₽"
@@ -2408,6 +2441,9 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
     upsell = draft.details.get("upsell_item")
     if upsell and any(item.startswith(f"{upsell} ×") for item in added):
         await funnel.record(peer_id, "upsell_accepted", item=upsell)
+    nudged = (draft.details.get("free_delivery_nudge") or {}).get("item")
+    if nudged and any(item.startswith(f"{nudged} ×") for item in added):
+        await funnel.record(peer_id, "free_delivery_nudge_accepted", item=nudged)
 
     draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
     if draft.details.get("offer"):

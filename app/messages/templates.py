@@ -433,6 +433,33 @@ def payment_declined_new_link(order, methods: list[str]) -> str:
     )
 
 
+ABANDONED_TOUCH = "abandoned_touch"
+PICKUP_REMINDER_1 = "pickup_reminder_1"
+
+
+def abandoned_touch(items: list[dict], *, total, delivery: str = "") -> str:
+    """C3. Брошенный черновик или счёт: состав сохранён, итог, «Оформить» пересчитает всё кодом."""
+    lines = ["Ваш заказ сохранился:", *[
+        f"• {item.get('name', 'товар')} × {int(item.get('quantity') or 1)}" for item in items]]
+    if delivery:
+        lines.append(f"Доставка: {delivery}")
+    lines += [f"Итого: {amount(total)} ₽", "",
+              "Нажмите «Оформить» — проверю цены, наличие и доставку и пришлю новую ссылку на оплату. "
+              + _NUDGE_CLOSING]
+    return "\n".join(lines)
+
+
+def pickup_reminder(order, *, carrier: str, address: str, storage_until, last_day: bool) -> str:
+    """C4. Посылка в пункте: на 2-й день и за день до конца хранения. Служебное — «стоп» не гасит."""
+    where = f"в пункте выдачи {carrier}" + (f": {address}" if address else "")
+    head = (f"Завтра последний день: посылка по заказу №{order.id} ждёт вас {where}."
+            if last_day else f"Напоминаем: посылка по заказу №{order.id} ждёт вас {where}.")
+    code = ("Код для получения — в приложении Ozon, в разделе заказов." if carrier == "Ozon"
+            else f"Код для получения {carrier} присылает в SMS — возьмите его с собой.")
+    tail = "После этого её вернут нам — заберите, пожалуйста, до этой даты 🙏" if last_day else ""
+    return "\n".join(x for x in (head, f"Хранится до {day_month(storage_until)}.", code, tail) if x)
+
+
 def escalation_after_hours(phrase: str) -> str:
     """Для модели: вопрос передан ночью — когда ответит менеджер, и что продолжать."""
     return (
