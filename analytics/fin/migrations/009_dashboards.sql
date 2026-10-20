@@ -687,6 +687,21 @@ select 'cac' as metric, fin.inp('kpi_cac_goal') as goal, fin.inp('kpi_cac_limit'
 union all select 'avg_check', fin.inp('kpi_avg_check_goal'), null;
 comment on view fin.v_kpi_targets is 'Цели и лимиты KPI из вводных kpi_*: CAC (цель и лимит), средний чек (цель).';
 
+-- --- сверка выплат ЮKassa с выпиской (реестр бота) -------------------------------------
+-- finance.yk_payouts ведёт бот (сверка реестра); дашборды читают его через fin.
+create or replace view fin.v_yk_payouts as
+select payout_date, bank_amount, days_from, days_to, registry_amount, diff, status, checked_at
+from finance.yk_payouts;
+comment on view fin.v_yk_payouts is 'Выплаты ЮKassa из выписки против реестра платежей: какие дни вошли, расхождение.';
+
+-- Оплаты, чек по которым ЮKassa не зарегистрировала за час.
+create or replace view fin.v_yk_receipts_missing as
+select count(*) as payments, max(captured_at) as last_captured
+from finance.yk_payments
+where status = 'succeeded' and captured_at < now() - interval '1 hour'
+  and coalesce(receipt_registration, '') <> 'succeeded'
+having count(*) > 0;
+
 -- --- «Требует внимания» -----------------------------------------------------------------
 -- Одна строка — одна проблема: уровень (🔴 / 🟡), текст, куда идти исправлять
 -- (place — ключ вкладки, ссылку подставляет дашборд). Нет проблем — «Всё в порядке».
@@ -746,12 +761,18 @@ checks as (
     ) e cross join ps
     where ps.started and e.event = 'escalation_opened'
     having count(*) > 0
+    union all
+    select 9, '🔴', 'Чек не зарегистрирован у ЮKassa: ' || r.payments || ' оплат(ы)', 'checks'
+    from fin.v_yk_receipts_missing r
+    union all
+    select 10, '🟡', 'Выплаты ЮKassa не сходятся с реестром: ' || count(*) || ' на ' || fin.fmt_rub(sum(abs(diff))), 'checks'
+    from fin.v_yk_payouts where status = 'mismatch' having count(*) > 0
 )
 select sort, level, text, place from checks
 union all
 select 0, '🟢', 'Всё в порядке', null where not exists (select 1 from checks)
 order by 1;
 comment on view fin.v_attention is
-    'Требует внимания: вклады против бюджета до старта, не разнесённые покупки с карты, партия чая, «Не разобрано», сверка остатка, Claude, после старта — заказы и вопросы менеджеру.';
+    'Требует внимания: вклады против бюджета до старта, не разнесённые покупки с карты, партия чая, «Не разобрано», сверка остатка, Claude, чеки и выплаты ЮKassa, после старта — заказы и вопросы менеджеру.';
 
 insert into fin.schema_migrations (version) values ('009_dashboards') on conflict do nothing;

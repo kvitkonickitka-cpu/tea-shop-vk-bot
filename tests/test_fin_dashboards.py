@@ -230,7 +230,8 @@ async def test_new_views_are_readable_by_dashboards_and_marks_by_forms(bank):
                      "v_partner_capital", "v_capital_status", "v_pilot_budget_status", "v_runway_daily",
                      "v_balance_chart", "v_money_now", "v_weekly_forecast", "v_pilot_status", "v_breakeven_plan",
                      "v_breakeven_scenarios", "v_product_card", "v_unit_waterfall", "v_claude_daily",
-                     "v_claude_status", "v_pnl_report", "v_kpi_targets", "v_attention"):
+                     "v_claude_status", "v_pnl_report", "v_kpi_targets", "v_attention", "v_yk_payouts",
+                     "v_yk_receipts_missing"):
             await bank.fetch(f"select * from fin.{view}")
     async with bank.transaction():
         await bank.execute("set local role metabase_fin")
@@ -238,3 +239,15 @@ async def test_new_views_are_readable_by_dashboards_and_marks_by_forms(bank):
                            "values ('x', 'Весы', 'Илья')")
         with pytest.raises(Exception):
             await bank.execute("delete from fin.budget_article_map")
+
+
+async def test_payment_without_receipt_needs_attention(fin):
+    await fin.execute("delete from finance.yk_payments")
+    try:
+        await fin.execute(
+            "insert into finance.yk_payments (id, status, amount, income_amount, payment_method, captured_at, receipt_registration)"
+            " values ('p-no-receipt', 'succeeded', 1490, 1430, 'bank_card', now() - interval '2 hours', 'pending')")
+        texts = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
+        assert "Чек не зарегистрирован у ЮKassa: 1 оплат(ы)" in texts
+    finally:
+        await fin.execute("delete from finance.yk_payments")
