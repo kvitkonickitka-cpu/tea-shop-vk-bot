@@ -407,3 +407,27 @@ def test_street_address_needs_a_house_number():
     assert detect.street_addresses("Сенча 100 г, Иванова 3 пачки, на Ставропольской") == []
     assert [f.value for f in detect.street_addresses("на ул. Ленина 5а")] == ["ул. Ленина 5а"]
     assert [f.value for f in detect.street_addresses("Невский проспект 25")] == ["Невский проспект 25"]
+
+
+async def test_consent_link_goes_without_preview_card(monkeypatch):
+    """Карточка статьи под ссылкой загораживала просьбу о согласии — только ссылка."""
+    import httpx
+
+    from app.modules.dialog import vk_client
+
+    sent = []
+
+    def handler(request):
+        sent.append(dict(httpx.QueryParams(request.content.decode())))
+        return httpx.Response(200, json={"response": 1})
+
+    original = httpx.AsyncClient
+
+    class Mocked(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(vk_client.httpx, "AsyncClient", Mocked)
+    await vk_client.send_message(1, templates.pd_consent_request(settings.pd_consent_url))
+    await vk_client.send_message(1, "Те Гуань Инь заваривают 90 градусами.")
+    assert sent[0].get("dont_parse_links") == "1" and "dont_parse_links" not in sent[1]

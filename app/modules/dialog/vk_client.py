@@ -117,10 +117,11 @@ async def send_message(
     if keyboard:
         # Inline-клавиатура JSON-строкой; её собирает app/messages/keyboard.py.
         params["keyboard"] = keyboard
-    if settings.conditions_url and settings.conditions_url in text:
-        # Ссылку на условия ВК разворачивал в карточку статьи во весь экран, и
-        # сводка со счётом становилась вдвое длиннее. Ссылка остаётся
-        # ссылкой, карточки нет — только в сообщениях с условиями.
+    if any(url and url in text for url in (settings.conditions_url, settings.pd_consent_url)):
+        # Ссылки на условия и на согласие ВК разворачивал в карточку статьи во
+        # весь экран: сводка со счётом становилась вдвое длиннее, а просьба о
+        # согласии терялась за картинкой. Ссылка остаётся ссылкой, карточки
+        # нет — только в сообщениях с этими ссылками.
         params["dont_parse_links"] = 1
     started = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
