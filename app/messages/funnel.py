@@ -11,6 +11,9 @@ reminder, manager, carrier, yookassa. По умолчанию он берётс�
 
 События:
 - `dialog_start` — первое сообщение клиента или первое после суток тишины;
+- `consult_started` — первый ход модели в сессии без черновика, счёта и
+  вопроса о посылке; `consult_qualified` — в той же сессии показаны «Взять»
+  или в ответе назван товар из каталога (`dialog/consultation.py`);
 - `take_shown` — под ответом поставлены кнопки «Взять» (`data.items`);
 - `button:<действие>` — нажатие кнопки; `button_stale` — нажатие старой;
   у кнопок под повторными касаниями в `data.touch` — какое касание;
@@ -38,6 +41,9 @@ reminder, manager, carrier, yookassa. По умолчанию он берётс�
 - `touch:<касание>` — повторное касание отправлено (`orders/retention.py`);
 - `touch_order` — оплаченный заказ в течение 7 дней после касания;
 - `touch_optout` — отписка в течение 2 дней после касания.
+
+У каждого события — `dialog_id`: последняя сессия клиента на момент записи
+(`dialog/sessions.py`). `payment_succeeded` закрывает сессию.
 """
 
 from __future__ import annotations
@@ -88,12 +94,16 @@ async def record(
         session_factory = get_session_factory()
     except RuntimeError:
         return
+    from app.modules.dialog import sessions
+
     try:
         async with session_factory() as session:
             row = FunnelEvent(
                 peer_id=peer_id, event=event, order_id=order_id,
                 data={k: v for k, v in data.items() if v is not None} or None,
                 source=source_ or _source.get(),
+                # Сессия — той же вставкой, без отдельного запроса.
+                dialog_id=sessions.current_id_sql(peer_id),
             )
             if at is not None:
                 row.created_at = at
@@ -101,3 +111,6 @@ async def record(
             await session.commit()
     except Exception:
         logger.exception("Не записали событие воронки %s для peer_id=%s", event, peer_id)
+    if event == "payment_succeeded":
+        # После денег — новый разговор: следующее сообщение откроет новую сессию.
+        await sessions.close(peer_id, "payment", at=at)

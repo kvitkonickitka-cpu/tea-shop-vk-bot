@@ -185,3 +185,63 @@ async def sync(*, force: bool = False, now: datetime | None = None,
     total = sum((row["amount_usd"] for row in rows), Decimal(0))
     logger.info("Счёт Anthropic: %s–%s, строк %s, $%s", start, end, len(rows), total)
     return {"дни": f"{start} — {end - timedelta(days=1)}", "строк": len(rows), "итого, $": str(total)}
+
+
+# --- сверка учёта бота со счётом за месяц -----------------------------------------
+# Счёт за прошлый месяц Anthropic уточняет несколько дней — сверяем с третьего
+# числа. Расхождение больше ANTHROPIC_RECONCILE_TOLERANCE — ⚠️ в Ops, один раз за
+# месяц (журнал client_notices). Счёт — по всей организации, учёт бота — только
+# его запросы: постоянное расхождение значит, что ключом пользуется кто-то ещё
+# или в llm_prices устарели цены.
+RECONCILE_FROM_DAY = 3
+
+
+def _previous_month(today: date) -> tuple[date, date]:
+    first = today.replace(day=1)
+    start = (first - timedelta(days=1)).replace(day=1)
+    return start, first
+
+
+async def reconcile_month(*, now: datetime | None = None, force: bool = False) -> dict:
+    """Сверить сумму llm_usage со счётом Anthropic за прошлый месяц (UTC, как у Anthropic)."""
+    from sqlalchemy import text
+
+    now = now or datetime.now(timezone.utc)
+    if now.day < RECONCILE_FROM_DAY and not force:
+        return {"skipped": "сверяем с третьего числа"}
+    start, end = _previous_month(now.date())
+    month = start.strftime("%Y-%m")
+    lo, hi = datetime.combine(start, time(), timezone.utc), datetime.combine(end, time(), timezone.utc)
+    async with get_session_factory()() as session:
+        bot = (await session.execute(text(
+            "select coalesce(sum(cost_usd), 0) from llm_usage where at >= :lo and at < :hi"
+        ), {"lo": lo, "hi": hi})).scalar()
+        bill_days = (await session.execute(text(
+            "select count(distinct day), coalesce(sum(amount_usd), 0) from anthropic_costs where day >= :s and day < :e"
+        ), {"s": start, "e": end})).one()
+    days, bill = int(bill_days[0] or 0), Decimal(bill_days[1] or 0)
+    bot = Decimal(bot or 0)
+    result = {"месяц": month, "учёт бота, $": str(round(bot, 2)), "счёт Anthropic, $": str(round(bill, 2)),
+              "дней в счёте": days}
+    if days == 0:
+        return {**result, "skipped": "счёта за месяц нет (не задан ключ или не загружен)"}
+    if bot == 0 and bill == 0:
+        return {**result, "skipped": "расхода не было"}
+    deviation = abs(bot - bill) / max(bill, bot)
+    result["расхождение, %"] = str(round(deviation * 100, 1))
+    if deviation <= Decimal(str(settings.anthropic_reconcile_tolerance)):
+        return {**result, "ok": True}
+    from app.messages import client as client_messages
+    from app.messages import manager as manager_messages
+
+    if not force and not await client_messages.claim_once(f"anthropic_reconcile:{month}", "anthropic_reconcile", 0):
+        return {**result, "ok": False, "skipped": "уже сообщали"}
+    side = "счёт больше учёта бота" if bill > bot else "учёт бота больше счёта"
+    await manager_messages.notify(
+        manager_messages.ANTHROPIC_COSTS,
+        f"⚠️ <b>Claude API за {month}: учёт бота и счёт Anthropic расходятся на {result['расхождение, %']} %</b>\n"
+        f"Учёт бота (llm_usage): ${round(bot, 2)} · счёт Anthropic: ${round(bill, 2)} — {side}.\n"
+        "Счёт — по всей организации: проверьте, кто ещё пользуется ключом, и цены в llm_prices.py.",
+        chat_id=settings.telegram_ops_chat_id or None,
+    )
+    return {**result, "ok": False, "sent": True}

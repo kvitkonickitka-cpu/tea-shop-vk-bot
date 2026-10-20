@@ -207,6 +207,9 @@ async def test_take_path_leaves_the_whole_funnel(clean, shop):
     assert [(row.event, row.source) for row in rows] == [
         ("dialog_start", "text"),
         ("take_shown", "code"),
+        # Консультация (A3): первый ход модели в сессии и товар из каталога в ответе.
+        ("consult_started", "code"),
+        ("consult_qualified", "code"),
         ("button:take", "button"),
         ("draft_created", "button"),
         ("upsell_offered", "code"),

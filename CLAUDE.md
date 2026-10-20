@@ -699,6 +699,33 @@ Ozon в каталоге есть координаты. Скриншоты бо�
 не переписываются, применяет `analytics/fin/apply.sh`, сверка с v1.5 и
 права — `tests/test_fin_model.py`.
 
+**Сессия диалога и источник** (`app/modules/dialog/sessions.py`): сессия
+(`dialog_sessions`, её номер — `dialog_id` в `funnel_events` и `llm_usage`)
+открывается сообщением клиента — первым, после суток тишины или после
+оплаты (`payment_succeeded` её закрывает). Источник — `ad:<ref>` (ссылка
+`vk.me/…?ref=<метка>`), `referral:<код>` (`?ref=r_<код>`), `organic`, `own`
+(«свои», `/own <peer_id>` в чате Ops — перекрывает остальные). Первый
+источник клиента (`clients.first_source`) не перезаписывается, у сессии —
+свой. **Консультация** (`dialog/consultation.py`) — `consult_started`
+(первый ход модели без черновика, счёта и вопроса о посылке в пути) и
+`consult_qualified` (назван товар из каталога), по разу на сессию. Расход
+Claude пишется с клиентом, сессией, заказом, этапом и назначением
+(`journal.llm_scope`); рубли — по вводной `usd_rub` (`analytics.usd_rub`).
+Воронка по шагам — `v_funnel_dialog_steps` / `v_funnel_steps`, время до
+счёта — `v_invoice_timing`, рубли Claude — `v_dialogs`, `v_llm_cost_by_dialog`.
+
+## Фича-флаги
+
+Новые клиентские механики — за флагом в базе (`app/core/flags.py`,
+таблица `feature_flags`): `off` (по умолчанию, флага нет в таблице) →
+`allowlist` (только `TEST_VK_IDS`) → `on`. Переключает администратор в чате
+Ops: `/flag` — список, `/flag <имя> allowlist|on|off` (кто может —
+`OPS_ADMIN_TG_IDS`, пусто — как у ассистента Ops); руками —
+`scripts/api.sh 'flags?name=<имя>&mode=allowlist'`. Читается с кэшем на
+минуту; база не ответила — прежнее значение, не знали — выключено. Новый
+флаг — строка в `flags.KNOWN` (`_register`), проверка — `flags.enabled_for(имя, peer_id)`.
+Команды чата Ops разбирает код мимо модели (`app/modules/ops/commands.py`).
+
 ## Мониторинг
 
 **[docs/monitoring.md](docs/monitoring.md)** — что мониторится, пороги,

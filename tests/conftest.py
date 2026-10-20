@@ -36,6 +36,10 @@ os.environ.setdefault("PII_ENCRYPTION_KEY", "dGVzdC1waWkta2V5LXRlc3QtcGlpLWtleS1
 # Надбавку на эквайринг проверяет отдельно tests/test_delivery_acquiring.py.
 os.environ.setdefault("DELIVERY_ACQUIRING_PERCENT", "0")
 
+# Таблицы, которые чистит фикстура `clean` сверх основного списка: новые
+# механики дописывают сюда, не трогая общий список.
+EXTRA_CLEAN_TABLES = ("dialog_sessions", "feature_flags")
+
 
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
@@ -119,15 +123,17 @@ async def clean(db):
                 )
             )
         ).scalars().all()
-        existing = [name for name in wanted if name in set(rows)]
+        existing = [name for name in (*wanted, *EXTRA_CLEAN_TABLES) if name in set(rows)]
         if existing:
             await session.execute(
                 text(f"truncate {', '.join(existing)} restart identity cascade")
             )
             await session.commit()
+    from app.core import flags
     from app.privacy import vault
 
     vault.forget_cache()
+    flags.forget_cache()
     return db
 
 

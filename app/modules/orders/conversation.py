@@ -2716,8 +2716,32 @@ async def handle_turn(
     spent = _Spent()
     cold = _cold_start
     _cold_start = False
+    from app.modules.dialog import consultation, sessions
+    from app.modules.ops import journal
+
+    # Чей расход Claude и на каком этапе — для рублей на диалог (llm_usage).
+    session_id = await sessions.current_id(peer_id)
+    draft_before = await state.get_draft(peer_id)
+    live_before = None
+    if draft_before is None:
+        try:
+            live_before = await orders_repository.live_invoice_order(peer_id)
+        except Exception:
+            logger.warning("Не проверили счёт клиента peer_id=%s", peer_id, exc_info=True)
     try:
-        return await _handle_turn(peer_id, user_text, spent, attached, budget_seconds)
+        with journal.llm_scope(
+            peer_id=peer_id, dialog_id=session_id, purpose="sales_bot",
+            stage=consultation.funnel_stage(draft_before, live_before),
+            order_id=consultation.open_order_id(draft_before, live_before),
+        ):
+            reply = await _handle_turn(peer_id, user_text, spent, attached, budget_seconds)
+        if spent.claude_calls:
+            # Консультация — по ходу модели: пара коротких запросов, не бросает.
+            await consultation.after_turn(
+                peer_id, session_id, had_draft=draft_before is not None, had_invoice=live_before is not None,
+                text=user_text, reply=reply,
+            )
+        return reply
     finally:
         logger.info(
             "ход peer_id=%s %s%s",
@@ -2985,6 +3009,10 @@ async def _handle_turn(
         # черновик ждёт подтверждения, и confirm_order должен стать доступен
         # в этом же ходу, а не со следующего сообщения клиента.
         fresh_draft = await state.get_draft(peer_id)
+        from app.modules.dialog import consultation
+        from app.modules.ops import journal
+
+        journal.update_llm_scope(stage=consultation.funnel_stage(fresh_draft, None) if fresh_draft else None)
         tools = _tools_for_stage(
             fresh_draft.stage if fresh_draft else None,
             with_feedback=delivered is not None,

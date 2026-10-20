@@ -117,3 +117,31 @@ class InboundMessage(Base):
     message: Mapped[dict] = mapped_column(JSONB)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     done_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DialogSession(Base):
+    """Сессия диалога: отрезок переписки от первого сообщения до тишины или оплаты.
+
+    Новая сессия — после суток тишины клиента или после оплаты заказа: то,
+    что клиент пишет после денег, — уже другой разговор (статус посылки,
+    следующий заказ). По сессиям считаются стоимость Claude на диалог,
+    воронка по шагам и источник визита (last touch): `source` — откуда пришло
+    первое сообщение сессии — `ad:<ref>`, `referral:<код>` или `organic`.
+    Первый источник клиента (first touch) — в `clients.first_source`.
+    """
+
+    __tablename__ = "dialog_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Сессию закрыла оплата: следующее сообщение откроет новую, даже если тишины не было.
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    source: Mapped[str] = mapped_column(String, default="organic")
+    ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ref_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # События консультации — по одному на сессию (A3).
+    consult_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    consult_qualified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

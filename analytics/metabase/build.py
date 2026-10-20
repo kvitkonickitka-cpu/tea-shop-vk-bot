@@ -51,6 +51,9 @@ F.update(sync_fields({
     "items_margin.paid_date_msk": ("v_order_item_margin", "paid_date_msk"),
     "llm.date_msk": ("v_llm_usage", "date_msk"),
     "bill.day": ("v_anthropic_costs", "day"),
+    "steps.started_date_msk": ("v_funnel_dialog_steps", "started_date_msk"),
+    "inv.first_invoice_date_msk": ("v_invoice_timing", "first_invoice_date_msk"),
+    "dlg.started_date_msk": ("v_dialogs", "started_date_msk"),
 }))
 
 RUB = {"suffix": " ₽", "decimals": 0}
@@ -206,13 +209,15 @@ card("check", coll, "Сходимость с банком",
 INVOICE = "event like 'invoice\\_%' and event not in ('invoice_expired', 'invoice_canceled')"
 card("funnel", coll, "Воронка: от диалога до вручения",
      "with e as (\n"
-     "  select client_key, case when event = 'dialog_start' then 1 when event = 'draft_created' then 2\n"
-     "    when event = 'delivery_quoted' then 3 when event = 'recipient_set' then 4\n"
-     f"    when {INVOICE} then 5 when event = 'payment_succeeded' then 6 when event = 'delivered' then 7 end as step\n"
+     "  select client_key, case when event = 'dialog_start' then 1 when event = 'consult_started' then 2\n"
+     "    when event = 'consult_qualified' then 3 when event = 'draft_created' then 4\n"
+     "    when event = 'delivery_quoted' then 5 when event = 'recipient_set' then 6\n"
+     f"    when {INVOICE} then 7 when event = 'payment_succeeded' then 8 when event = 'delivered' then 9 end as step\n"
      "  from analytics.v_funnel_events where client_key is not null [[and {{dates}}]])\n"
-     "select case step when 1 then '1. Начали диалог' when 2 then '2. Черновик заказа' when 3 then '3. Посчитана доставка'\n"
-     "  when 4 then '4. Указан получатель' when 5 then '5. Выставлен счёт' when 6 then '6. Оплатили'\n"
-     "  else '7. Вручено' end as \"Шаг\", count(distinct client_key) as \"Клиентов\"\n"
+     "select case step when 1 then '1. Начали диалог' when 2 then '2. Консультация' when 3 then '3. Назван товар'\n"
+     "  when 4 then '4. Черновик заказа' when 5 then '5. Посчитана доставка'\n"
+     "  when 6 then '6. Указан получатель' when 7 then '7. Выставлен счёт' when 8 then '8. Оплатили'\n"
+     "  else '9. Вручено' end as \"Шаг\", count(distinct client_key) as \"Клиентов\"\n"
      "from e where step is not null group by step order by step",
      "funnel", {"funnel.dimension": "Шаг", "funnel.metric": "Клиентов"}, "funnel.created_date_msk",
      description="Сколько разных клиентов дошли до каждого шага за выбранные даты.")
@@ -239,6 +244,41 @@ card("escal", coll, "Вопросы менеджеру по дням",
      "  count(*) filter (where event = 'escalation_closed') as \"Менеджер ответил\"\n"
      "from analytics.v_funnel_events where event like 'escalation\\_%' [[and {{dates}}]] group by 1 order by 1",
      "bar", {"graph.dimensions": ["День"], "graph.metrics": ["Открыто", "Менеджер ответил"]}, "funnel.created_date_msk")
+
+card("steps", coll, "Шаги воронки: дошли, отвалились, время до следующего",
+     "select step_no || '. ' || step_label as \"Шаг\", count(*) filter (where reached) as \"Дошли\",\n"
+     "  count(*) filter (where dropped) as \"Отвалились\",\n"
+     "  round(100.0 * count(*) filter (where dropped) / nullif(count(*) filter (where reached), 0), 1) as \"Отвал, %\",\n"
+     "  round((percentile_cont(0.5) within group (order by minutes_to_next))::numeric, 0) as \"Медиана, мин\",\n"
+     "  round((percentile_cont(0.9) within group (order by minutes_to_next))::numeric, 0) as \"90 %, мин\"\n"
+     "from analytics.v_funnel_dialog_steps where true [[and {{dates}}]] group by step_no, step_label order by step_no",
+     "table", colfmt(**{"Отвал, %": {"suffix": " %"}}), "steps.started_date_msk",
+     description="По сессиям диалога: сколько дошли до шага, сколько на нём остановились и сколько минут "
+                 "до следующего шага. Даты — начало сессии.")
+card("by_source", coll, "Диалог → оплата по источнику",
+     "select case session_source_kind when 'ad' then 'Реклама' when 'referral' then 'Друг' when 'own' then 'Свои'\n"
+     "  else 'Органика' end as \"Источник\", count(*) as \"Диалогов\",\n"
+     "  count(*) filter (where consult_started) as \"Консультаций\", count(*) filter (where is_paid) as \"Оплат\",\n"
+     "  round(100.0 * count(*) filter (where is_paid) / nullif(count(*), 0), 1) as \"Конверсия, %\"\n"
+     "from analytics.v_dialogs where true [[and {{dates}}]] group by 1 order by 2 desc",
+     "table", colfmt(**{"Конверсия, %": {"suffix": " %"}}), "dlg.started_date_msk")
+card("draft_inv", coll, "Черновик → счёт, медиана минут",
+     "select round((percentile_cont(0.5) within group (order by minutes_draft_to_invoice))::numeric, 0) as \"Минут\"\n"
+     "from analytics.v_invoice_timing where minutes_draft_to_invoice is not null [[and {{dates}}]]",
+     "scalar", colfmt(**{"Минут": {"suffix": " мин"}}), "inv.first_invoice_date_msk")
+card("expired_share", coll, "Доля заказов с истёкшим счётом",
+     "select round(100.0 * avg(case when had_expired then 1 else 0 end), 1) as \"Доля, %\"\n"
+     "from analytics.v_invoice_timing where true [[and {{dates}}]] having count(*) > 0",
+     "scalar", colfmt(**{"Доля, %": {"suffix": " %"}}), "inv.first_invoice_date_msk")
+card("llm_dialog", coll, "Claude на диалог, оплату и нового покупателя, ₽",
+     "select to_char(started_date_msk, 'YYYY-MM') as \"Месяц\", count(*) as \"Диалогов\",\n"
+     "  round(sum(llm_cost_rub) / nullif(count(*), 0), 1) as \"₽ на диалог\",\n"
+     "  round(sum(llm_cost_rub) / nullif(count(*) filter (where is_paid), 0), 0) as \"₽ на оплату\",\n"
+     "  round(sum(llm_cost_rub) / nullif(count(*) filter (where is_first_purchase), 0), 0) as \"₽ на нового покупателя\"\n"
+     "from analytics.v_dialogs where true [[and {{dates}}]] group by 1 order by 1 desc",
+     "table", {}, "dlg.started_date_msk",
+     description="Весь расход Claude за месяц делится на оплаты: диалоги без покупки входят в цену покупки. "
+                 "Курс — вводная usd_rub; пусто — курса нет.")
 
 # --- Продажи: Заказы ---------------------------------------------------------------------------
 PAID = "from analytics.v_orders where is_paid and not is_refunded [[and {{dates}}]]"
@@ -533,6 +573,9 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     dc("funnel", 0, 0, 12, 8, T["Воронка"]), dc("conv", 0, 12, 6, 3, T["Воронка"]),
     dc("losses", 3, 12, 12, 5, T["Воронка"]), dc("daily", 8, 0, 24, 6, T["Воронка"]),
     dc("escal", 14, 0, 24, 5, T["Воронка"]),
+    dc("steps", 19, 0, 16, 7, T["Воронка"]), dc("draft_inv", 19, 16, 8, 3, T["Воронка"]),
+    dc("expired_share", 22, 16, 8, 4, T["Воронка"]),
+    dc("by_source", 26, 0, 12, 5, T["Воронка"]), dc("llm_dialog", 26, 12, 12, 5, T["Воронка"]),
     # Заказы
     dc("rev", 0, 0, 6, 3, T["Заказы"]), dc("ord_cnt", 0, 6, 6, 3, T["Заказы"]), dc("avg", 0, 12, 6, 3, T["Заказы"]),
     dc("subsidy", 0, 18, 6, 3, T["Заказы"]), dc("rev_daily", 3, 0, 24, 6, T["Заказы"]),

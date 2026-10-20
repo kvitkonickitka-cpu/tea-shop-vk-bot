@@ -403,6 +403,11 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     from app.modules.analytics import service as analytics
 
     await analytics.ensure_client(peer_id, ref=message.get("ref"), ref_source=message.get("ref_source"))
+    # Сессия диалога: продлить или открыть новую (после суток тишины или оплаты),
+    # с источником визита из ссылки (last touch).
+    from app.modules.dialog import sessions
+
+    await sessions.touch(peer_id, ref=message.get("ref"), ref_source=message.get("ref_source"))
 
     try:
         get_session_factory()

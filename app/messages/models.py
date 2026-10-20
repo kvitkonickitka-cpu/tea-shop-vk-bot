@@ -119,3 +119,5 @@ class FunnelEvent(Base):
     # storefront — витрина, reminder — напоминание, manager — менеджер,
     # carrier — перевозчик, yookassa — уведомление ЮKassa.
     source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Сессия диалога (dialog_sessions.id) — последняя у клиента на момент события.
+    dialog_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
