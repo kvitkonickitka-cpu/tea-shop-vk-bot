@@ -171,6 +171,61 @@ async def act_command(args: list[str], sender: dict, message: dict | None = None
     return "\n".join(lines)
 
 
+@command("tax", "/tax — сроки; /tax <id> оплачено <сумма>; /tax <id> подано")
+async def tax_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from decimal import Decimal, InvalidOperation
+
+    from app.modules.ops import controls
+
+    if not args:
+        rows = await controls.tax_list()
+        if not rows:
+            return "Налоговый календарь пуст (или схема fin не применена)."
+        lines = ["<b>Налоговый календарь</b>"]
+        for tax_id, due, event, hint, status, paid in rows:
+            amount = f" · {round(paid if paid is not None else hint):,} ₽".replace(",", " ") if (paid or hint) else ""
+            lines.append(f"<code>{tax_id}</code> {due:%d.%m.%Y} {html.escape(event)}{amount} — {status}")
+        return "\n".join(lines)
+    if len(args) < 2 or not args[0].isdigit() or args[1].casefold() not in ("оплачено", "подано"):
+        raise ValueError("Отметка: номер события и «оплачено» (с суммой) или «подано».")
+    status = args[1].casefold()
+    amount = None
+    if status == "оплачено":
+        try:
+            amount = Decimal(args[2].replace(",", ".")) if len(args) > 2 else None
+        except InvalidOperation:
+            raise ValueError("Сумма — числом: /tax 1 оплачено 18014.08") from None
+        if amount is None:
+            raise ValueError("Для «оплачено» нужна сумма: она уменьшает резерв УСН.")
+    if not await controls.tax_mark(int(args[0]), status, amount, by=who(sender)):
+        return f"События {html.escape(args[0])} в календаре нет."
+    return f"Отмечено: событие {args[0]} — {status}" + (f", {amount} ₽" if amount is not None else "") + "."
+
+
+@command("morning", "/morning — утренний список менеджеру сейчас")
+async def morning_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.ops import controls
+
+    await controls.morning_list(force=True)
+    return "Утренний список отправлен в чат менеджера."
+
+
+@command("controls", "/controls — контроли сейчас (сводка сюда)")
+async def controls_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.ops import controls
+
+    result = await controls.check_controls(force_summary=True)
+    return "Сводка контролей отправлена." if result.get("сводка") else html.escape(str(result))
+
+
+@command("close", "/close — чек-лист закрытия прошлого месяца сейчас")
+async def close_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.ops import controls
+
+    await controls.month_close(force=True)
+    return "Чек-лист закрытия месяца отправлен."
+
+
 async def handle(message: dict, me: dict) -> bool:
     """Команда из чата Ops — выполнить и ответить. True — это была наша команда."""
     # Файл с подписью-командой (/act) — команда в caption.

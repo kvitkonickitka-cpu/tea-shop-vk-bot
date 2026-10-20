@@ -202,6 +202,14 @@ async def _run_scheduled() -> dict:
     from app.modules.payment import registry as yk_registry
 
     result["yk_registry"] = await _run_task("Реестр ЮKassa", yk_registry.sync())
+    # Регламенты: критичные контроли — сразу, сводка и утренний список — в 10:00,
+    # реклама за вчера — в 11:00, закрытие месяца — 1-го (повтор 3-го), налоги — за 7 дней и за день.
+    from app.modules.ops import controls
+
+    result["controls"] = await _run_task("Контроли", controls.check_controls())
+    result["morning"] = await _run_task("Утренний список", controls.morning_list())
+    result["month_close"] = await _run_task("Закрытие месяца", controls.month_close())
+    result["taxes"] = await _run_task("Налоговый календарь", controls.tax_reminders())
     # Факт доставки против котировки (акты и API) — раз в день, после реестра.
     result["carrier_check"] = await _run_task("Сверка доставки с актами", _daily("сверка доставки", _carrier_check))
     # Сверка учёта бота со счётом за прошлый месяц — с третьего числа, раз в месяц.
@@ -1142,3 +1150,34 @@ async def kudir_export(request: Request):
     return {"период": f"{start} — {end}", "правило": kudir.RULES[kudir.rule()], "записей": len(records),
             "итого": str(sum((r["income"] for r in records), 0)),
             "записи": [{**r, "income": str(r["income"])} for r in records[:200]]}
+
+
+@router.post("/internal/ops/controls")
+async def ops_controls_now(request: Request):
+    """Регламенты руками (сообщения уходят сразу, отметки «сегодня уже» не ставятся).
+
+        scripts/api.sh ops/controls            контроли + сводка в Ops
+        scripts/api.sh 'ops/controls?what=morning'   утренний список менеджеру
+        scripts/api.sh 'ops/controls?what=close'     закрытие прошлого месяца в Ops
+        scripts/api.sh 'ops/controls?what=ads'       напоминание о рекламе за вчера
+        scripts/api.sh 'ops/controls?what=taxes'     напоминания налогового календаря
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.ops import controls
+
+    what = request.query_params.get("what") or "controls"
+    jobs = {
+        "controls": lambda: controls.check_controls(force_summary=True),
+        "morning": lambda: controls.morning_list(force=True),
+        "close": lambda: controls.month_close(force=True),
+        "ads": lambda: controls.ads_reminder(force=True),
+        "taxes": lambda: controls.tax_reminders(),
+    }
+    if what not in jobs:
+        return {"error": f"what — одно из: {', '.join(jobs)}"}
+    try:
+        return await jobs[what]()
+    except Exception as error:
+        logger.exception("Регламент %s руками не выполнился", what)
+        return {"error": _hide_token(f"{type(error).__name__}: {error}")[:300]}

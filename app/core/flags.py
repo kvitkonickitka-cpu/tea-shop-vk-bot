@@ -63,6 +63,9 @@ def _register(name: str, title: str) -> str:
     return name
 
 
+OZON_AUTO_APPROVE = _register("ozon_auto_approve", "Автоподтверждение Ozon после сборки (C8); allowlist — dry-run")
+
+
 _cache: dict[str, str] = {}
 _loaded_at: float = float("-inf")
 

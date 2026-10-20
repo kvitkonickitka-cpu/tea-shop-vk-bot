@@ -88,6 +88,9 @@ DDL = (
         checked_at      timestamptz not null default now(),
         primary key (operation_id, split_no)
     )""",
+    # Чек по платежу и чеку возврата: зарегистрирован ли у ЮKassa (B1, B3 — чеки на месте).
+    "alter table finance.yk_payments add column if not exists receipt_registration text",
+    "alter table finance.yk_refunds add column if not exists receipt_registration text",
     "comment on table finance.yk_payouts is 'Сверка выплат ЮKassa из выписки (cfo_in_yookassa) с реестром: какие дни платежей вошли, расхождение.'",
 )
 
@@ -162,30 +165,33 @@ async def _store(payments: list[dict], refunds: list[dict]) -> tuple[int, int]:
         for p in payments:
             await session.execute(text(
                 "insert into finance.yk_payments (id, status, amount, income_amount, payment_method, created_at,"
-                " captured_at, order_id, refunded_amount, synced_at)"
+                " captured_at, order_id, refunded_amount, receipt_registration, synced_at)"
                 " values (:id, :status, :amount, :income, :method, :created, :captured,"
-                "  (select order_id from order_payments where payment_id = :id), :refunded, now())"
+                "  (select order_id from order_payments where payment_id = :id), :refunded, :receipt, now())"
                 " on conflict (id) do update set status = excluded.status, amount = excluded.amount,"
                 "  income_amount = excluded.income_amount, payment_method = excluded.payment_method,"
                 "  captured_at = excluded.captured_at, order_id = coalesce(excluded.order_id, finance.yk_payments.order_id),"
-                "  refunded_amount = excluded.refunded_amount, synced_at = now()"
+                "  refunded_amount = excluded.refunded_amount, receipt_registration = excluded.receipt_registration,"
+                "  synced_at = now()"
             ), {
                 "id": p["id"], "status": p.get("status") or "", "amount": _money(p.get("amount")) or Decimal(0),
                 "income": _money(p.get("income_amount")),
                 "method": (p.get("payment_method") or {}).get("type"),
                 "created": _time(p.get("created_at")), "captured": _time(p.get("captured_at")),
-                "refunded": _money(p.get("refunded_amount")),
+                "refunded": _money(p.get("refunded_amount")), "receipt": p.get("receipt_registration"),
             })
         for r in refunds:
             await session.execute(text(
-                "insert into finance.yk_refunds (id, payment_id, status, amount, created_at, order_id, synced_at)"
-                " values (:id, :payment, :status, :amount, :created,"
-                "  (select order_id from order_payments where payment_id = :payment), now())"
+                "insert into finance.yk_refunds (id, payment_id, status, amount, created_at, order_id, receipt_registration,"
+                " synced_at) values (:id, :payment, :status, :amount, :created,"
+                "  (select order_id from order_payments where payment_id = :payment), :receipt, now())"
                 " on conflict (id) do update set status = excluded.status, amount = excluded.amount,"
+                "  receipt_registration = excluded.receipt_registration,"
                 "  order_id = coalesce(excluded.order_id, finance.yk_refunds.order_id), synced_at = now()"
             ), {
                 "id": r["id"], "payment": r.get("payment_id") or "", "status": r.get("status") or "",
                 "amount": _money(r.get("amount")) or Decimal(0), "created": _time(r.get("created_at")),
+                "receipt": r.get("receipt_registration"),
             })
         await session.commit()
     return len(payments), len(refunds)
