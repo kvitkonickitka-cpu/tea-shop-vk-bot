@@ -255,6 +255,10 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
             order, templates.manager_paid_old_variant(order, vk_client.dialog_link(order.peer_id))
         )
     await _tell_client(order, registered)
+    # Вопрос о рассылке — один раз за всё время, после первой удачной оплаты.
+    from app.modules.consent import service as consent
+
+    await consent.ask_marketing_once(order.peer_id)
     return {
         "платёж": payment.id,
         "заказ": order.id,

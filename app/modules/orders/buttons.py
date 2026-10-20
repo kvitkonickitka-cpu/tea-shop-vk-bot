@@ -225,6 +225,14 @@ async def handle(peer_id: int, message: dict) -> Press:
     if handler is None:
         return TO_MODEL
     order_id = payload.get("o") if isinstance(payload.get("o"), int) else None
+    from app.modules.consent import flow as consent_flow
+    from app.modules.consent import service as consent
+
+    # Ворота согласия на ПДн — кодом, до обработчика: без согласия кнопка не
+    # запишет ни пункт, ни получателя, а корзина не спросит, куда везти.
+    gated = (action in consent_flow.PD_ACTIONS or action in consent_flow.CART_ACTIONS) and not (
+        await consent.has_pd(peer_id)
+    )
     await funnel.record(
         peer_id, f"button:{action}", order_id=order_id, source_=funnel.BUTTON, version=payload.get("v"),
         touch=payload.get("t") if isinstance(payload.get("t"), str) else None,
@@ -232,6 +240,8 @@ async def handle(peer_id: int, message: dict) -> Press:
     # Под ответом на нажатие свои кнопки — набор «Взять» под прошлым
     # сообщением больше не последний.
     await take.remember_set(peer_id, None)
+    if gated and action in consent_flow.PD_ACTIONS:
+        return await consent_flow.ask_press(peer_id)
     try:
         # Всё, что случится внутри нажатия (черновик, пункт, счёт), — с кнопки.
         with funnel.source(funnel.BUTTON):
@@ -243,6 +253,8 @@ async def handle(peer_id: int, message: dict) -> Press:
         await funnel.record(peer_id, "button_stale", order_id=order_id, source_=funnel.BUTTON, action=action)
     if press is STALE:
         return await _stale_reply(peer_id)
+    if gated:
+        return await consent_flow.with_prompt(peer_id, press)
     return press
 
 
@@ -740,6 +752,15 @@ _HANDLERS = {
     "advise": _to_model,
     "other": _to_model,
 }
+
+
+def _consent_handlers() -> None:
+    from app.modules.consent import flow as consent_flow
+
+    _HANDLERS.update(consent_flow.HANDLERS)
+
+
+_consent_handlers()
 
 
 def register(action: str, handler) -> None:

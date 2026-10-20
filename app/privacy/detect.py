@@ -344,3 +344,50 @@ def courier_address(text: str) -> Found | None:
     if best is None:
         return None
     return Found(best[0], best[1], "ADDR", " ".join(best[2].split()))
+
+
+# --- адрес в свободном тексте ---------------------------------------------------
+#
+# Улица с номером дома — адрес человека, даже когда бот его не спрашивал:
+# «привезите на ул. Ленина, д. 5, кв. 12». Без номера («на Ставропольской»)
+# это ориентир для поиска пункта, а не чей-то адрес, — его не трогаем.
+_MARK = (
+    r"(?:ул|улица|улице|улицу|пр-т|пр|просп|проспект|проспекте|пер|переулок|переулке|бульвар|бульваре|б-р|"
+    r"шоссе|наб|набережная|набережной|пл|площадь|мкр|мкрн|микрорайон|проезд|аллея|тупик)\.?"
+)
+_STREET_NAME = r"(?:[А-ЯЁа-яё0-9][А-ЯЁа-яё-]*\.?)"
+_HOUSE = (
+    r"(?:(?:д|дом)\.?\s*)?\d{1,4}(?:[а-яa-z](?![а-яёa-z]))?(?:\s*/\s*\d{1,4})?"
+    r"(?:[\s,]*(?:к|корп|корпус|стр|строение)\.?\s*\d{1,3})?"
+    r"(?:[\s,]*(?:кв|квартира|оф|офис)\.?\s*\d{1,4})?"
+)
+# «ул. Ленина 5», «улица Красная, д. 12» — слово-улица впереди.
+_ADDRESS_MARK_FIRST = re.compile(
+    rf"(?<![\w-]){_MARK}\s+(?:{_STREET_NAME}\s+){{0,2}}{_STREET_NAME}[\s,]+{_HOUSE}", re.IGNORECASE
+)
+# «Невский проспект 25», «Ленинский пр-т, 10» — слово-улица после названия.
+_ADDRESS_MARK_AFTER = re.compile(
+    rf"(?<![\w-])(?:{_STREET_NAME}\s+){{0,1}}{_STREET_NAME}\s+{_MARK}[\s,]+{_HOUSE}", re.IGNORECASE
+)
+# «Ставропольская 120», «Ленина д. 5» — без слова-улицы, по окончанию названия.
+_ADDRESS_BY_ENDING = re.compile(
+    rf"(?<![\w-])[А-ЯЁа-яё-]+(?:ская|ской|скую|цкая|цкой|ина|ова|ева|ёва)[\s,]+{_HOUSE}",
+    re.IGNORECASE,
+)
+# После номера — единица товара или денег: это не дом, а «Сенча 100 г».
+_NOT_HOUSE_AFTER = re.compile(r"\s*(?:г\b|гр|грамм|кг|шт|пач|уп|₽|р\b|руб|%|мл|л\b|раз|минут|сек)", re.IGNORECASE)
+
+
+def street_addresses(text: str) -> list[Found]:
+    """Улица с номером дома где угодно в тексте — адрес, его не должна видеть модель."""
+    found: list[Found] = []
+    for pattern in (_ADDRESS_MARK_FIRST, _ADDRESS_MARK_AFTER, _ADDRESS_BY_ENDING):
+        for match in pattern.finditer(text or ""):
+            if _NOT_HOUSE_AFTER.match(text, match.end()):
+                continue
+            if any(match.start() < f.end and f.start < match.end() for f in found):
+                continue
+            value = match.group(0).strip(" ,")
+            start = match.start() + match.group(0).index(value)
+            found.append(Found(start, start + len(value), "ADDR", " ".join(value.split())))
+    return found

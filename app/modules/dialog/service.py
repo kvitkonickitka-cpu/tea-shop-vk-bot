@@ -210,4 +210,4 @@ async def send_press_reply(peer_id: int, label: str, reply: str, keyboard: dict 
     if to_model:
         await dialog_history.append_message(peer_id, "assistant", reply, author=dialog_history.AUTHOR_BOT)
     else:
-        await dialog_history.append_exchange(peer_id, label, reply)
+        await dialog_history.append_exchange(peer_id, label, reply, button=True)

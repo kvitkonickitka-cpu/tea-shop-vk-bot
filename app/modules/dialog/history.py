@@ -36,7 +36,7 @@ def mark_author(content: str, author: str | None) -> str:
 _fallback_histories: dict[int, list[dict]] = {}
 
 
-async def _with_labels(peer_id: int, role: str, content: str, author: str | None) -> str:
+async def _with_labels(peer_id: int, role: str, content: str, author: str | None, *, button: bool = False) -> str:
     """В историю — версия с метками вместо персональных данных.
 
     Это единственное место записи истории, поэтому и шаблоны, которые бот
@@ -48,7 +48,9 @@ async def _with_labels(peer_id: int, role: str, content: str, author: str | None
     from app import privacy
 
     try:
-        return await privacy.tokenize(peer_id, content, names=role == "user" or author == AUTHOR_MANAGER)
+        people = role == "user" or author == AUTHOR_MANAGER
+        # Подпись кнопки — наш текст: адрес пункта из нашего же списка, не адрес клиента.
+        return await privacy.tokenize(peer_id, content, names=people, addresses=people and not button)
     except Exception:
         # Историю не теряем: телефоны и почты снимет последний рубеж перед Claude.
         logger.exception("Метки: не заменили данные в реплике для истории peer_id=%s", peer_id)
@@ -97,8 +99,8 @@ async def append_message(peer_id: int, role: str, content: str, author: str | No
         await session.commit()
 
 
-async def append_exchange(peer_id: int, user_text: str, assistant_text: str) -> None:
-    user_text = await _with_labels(peer_id, "user", user_text, None)
+async def append_exchange(peer_id: int, user_text: str, assistant_text: str, *, button: bool = False) -> None:
+    user_text = await _with_labels(peer_id, "user", user_text, None, button=button)
     assistant_text = await _with_labels(peer_id, "assistant", assistant_text, None)
     try:
         session_factory = get_session_factory()
