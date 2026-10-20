@@ -114,3 +114,7 @@ async def record(
     if event == "payment_succeeded":
         # После денег — новый разговор: следующее сообщение откроет новую сессию.
         await sessions.close(peer_id, "payment", at=at)
+        # Оплата после касания по брошенному заказу (C3) — засчитать касанию.
+        from app.modules.orders import abandoned
+
+        await abandoned.note_order(peer_id, order_id, now=at)

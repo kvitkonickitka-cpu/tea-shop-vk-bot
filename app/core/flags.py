@@ -67,6 +67,9 @@ OZON_AUTO_APPROVE = _register("ozon_auto_approve", "Автоподтвержде
 RECIPIENT_ONE_MESSAGE = _register("recipient_one_message", "Получатель одним сообщением: разбирает код, переспрашивает недостающее (C1)")
 PAYMENT_TRUST = _register("payment_trust", "Счёт: способы оплаты из ЮKassa, чек по 54-ФЗ, реквизиты ИП (C2)")
 PAYMENT_RETRY = _register("payment_retry", "Банк отказал — сразу новая ссылка той же суммы (C2)")
+ABANDONED_TOUCH = _register("abandoned_touch", "Брошенный черновик или счёт: одно касание через ~20 ч (C3)")
+PICKUP_REMINDERS = _register("pickup_reminders", "Посылка в пункте: напоминание на 2-й день и за день до конца хранения (C4)")
+FREE_DELIVERY_NUDGE = _register("free_delivery_nudge", "Подсказка до бесплатной доставки Ozon с пачкой, закрывающей разницу (C5)")
 ESCALATION_AFTER_HOURS = _register("escalation_after_hours", "Вопрос менеджеру ночью: когда ответят, продажа продолжается (C6)")
 
 

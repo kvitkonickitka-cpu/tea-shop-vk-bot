@@ -516,6 +516,14 @@ class Settings(BaseSettings):
     enabled_payment_methods: str = ""
     # Ссылка на реквизиты ИП в сообществе ВК — строкой под счётом (C2). Пусто — без строки.
     requisites_url: str = ""
+    # C3: касание по брошенному черновику или счёту — через столько часов после
+    # последнего действия, и не позже, чем через max (дальше — уже рассылка).
+    abandoned_touch_after_hours: int = 20
+    abandoned_touch_max_age_hours: int = 72
+    # C4: сколько дней посылка хранится в пункте, если перевозчик не отдал дату.
+    # Сверить с договорами: у Ozon и СДЭКа сроки зависят от пункта и тарифа.
+    pickup_storage_days_ozon: int = 7
+    pickup_storage_days_cdek: int = 7
 
 
 settings = Settings()

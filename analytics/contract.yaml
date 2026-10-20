@@ -312,3 +312,11 @@ views:
     - is_paid: boolean
     - session_source: character varying
     - session_source_kind: text
+  v_delivery_outcomes:
+    - month: date
+    - carrier: text
+    - at_pickup: integer
+    - delivered: integer
+    - not_delivered: integer
+    - non_pickup_share: numeric(6,4)
+    - reminded: integer
