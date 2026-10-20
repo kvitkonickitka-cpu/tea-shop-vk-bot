@@ -55,11 +55,11 @@ async def test_order_economics_takes_the_real_yookassa_fee_and_carrier_acts(regi
     order = await _order(db, 9301, [{"name": "Те Гуань Инь 100 г", "quantity": 2, "price": 390}], delivery=200, carrier=207.0)
     before = await fin.fetchrow("select * from fin.v_order_economics where order_id = $1", order)
     assert before["acquiring_source"] == "ставка способа" and before["carrier_cost_source"] == "котировка"
-    # Реестр: ЮKassa удержала 33 ₽ (СБП дешевле карты) — эквайринг = факт + фискализация 1 %.
+    # Реестр: ЮKassa удержала 33 ₽ (СБП дешевле карты) — это и есть эквайринг: чек и НДС уже внутри.
     await _payment(fin, "p", 980, 947, _days_ago(0), order_id=order, method="sbp")
     after = await fin.fetchrow("select * from fin.v_order_economics where order_id = $1", order)
     assert after["acquiring_source"] == "факт ЮKassa" and after["payment_method"] == "sbp"
-    assert r2(after["acquiring"]) == Decimal("42.80")
+    assert r2(after["acquiring"]) == Decimal("33.00")
     assert after["margin_before_cac"] - before["margin_before_cac"] == before["acquiring"] - after["acquiring"]
     # Акт СДЭКа по треку: доставка дороже котировки на 15 % и обратная доставка — отдельной статьёй.
     await fin.execute(
@@ -76,11 +76,11 @@ async def test_order_economics_takes_the_real_yookassa_fee_and_carrier_acts(regi
 
 
 async def test_payment_rate_by_method_falls_back_to_cards(fin):
-    assert await fin.fetchval("select fin.payment_rate_for('bank_card')") == Decimal("0.05148")
+    assert await fin.fetchval("select fin.payment_rate_for('bank_card')") == Decimal("0.05368")
     # Ставки СБП нет — ставка карт, а не ноль.
-    assert await fin.fetchval("select fin.payment_rate_for('sbp')") == Decimal("0.05148")
+    assert await fin.fetchval("select fin.payment_rate_for('sbp')") == Decimal("0.05368")
     await fin.execute("insert into fin.inputs (key, value, unit, entered_by) values ('acquiring_rate_sbp', 0.004, '%', 'Никита')")
-    assert await fin.fetchval("select fin.payment_rate_for('sbp')") == Decimal("0.014880")
+    assert await fin.fetchval("select fin.payment_rate_for('sbp')") == Decimal("0.01708")
 
 
 async def test_breakeven_switches_to_fact_after_ten_orders(fin, db):
@@ -91,8 +91,8 @@ async def test_breakeven_switches_to_fact_after_ten_orders(fin, db):
                      delivery=0, carrier=414.0, minutes=n)
     m1 = await fin.fetchrow("select * from fin.v_breakeven where month_no = 1")
     assert m1["fact_orders"] == 10 and m1["margin_basis"].startswith("факт")
-    # Фактическая маржа набора с бесплатной доставкой 411 ₽ (из test_fin_model) вместо 788,79.
-    assert r2(m1["margin_used"]) < Decimal("788.79") and m1["orders_to_break_even"] > 27
+    # Фактическая маржа набора с бесплатной доставкой 408 ₽ (из test_fin_model) вместо 785,07.
+    assert r2(m1["margin_used"]) < Decimal("785.07") and m1["orders_to_break_even"] > 27
 
 
 async def test_reorder_point_and_days_of_stock(fin, db):

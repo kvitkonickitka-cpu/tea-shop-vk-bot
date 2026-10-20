@@ -176,7 +176,7 @@ async def test_kudir_rows_refunds_and_bank_income(bank, yookassa, alerts):
 
     book = load_workbook(io.BytesIO(kudir.to_xlsx(records, date(2026, 11, 1), date(2026, 11, 30))))
     sheet = book.active
-    assert "подтвердить у бухгалтера" in sheet["A2"].value
+    assert "подтверждено бухгалтером" in sheet["A2"].value
     assert sheet.cell(row=sheet.max_row, column=5).value == 3600.0
 
 
