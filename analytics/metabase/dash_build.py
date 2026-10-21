@@ -544,7 +544,9 @@ def cards_inputs(q):
 select theme as "Тема", label as "Вводная", value_shown as "Значение", since as "С какой даты", kind as "Вид",
        comment as "Комментарий", key as "Ключ"
 from fin.v_inputs_display where not unused order by theme, label""", "table",
-         merge({"table.columns": [{"name": c, "enabled": c != "Ключ"} for c in cols]},
+         # Ширина колонок — явно: Metabase подбирает её по первым строкам, и «2. Комиссии» обрезалась.
+         merge({"table.columns": [{"name": c, "enabled": c != "Ключ"} for c in cols],
+                "table.column_widths": [130, 300, 130, 120, 110, 700]},
                colfmt(Тема={"column_title": "Тема"}),
                color_rules("Вид", {"допущение": YELLOW, "решение": BLUE})),
          "Действующие сегодня вводные по темам. Вид: факт — из документа или банка, решение — договорились, "
