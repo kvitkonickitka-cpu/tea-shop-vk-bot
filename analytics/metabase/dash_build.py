@@ -42,6 +42,20 @@ RU_MONTHS = "(array['янв','фев','мар','апр','май','июн','ию�
 AXIS_DAY = {"date_style": "D MMMM, YYYY", "date_abbreviate": True}
 
 
+# Короткие имена статей для легенды графика: полные — в бюджете пилота.
+SHORT_ITEMS = {"Первая закупка чая": "Чай", "Упаковка и расходники (лимит)": "Упаковка", "Термопринтер": "Принтер",
+               "ВК: пополнение кабинета": "ВК", "Подрядчик за пилот": "Подрядчик", "Доставка основной партии": "Доставка партии",
+               "ККТ, ФН, фискализация": "ККТ", "УКЭП / ЭДО / маркировка": "ЭДО и маркировка", "GTIN / карточки товаров": "GTIN",
+               "Сервисы за пилот": "Сервисы", "Взносы 2026: расчётный резерв": "Взносы", "Обслуживание банка за пилот": "Банк",
+               "API тестов и консультаций до продаж": "API до продаж", "Тестовые отправки до рекламы": "Тест-отправки",
+               "Не сопоставлено": "Без статьи"}
+
+
+def short_item(expr):
+    whens = " ".join(f"when '{k}' then '{v}'" for k, v in SHORT_ITEMS.items())
+    return f"case {expr} {whens} else {expr} end"
+
+
 def month_label(expr):
     return f"{RU_MONTHS}[extract(month from {expr})::int] || ' ' || extract(year from {expr})::int"
 
@@ -163,8 +177,7 @@ def cards_today(q, links):
     low = min(0.0, free * 1.2)
     card("t_free", q, f"Свободно сверх резерва {rub(reserve)}", """
 select free_cash as "Свободно" from fin.v_money_now""", "gauge",
-         {"gauge.segments": [
-             {"min": low, "max": 0, "color": RED, "label": "ниже резерва"},
+         {"gauge.segments": ([{"min": low, "max": 0, "color": RED, "label": "ниже резерва"}] if low < 0 else []) + [
              {"min": 0, "max": left, "color": RED, "label": "меньше трат до старта"},
              {"min": left, "max": top, "color": GREEN, "label": "хватает на траты до старта"}],
           **colfmt(Свободно=RUB)},
@@ -231,7 +244,7 @@ where not exists (select 1 from analytics.v_orders where is_paid)""",
 def cards_money(q):
     card("m_spend", q, "Куда ушли деньги по месяцам", f"""
 select {month_label("date_trunc('month', s.day)")} as "Месяц",
-       s.budget_item || case when b.cash_class = 'Вложения' then ' (вложения)' else '' end as "Статья",
+       {short_item("s.budget_item")} || case when b.cash_class = 'Вложения' then ' (влож.)' else '' end as "Статья",
        round(sum(s.amount)) as "Расход"
 from fin.v_spend s join fin.budget_articles b on b.item = s.budget_item
 group by date_trunc('month', s.day), s.budget_item, b.cash_class, b.sort order by date_trunc('month', s.day), b.sort""",
@@ -247,7 +260,7 @@ select partner as "Партнёр", plan as "План", contributed as "Внес
 from fin.v_partner_capital
 union all
 select 'Всего', plan, contributed, remaining, round(100 * share) || ' %' from fin.v_capital_status""", "table",
-         merge(colfmt(**{"План": RUB, "Внесено": RUB, "Осталось": RUB}), color_rules("Партнёр", {"Всего": GREY}, row=True)),
+         colfmt(**{"План": RUB, "Внесено": RUB, "Осталось": RUB}),
          "План — вводные «Вклад Никиты» и «Вклад Ильи». Чей вклад — разметкой операции «Взнос собственника» "
          "(форма «Разметить операцию», поле «Чей вклад»); не размеченный — строкой «Не указано, чей».")
     card("m_budget", q, "Бюджет пилота: сколько осталось", """
@@ -261,9 +274,7 @@ select item as "Статья", plan as "План", spent_before_start as "До �
 ) x order by sort""", "table",
          merge(colfmt(**{"План": RUB, "До старта": RUB, "В пилоте": RUB, "Осталось": RUB}),
                {"table.column_formatting": [
-                   {"columns": ["Осталось"], "type": "single", "operator": "<", "value": 0, "color": RED, "highlight_row": False},
-                   {"columns": ["Статья"], "type": "single", "operator": "=", "value": "Всего", "color": GREY,
-                    "highlight_row": True}]}),
+                   {"columns": ["Осталось"], "type": "single", "operator": "<", "value": 0, "color": RED, "highlight_row": False}]}),
          "План — статьи бюджета пилота из вводных; потрачено — выписка и «мимо счёта», сведённые к статьям, "
          "отдельно до старта и в пилоте. Осталось = план − всё потраченное. Статьи без плана и трат скрыты. "
          "«Не сопоставлено» — траты без статьи: разметить формой «Разметить операцию».")
@@ -281,10 +292,11 @@ from fin.v_weekly_forecast order by week_no""", "table",
 def cards_sales(q):
     paid = "exists (select 1 from analytics.v_orders where is_paid)"
     number("s_soon", q, " ", f"""
-select 'Продаж ещё нет. Здесь будут: воронка, заказы по дням, CAC с целью ' || fin.fmt_rub(t.goal) || ' и лимитом '
-       || fin.fmt_rub(t.limit_value) || ', средний чек. Старт — ' || to_char(fin.inp_date('pilot_start_date'), 'DD.MM')
-from fin.v_kpi_targets t where t.metric = 'cac' and not {paid}""",
-           "Карточка пропадает с первым оплаченным заказом, вместо неё появляются графики.")
+select 'Продаж ещё нет — старт ' || to_char(fin.inp_date('pilot_start_date'), 'DD.MM')
+where not {paid}""",
+           "Здесь будут: воронка от диалога до вручения, заказы по дням против плана, CAC по неделям с целью и "
+           "лимитом (вводные «Цель: CAC», «Лимит: CAC»), средний чек с целью. Карточка пропадает с первым оплаченным "
+           "заказом, вместо неё появляются графики.")
     card("s_funnel", q, "Воронка: от диалога до вручения", f"""
 with e as (
   select client_key, case when event = 'dialog_start' then 1 when event = 'draft_created' then 2
@@ -349,7 +361,7 @@ where product = (select value_text from fin.inputs_current where key = 'lead_pro
          f"коды − доставка и прочее на заказ − Claude. Claude в себестоимости — {api[0] if api else 'нет данных'} ₽ "
          f"на нового покупателя: API на консультацию × курс / конверсия. Источник — fin.v_unit_cost.")
     card("p_margin", q, "Маржа до рекламы по товарам", """
-select name || case kind_group when 'Пачки' then ' · пачка' when 'Блины' then ' · блин' else '' end
+select name || case kind_group when 'Блины' then ' · блин' else '' end
             || case when sold_by_bot then ' · бот' else '' end as "Товар",
        case when not low_margin then round(margin_before_cac) end as "Маржа",
        case when low_margin then round(margin_before_cac) end as "Ниже порога"
@@ -359,7 +371,7 @@ from fin.v_product_card order by kind_sort, margin_before_cac desc""", "row",
           "series_settings": {"Маржа": {"color": GREEN}, "Ниже порога": {"color": RED}},
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "Маржа на единицу, ₽",
           **colfmt(Маржа=RUB, **{"Ниже порога": RUB})},
-         "Сверху вниз: наборы, сеты, пачки, блины. Красным — маржа до рекламы ниже порога (вводная «Порог низкой "
+         "Сверху вниз: наборы, сеты, пачки (без пометки), блины. Красным — маржа до рекламы ниже порога (вводная «Порог низкой "
          "маржи», 20 % цены). «бот» — товар есть в каталоге бота. Имена сокращены: блины — «Пуэр Банжань Гушу» "
          "(>3 лет, 357 г, IT-75) и «Пуэр Танцующая Пара» (Баньна Фенг Мэнхай, 357 г, IT-101).")
     need = one_row("select string_agg(month_label || ' — ' || orders_needed, ', ' order by month_no) from fin.v_breakeven_plan")
@@ -600,7 +612,7 @@ def text(tab, row, col, w, h, md):
     _seq[0] -= 1
     return {"id": _seq[0], "card_id": None, "dashboard_tab_id": tab, "row": row, "col": col, "size_x": w, "size_y": h,
             "parameter_mappings": [],
-            "visualization_settings": {"text": md, "virtual_card": {"name": None, "display": "text", "archived": False,
+            "visualization_settings": {"text": md, "dashcard.background": False, "virtual_card": {"name": None, "display": "text", "archived": False,
                                                                      "visualization_settings": {}, "dataset_query": {}}}}
 
 
@@ -658,7 +670,7 @@ if __name__ == "__main__":
              "checks": f"{SITE}/dashboard/{service}?tab={stabs['Сверки']}"}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
-        SERIES_COLORS[item + (" (вложения)" if cls == "Вложения" else "")] = {"color": color}
+        SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
 
     build_forms(qcoll, fin_db, tables)
     cards_today(qcoll, links)
@@ -684,19 +696,19 @@ if __name__ == "__main__":
         dc("t_balance", T, 10 + att_h, 0, 24, 7),
         dc("t_soon", T, 17 + att_h, 0, 24, 2, hide_empty=True),
         # Деньги
-        dc("m_spend", M, 0, 0, 14, 8),
-        dc("m_partners", M, 0, 14, 10, rows_height("select * from fin.v_partner_capital", extra=2.5)),
-        dc("m_forecast", M, 8, 14, 10, 6),
-        dc("m_budget", M, 8, 0, 14, rows_height("select * from fin.v_pilot_budget_status "
-                                                "where not (coalesce(plan, 0) = 0 and coalesce(spent, 0) = 0)", extra=2.5)),
+        dc("m_spend", M, 0, 0, 12, 8),
+        dc("m_partners", M, 0, 12, 12, rows_height("select * from fin.v_partner_capital", extra=2.5)),
+        dc("m_forecast", M, 4, 12, 12, 6),
+        dc("m_budget", M, 10, 0, 24, rows_height("select * from fin.v_pilot_budget_status "
+                                                 "where not (coalesce(plan, 0) = 0 and coalesce(spent, 0) = 0)", extra=2.5)),
         # Продажи: до первой оплаты — одна строка, что здесь будет.
         dc("s_soon", S, 0, 0, 24, 2, hide_empty=True),
         dc("s_funnel", S, 2, 0, 12, 7, True), dc("s_daily", S, 2, 12, 12, 7, True),
         dc("s_cac", S, 9, 0, 12, 6, True), dc("s_check", S, 9, 12, 12, 6, True),
         # Товар
-        dc("p_waterfall", P, 0, 0, 12, 8), dc("p_margin", P, 0, 12, 12, 11),
-        dc("p_breakeven", P, 8, 0, 12, 3), dc("p_scenarios", P, 11, 0, 12, 3),
-        dc("p_sales", P, 19, 0, 24, 6, True),
+        dc("p_waterfall", P, 0, 0, 24, 7),
+        dc("p_margin", P, 7, 0, 12, 11), dc("p_breakeven", P, 7, 12, 12, 4), dc("p_scenarios", P, 11, 12, 12, 4),
+        dc("p_sales", P, 18, 0, 24, 6, True),
     ])
     E, C, R, I = stabs["Ввод данных"], stabs["Сверки"], stabs["Отчёты"], stabs["Вводные"]
     put(service, stabs, [
@@ -710,13 +722,13 @@ if __name__ == "__main__":
         button("writeoff", "Списать код ЧЗ", E, 4, 8),
         dc("e_recent", E, 5, 0, 24, 8),
         dc("c_snapshot", C, 0, 0, 12, 3), dc("c_card", C, 0, 12, 12, 3),
-        dc("c_ops", C, 3, 0, 24, 8), dc("c_claude", C, 11, 0, 14, 7), dc("c_yk", C, 11, 14, 10, 7, True),
-        dc("c_uncl", C, 18, 0, 12, 5, True), dc("c_holds", C, 18, 12, 12, 5, True),
-        dc("r_pnl", R, 0, 0, 24, 8), dc("r_ddc", R, 8, 0, 24, 6),
-        dc("r_flow", R, 14, 0, 12, 7), dc("r_spent", R, 14, 12, 12, 7),
-        dc("r_cac", R, 21, 0, 24, 4, True), dc("r_gates", R, 25, 0, 24, 5),
-        dc("r_stock_soon", R, 30, 0, 24, 2, True), dc("r_stock", R, 32, 0, 14, 8, True),
-        dc("r_codes", R, 32, 14, 10, 8, True),
+        dc("c_ops", C, 3, 0, 24, 8), dc("c_claude", C, 11, 0, 24, 7), dc("c_yk", C, 18, 0, 24, 5, True),
+        dc("c_uncl", C, 23, 0, 12, 5, True), dc("c_holds", C, 23, 12, 12, 5, True),
+        dc("r_pnl", R, 0, 0, 24, 9), dc("r_ddc", R, 9, 0, 24, 6),
+        dc("r_flow", R, 15, 0, 12, 7), dc("r_spent", R, 15, 12, 12, 7),
+        dc("r_cac", R, 22, 0, 24, 4, True), dc("r_gates", R, 26, 0, 24, 6),
+        dc("r_stock_soon", R, 32, 0, 24, 2, True), dc("r_stock", R, 34, 0, 14, 8, True),
+        dc("r_codes", R, 34, 14, 10, 8, True),
         dc("i_inputs", I, 0, 0, 24, 16), dc("i_history", I, 16, 0, 24, 6),
     ])
 
