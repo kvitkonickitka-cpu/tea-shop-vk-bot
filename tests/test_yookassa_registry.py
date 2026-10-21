@@ -244,3 +244,20 @@ async def test_refund_bigger_than_income_is_not_an_unpaid_day(bank, monkeypatch,
     result = await registry.sync(force=True, now=datetime(2026, 10, 20, 19, 0, tzinfo=timezone.utc))
     assert result["не выплачено дольше 3 рабочих дней"] == 0 and alerts == []
     assert result["в пути, ₽"] == "-8.25"
+
+
+async def test_backup_role_can_read_the_registry(bank):
+    """Ночная копия cashflow снимается под finance_sync: без чтения реестра она падала целиком."""
+    async with bank() as session:
+        await session.execute(text(
+            "do $$ begin if not exists (select 1 from pg_roles where rolname = 'finance_sync') then"
+            " create role finance_sync; end if; end $$"))
+        await session.commit()
+        await registry.ensure_tables(await session.connection())
+        await session.commit()
+        rows = (await session.execute(text(
+            "select t, has_table_privilege('finance_sync', t, 'select'), has_table_privilege('finance_sync', t, 'insert')"
+            " from unnest(array['finance.yk_payments', 'finance.yk_refunds', 'finance.yk_payouts',"
+            " 'finance.v_yk_kudir']) t"))).all()
+    assert [(t, read, write) for t, read, write in rows] == [
+        (t, True, False) for t in ("finance.yk_payments", "finance.yk_refunds", "finance.yk_payouts", "finance.v_yk_kudir")]

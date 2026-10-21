@@ -102,6 +102,21 @@ async def ensure_tables(conn) -> None:
     for statement in DDL:
         await conn.exec_driver_sql(statement)
     await kudir.ensure_view(conn)
+    await conn.exec_driver_sql(_BACKUP_GRANT)
+
+
+# Схемой finance владеет finance_sync, и ночная копия cashflow (`pg_dump -n
+# finance` под этой ролью) берёт всё, что в ней лежит. Таблицы реестра создаёт
+# бот, владелец — его роль, и без права на чтение копия падала целиком:
+# «permission denied for table yk_payments» (21.10.2026). Только чтение — писать
+# в реестр cashflow не должен. Роли нет (тесты, другая база) — ничего не делаем.
+_BACKUP_GRANT = """do $$
+begin
+    if exists (select 1 from pg_roles where rolname = 'finance_sync') then
+        grant select on finance.yk_payments, finance.yk_refunds, finance.yk_payouts,
+                        finance.v_yk_kudir to finance_sync;
+    end if;
+end $$"""
 
 
 def _money(field) -> Decimal | None:
