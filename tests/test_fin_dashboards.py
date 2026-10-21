@@ -335,6 +335,9 @@ async def test_inputs_display(fin):
     assert rows["ip_registration_date"]["theme"] == "3. Налоги" and rows["ip_registration_date"]["value_shown"] == "08.09.2026"
     assert rows["ip_fixed_contrib_2026"]["comment"].startswith("Решение · Расчёт 21.10")
     assert rows["acquiring_rate_bank_card"]["unused"] and not rows["acquiring_rate"]["unused"]
+    # 011: «Предположение» — допущение; короткие темы не обрезаются в колонке.
+    assert rows["planning_payment_method"]["kind"] == "допущение"
+    assert rows["acquiring_rate"]["theme"] == "2. Комиссии" and rows["code_price"]["theme"] == "4. Упаковка"
     assert "Сохранять 30 тыс." in rows["min_cash_reserve"]["comment"]
     assert rows["ip_fixed_contrib_2027"]["label"] == "Фиксированные взносы полного 2027 года"
     assert rows["min_cash_reserve"]["since"] in ("с импорта v1.5",) or rows["min_cash_reserve"]["since"].endswith(".2026")
