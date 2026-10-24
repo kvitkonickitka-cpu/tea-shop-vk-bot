@@ -151,6 +151,11 @@ async def build_catalog_context() -> str:
         link = item.get("link")
         if link:
             line += f" Ссылка на товар (в т.ч. с фото): {link}"
+        # Без заварки в промпте модель на «как заваривать?» звала менеджера,
+        # хотя ответ лежит в каталоге (24.10.2026).
+        brewing = " ".join((item.get("brewing") or "").split())
+        if brewing:
+            line += f" Как заваривать: {brewing}"
         synonyms = item.get("synonyms") or []
         if synonyms:
             line += f" Ещё называют: {', '.join(synonyms)}."
