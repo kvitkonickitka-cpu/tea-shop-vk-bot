@@ -108,7 +108,21 @@ DDL = [
             end if;
         end if;
     end $$""",
+    # Тестовый артикул (24.10.2026): видят и покупают только тестовые аккаунты (TEST_VK_IDS),
+    # проверки готовности к продаже на него не действуют — так проверяют бота до старта.
+    "alter table shop.catalog add column if not exists is_test boolean not null default false",
     "create unique index if not exists catalog_gtin_unique on shop.catalog (gtin) where gtin is not null",
+    # Декларация в вводных финмодели тестовая (или её нет): настоящий товар в продажу
+    # не пускаем. Финмодели может не быть (другая база, тесты) — тогда и проверки нет.
+    """create or replace function shop.declaration_is_test() returns boolean
+       language plpgsql stable security definer set search_path = shop, pg_temp as $$
+    begin
+        if to_regclass('fin.inputs_current') is null then
+            return false;
+        end if;
+        return coalesce((select value_text is null or value_text ilike '%тест%' from fin.inputs_current
+                         where key = 'chz_declaration_number'), true);
+    end $$""",
     # Бот находит товар по названию: среди действующих оно должно быть одно.
     "create unique index if not exists catalog_name_unique on shop.catalog (lower(name)) where active",
     """create table if not exists shop.bundle_items (
@@ -195,6 +209,19 @@ DDL = [
         if new.on_sale and new.price is null then
             raise exception 'Артикул %: без цены включить в продажу нельзя', new.sku_id;
         end if;
+        -- Настоящий товар — только готовый к продаже: покупатель увидит описание и заварку,
+        -- а декларация уйдёт в ЛК ЧЗ. Проверяем, когда продажу включают; тестовому — не нужно.
+        if new.on_sale and not new.is_test and (tg_op = 'INSERT' or not old.on_sale or old.is_test) then
+            if btrim(new.description) = '' then
+                raise exception 'Артикул %: без описания включить в продажу нельзя — заполните его формой «Тексты и ссылки»', new.sku_id;
+            end if;
+            if btrim(new.brew_guide) = '' then
+                raise exception 'Артикул %: без «Как заваривать» включить в продажу нельзя — заполните формой «Тексты и ссылки»', new.sku_id;
+            end if;
+            if shop.declaration_is_test() then
+                raise exception 'Артикул %: декларация о соответствии в «Вводных» тестовая — настоящий товар в продажу пока нельзя (тестовый артикул — можно)', new.sku_id;
+            end if;
+        end if;
         new.vk_market_url := nullif(btrim(new.vk_market_url), '');
         if new.vk_market_url is not null and new.vk_market_url !~ '^https://(m\\.)?vk\\.(ru|com)/market' then
             raise exception 'Артикул %: ссылка на Маркет ВК должна начинаться с https://vk.ru/market или https://vk.com/market', new.sku_id;
@@ -254,6 +281,17 @@ DDL = [
         return new;
     end $$""",
     "drop trigger if exists catalog_guard on shop.catalog",
+    # Готов ли артикул к продаже и почему нет — для вкладки «Каталог».
+    """create or replace view shop.v_catalog_readiness as
+    select c.sku_id, c.is_test,
+           array_remove(array[
+               case when c.gtin is null then 'нет GTIN' end,
+               case when c.price is null then 'нет цены' end,
+               case when btrim(c.description) = '' then 'нет описания' end,
+               case when btrim(c.brew_guide) = '' then 'нет «Как заваривать»' end,
+               case when not c.is_test and shop.declaration_is_test() then 'декларация тестовая' end
+           ], null) as reasons
+    from shop.catalog c where c.active""",
     """create trigger catalog_guard before insert or update on shop.catalog
        for each row execute function shop.catalog_guard()""",
     # Журнал — после записи: при INSERT … ON CONFLICT строка, которая уже

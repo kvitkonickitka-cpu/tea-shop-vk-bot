@@ -1,3 +1,5 @@
+import contextlib
+import contextvars
 import json
 import logging
 from pathlib import Path
@@ -7,6 +9,35 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 CATALOG_PATH = Path(__file__).parent / "catalog.json"
+
+# Кто сейчас смотрит каталог: тестовый аккаунт (TEST_VK_IDS) видит и покупает
+# тестовые артикулы (`shop.catalog.is_test`), остальные — нет. По умолчанию — не
+# тестовый: вне хода клиента (сборка, чек, тик) тестовый артикул в каталоге есть,
+# со своим GTIN, но «не в наличии», и продать его некому.
+_test_viewer: contextvars.ContextVar[bool] = contextvars.ContextVar("catalog_test_viewer", default=False)
+
+
+@contextlib.asynccontextmanager
+async def viewer(peer_id: int):
+    """На время хода клиента: тестовому аккаунту — и тестовые артикулы."""
+    from app.modules.dialog import test_mode
+
+    try:
+        is_test = await test_mode.is_test(peer_id)
+    except Exception:
+        logger.warning("Не проверили, тестовый ли аккаунт peer_id=%s — тестовые артикулы скрыты", peer_id, exc_info=True)
+        is_test = False
+    token = _test_viewer.set(is_test)
+    try:
+        yield
+    finally:
+        _test_viewer.reset(token)
+
+
+def _for_viewer(items: list[dict]) -> list[dict]:
+    if _test_viewer.get():
+        return items
+    return [{**item, "in_stock": False, "hidden": True} if item.get("is_test") else item for item in items]
 
 
 def from_db() -> bool:
@@ -23,7 +54,7 @@ def load_items() -> list[dict]:
     if from_db():
         from app.modules.catalog import store
 
-        return store.current_items()
+        return _for_viewer(store.current_items())
 
     from app.modules.catalog import sheet
 
@@ -32,6 +63,16 @@ def load_items() -> list[dict]:
         return from_sheet
     with CATALOG_PATH.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def shop_closed(items: list[dict] | None = None) -> bool:
+    """Продавать этому покупателю нечего: каталог есть, но в наличии ни одного артикула.
+
+    До старта продаж так у всех, кроме тестовых аккаунтов: модель говорит, когда
+    магазин открывается, а не зовёт менеджера на каждый «что есть в наличии?».
+    """
+    items = load_items() if items is None else items
+    return bool(items) and not any(item.get("in_stock", True) for item in items)
 
 
 async def ensure_fresh() -> None:
@@ -138,6 +179,16 @@ async def build_catalog_context() -> str:
     # модель предлагала сама (24.10.2026, Да Хун Пао к Те Гуань Иню), хотя
     # допродажа кода его пропускала.
     available = {item["name"].casefold() for item in items if item.get("in_stock", True)}
+    if shop_closed(items):
+        # Тестовые и не готовые к продаже артикулы покупателю не называем вовсе.
+        opens = settings.shop_opens_text
+        return (
+            f"Магазин ещё не открылся: продажи начинаются {opens}, в наличии сейчас ничего нет. "
+            f"На вопросы о покупке, наличии, ценах и ассортименте отвечай, что магазин открывается {opens}, "
+            "и предложи подписаться на новости сообщества, чтобы не пропустить старт. Менеджера для этого "
+            "звать не нужно, заказ не оформляй. О чае вообще — сортах, заварке — можно рассказать коротко."
+        )
+    items = [item for item in items if not item.get("hidden")]
     lines = []
     for item in items:
         if not item.get("in_stock", True):

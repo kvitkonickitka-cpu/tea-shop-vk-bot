@@ -142,6 +142,11 @@ async def test_add_sale_and_bundle_forms(shop, forms):
     assert await shop.fetchval("select price from shop.catalog where sku_id = 'P-TGI-ECO-35'") is None
 
     sale_sql = by_name(created, "Снять с продажи / вернуть")["dataset_query"]["native"]["query"]
+    # Без «Как заваривать» настоящий товар в продажу не включить — покупатель спросит.
+    with pytest.raises(asyncpg.RaiseError, match="Как заваривать"):
+        await run_as_form(shop, render(sale_sql, {"sku": "P-TGI-ECO-100 · Те Гуань Инь", "state": "в продаже",
+                                                  "entered_by": "Илья"}))
+    await shop.execute("update shop.catalog set brew_guide = 'Вода 85 °C' where sku_id = 'P-TGI-ECO-100'")
     await run_as_form(shop, render(sale_sql, {"sku": "P-TGI-ECO-100 · Те Гуань Инь", "state": "в продаже",
                                               "entered_by": "Илья"}))
     assert await shop.fetchval("select on_sale from shop.catalog where sku_id = 'P-TGI-ECO-100'") is True

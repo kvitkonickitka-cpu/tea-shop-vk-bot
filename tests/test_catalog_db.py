@@ -80,6 +80,8 @@ async def add(conn, sku_id="P-TGI-ECO-100", **fields):
     row = {
         "kind": "пачка", "name": "Те Гуань Инь", "net_weight_g": 100, "raw_material": "Те Гуань Инь ЭКО (XFI0044)",
         "gtin": GTIN_A, "price": 390, "on_sale": True, "updated_by": "Никита",
+        # Без описания и заварки настоящий артикул в продажу не включить (24.10.2026).
+        "description": "Улун с ароматом сирени", "brew_guide": "Вода 85–90 °C, 5–8 г на 150 мл",
     }
     row.update(fields)
     columns = ", ".join(["sku_id", *row])
