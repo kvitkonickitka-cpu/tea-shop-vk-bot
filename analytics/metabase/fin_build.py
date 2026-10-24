@@ -202,15 +202,42 @@ def input_keys(fin_db):
     return [row[0] for row in result["data"]["rows"]]
 
 
+# Открытый плановый расход в списке формы: «№ · дата · сумма · что». В SQL — номер до точки.
+PLAN_TITLE = ("p.id || ' · ' || to_char(p.plan_date, 'DD.MM.YYYY') || ' · ' || fin.fmt_rub(p.amount) "
+              "|| ' · ' || left(p.what, 40)")
+PLAN_ID = "nullif(split_part([[{{%s}} ||]] '', ' · ', 1), '')::bigint"
+
+
+def open_plans(fin_db):
+    """Плановые расходы, которые ещё не закрыты фактом, — для поля «Закрывает план»."""
+    result = call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query":
+                  f"select {PLAN_TITLE} from fin.v_plans p where not p.closed order by p.plan_date, p.id"}})
+    return [row[0] for row in result["data"]["rows"]]
+
+
+def budget_items(fin_db):
+    result = call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query":
+                  "select item from fin.budget_articles where item <> 'Не сопоставлено' order by sort"}})
+    return [row[0] for row in result["data"]["rows"]]
+
+
 def make_actions(models, fin_db):
+    plans, items = open_plans(fin_db), budget_items(fin_db)
+    # Статья — своя, если выбрана; иначе — по категории и описанию. Факт, оплативший
+    # плановый расход, закрывает его: план уходит из прогноза, деньги — по факту.
     action("expense", models["expenses"], fin_db, "Добавить расход", f"""
-insert into fin.expenses (date, category, amount, description, is_plan, paid_from, entered_by)
-values ({{{{date}}}}::date, {{{{category}}}}, {{{{amount}}}}, {OPT % 'description'}, {{{{kind}}}} = 'план', {{{{paid_from}}}}, {{{{entered_by}}}})
+insert into fin.expenses (date, category, amount, description, is_plan, paid_from, budget_item, closes_plan_id, entered_by)
+values ({{{{date}}}}::date, {{{{category}}}}, {{{{amount}}}}, {OPT % 'description'}, {{{{kind}}}} = 'план', {{{{paid_from}}}},
+        {OPT % 'item'}, {PLAN_ID % 'closes'}, {{{{entered_by}}}})
 """, [field("date", "Дата", "date"), field("category", "Категория", "select", options=CATEGORIES),
       field("amount", "Сумма, ₽", "number"), field("description", "Что купили", "text", required=False),
       field("kind", "Факт или план", "select", options=["факт", "план"]),
-      field("paid_from", "Чем оплачено", "select", options=["счёт ИП", "мимо счёта"]), AUTHOR],
-       "Расход записан. Оплаченный со счёта ИП в деньги второй раз не идёт — он уже в выписке.")
+      field("paid_from", "Чем оплачено", "select", options=["счёт ИП", "мимо счёта"]),
+      field("item", "Статья бюджета (пусто — по категории)", "select", required=False, options=items),
+      field("closes", "Закрывает план (факт оплаты планового расхода)", "select", required=False, options=plans),
+      AUTHOR],
+       "Расход записан. Оплаченный со счёта ИП в деньги второй раз не идёт — он уже в выписке. "
+       "План — в прогнозе на свою дату, пока его не закроет факт.")
     action("capital", models["capital"], fin_db, "Вклад / выплата партнёра", f"""
 insert into fin.capital (date, partner, amount, kind, note, entered_by)
 values ({{{{date}}}}::date, {{{{partner}}}}, {{{{amount}}}}, {{{{kind}}}}, {OPT % 'note'}, {{{{entered_by}}}})

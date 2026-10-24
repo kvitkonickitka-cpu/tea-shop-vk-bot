@@ -152,10 +152,11 @@ def archive_old(root):
 CARDS = {}
 
 
-def card(key, coll, name, sql, display, viz=None, description=None):
+def card(key, coll, name, sql, display, viz=None, description=None, tags=None):
     body = {"name": name, "display": display, "collection_id": coll, "description": description,
             "visualization_settings": merge(FULL, viz or {}),
-            "dataset_query": {"type": "native", "database": RO_DB, "native": {"query": sql.strip(), "template-tags": {}}}}
+            "dataset_query": {"type": "native", "database": RO_DB,
+                              "native": {"query": sql.strip(), "template-tags": tags or {}}}}
     CARDS[key] = call("POST", "/card", body)["id"]
     return CARDS[key]
 
@@ -187,10 +188,10 @@ select free_cash as "Свободно" from fin.v_money_now""", "gauge",
          "Остаток по выписке банка минус минимальный резерв (вводная). Красное — свободных денег меньше, чем "
          "осталось потратить до старта по бюджету пилота; зелёное — хватает. Границы шкалы — на момент сборки "
          "дашборда. Выписка обновляется в 07:00 и 21:00 МСК.")
-    number("t_runway", q, "Денег хватит до", f"""
-select {d("coalesce(runout_date, horizon)")} from fin.v_money_now""",
-           "Первый день, когда прогноз остатка опускается ниже резерва; если не опускается — конец горизонта "
-           "прогноза (конец пилота + 30 дней). Прогноз учитывает ожидаемые вклады (вводная «Когда ждём оставшиеся "
+    number("t_runway", q, "Денег хватит до", """
+select runway_text from fin.v_money_now""",
+           "Первый день, когда прогноз остатка опускается ниже резерва; если не опускается — «на весь прогноз» "
+           "с датой его конца (конец пилота + 30 дней). Плановые платежи формы «Добавить расход» — на свои даты. Прогноз учитывает ожидаемые вклады (вводная «Когда ждём оставшиеся "
            "вклады»), закупку чая и пополнение ВК на их даты, остальной бюджет пилота, сервисы, банк, налоги. "
            "Пока вклады не пришли, ниже — тот же прогноз без них.")
     plan = one_row("select plan from fin.v_capital_status")
@@ -212,7 +213,7 @@ select pilot_loss as "Убыток" from fin.v_pilot_status where started and pi
          "карточки нет.")
     number("t_nocap", q, "Без ожидаемых вкладов денег хватит до", f"""
 select case when runout_no_capital <= bank_date then 'уже ниже резерва'
-            else coalesce({d('runout_no_capital')}, 'конца горизонта') end
+            else coalesce({d('runout_no_capital')}, 'на весь прогноз (до ' || {d('horizon')} || ')') end
 from fin.v_money_now where capital_remaining > 0""",
            "Тот же прогноз, но без вкладов, которые ещё не пришли. Карточка пропадает, когда весь стартовый капитал внесён.")
     card("t_attention", q, "Требует внимания", f"""
@@ -268,18 +269,19 @@ select 'Всего', plan, contributed, remaining, round(100 * share) || ' %' fr
          "(форма «Разметить операцию», поле «Чей вклад»); не размеченный — строкой «Не указано, чей».")
     card("m_budget", q, "Бюджет пилота: сколько осталось", """
 with b as (select * from fin.v_pilot_budget_status
-           where not (coalesce(plan, 0) = 0 and coalesce(spent, 0) = 0))
+           where not (coalesce(plan, 0) = 0 and coalesce(spent, 0) = 0 and coalesce(planned, 0) = 0))
 select item as "Статья", plan as "План", spent_before_start as "До старта", spent_in_pilot as "В пилоте",
-       left_amount as "Осталось" from (
-    select item, plan, spent_before_start, spent_in_pilot, left_amount, sort from b
+       planned as "Запланировано", left_amount as "Осталось" from (
+    select item, plan, spent_before_start, spent_in_pilot, planned, left_amount, sort from b
     union all
-    select 'Всего', sum(plan), sum(spent_before_start), sum(spent_in_pilot), sum(left_amount), 1000 from b
+    select 'Всего', sum(plan), sum(spent_before_start), sum(spent_in_pilot), sum(planned), sum(left_amount), 1000 from b
 ) x order by sort""", "table",
-         merge(colfmt(**{"План": RUB, "До старта": RUB, "В пилоте": RUB, "Осталось": RUB}),
+         merge(colfmt(**{"План": RUB, "До старта": RUB, "В пилоте": RUB, "Запланировано": RUB, "Осталось": RUB}),
                {"table.column_formatting": [
                    {"columns": ["Осталось"], "type": "single", "operator": "<", "value": 0, "color": RED, "highlight_row": False}]}),
          "План — статьи бюджета пилота из вводных; потрачено — выписка и «мимо счёта», сведённые к статьям, "
-         "отдельно до старта и в пилоте. Осталось = план − всё потраченное. Статьи без плана и трат скрыты. "
+         "отдельно до старта и в пилоте; запланировано — плановые расходы, ещё не закрытые фактом. "
+         "Осталось = план − потрачено − запланировано. Статьи без плана и трат скрыты. "
          "«Не сопоставлено» — траты без статьи: разметить формой «Разметить операцию».")
     card("m_forecast", q, "Деньги на 8 недель вперёд", f"""
 select {d("week_start")} as "Неделя с", round(opening) as "На начало", round(inflow) as "Придёт",
@@ -289,7 +291,41 @@ from fin.v_weekly_forecast order by week_no""", "table",
          merge(colfmt(**{"На начало": RUB, "Придёт": RUB, "Уйдёт": RUB, "На конец": RUB}),
                color_rules("Резерв", {"ниже резерва": RED, "ок": GREEN})),
          "Тот же прогноз, что «Денег хватит до»: придёт — вклады и выплаты ЮKassa; уйдёт — закупка чая и пополнение "
-         "ВК в свои дни, остальной бюджет пилота, сервисы, банк, подрядчик, налоги.")
+         "ВК в свои дни, плановые платежи в свои дни, остальной бюджет пилота, сервисы, банк, подрядчик, налоги.")
+    start = one_row("select to_char(fin.inp_date('pilot_start_date'), 'DD.MM') ")[0]
+    number("m_ahead_total", q, f"До старта {start} нужно заплатить", """
+select fin.fmt_rub(coalesce(sum(amount), 0)) from fin.v_payments_ahead
+where not closed and day < fin.inp_date('pilot_start_date')""",
+           "Открытые плановые платежи (форма «Добавить расход», «план») и налоги из календаря до даты старта.")
+    card("m_ahead", q, "Платежи впереди: 8 недель", f"""
+select {d("day")} as "Когда", what as "Что", amount as "Сумма", coalesce(budget_item, source) as "Статья",
+       case when closed then 'закрыт' when overdue then 'просрочен' else 'ждёт' end as "Статус"
+from fin.v_payments_ahead order by day, what""", "table",
+         merge(colfmt(Сумма=RUB), color_rules("Статус", {"закрыт": GREEN, "просрочен": RED, "ждёт": GREY})),
+         "Плановые расходы и налоги на 8 недель. Просроченный план стоит на завтра, пока его не закроет факт: "
+         "поле «Закрывает план» в «Добавить расход» или «Разметить операцию».")
+    grain = {"grain": {"id": "grain", "name": "grain", "display-name": "Период", "type": "text", "required": False,
+                       "default": "месяц"}}
+    flows = "fin.cash_flows([[{{grain}} ||]] '')"
+    card("m_fcf", q, "Денежный поток и FCF", f"""
+select to_char(period, 'DD.MM.YYYY') as "Период с",
+       round(operating) as "Операционный", round(investing) as "Вложения", round(fcf) as "FCF",
+       round(financing) as "Финансирование", round(unallocated) as "Не разнесено с карты",
+       round(operating_per_order) as "Операционный на заказ"
+from {flows} order by period""", "table",
+         colfmt(**{c: RUB for c in ("Операционный", "Вложения", "FCF", "Финансирование", "Не разнесено с карты",
+                                     "Операционный на заказ")}),
+         "FCF = операционный поток + вложения (оборудование). Финансирование — вклады, выплаты партнёрам, переводы "
+         "между своими счетами — в FCF не входит. Перевод себе на покупки разнесён по тому, что на него купили "
+         "«мимо счёта»; не разнесённое — в операционных. На заказ — после старта. Месяцы или недели — фильтр «Период».",
+         tags=grain)
+    card("m_fcf_cum", q, "Накопленный FCF против вкладов партнёров", f"""
+select period as "Период", round(cum_fcf) as "Накопленный FCF", round(cum_contributions) as "Вклады партнёров"
+from {flows} order by period""", "line",
+         {"graph.dimensions": ["Период"], "graph.metrics": ["Накопленный FCF", "Вклады партнёров"],
+          "graph.x_axis.title_text": "", "graph.y_axis.title_text": "₽",
+          **colfmt(**{"Накопленный FCF": RUB, "Вклады партнёров": RUB})},
+         "Сколько бизнес потратил (FCF накопленный, ниже нуля) против того, сколько партнёры вложили.", tags=grain)
 
 
 def cards_sales(q):
@@ -701,15 +737,20 @@ select to_char(day, 'DD.MM.YYYY') || ' · ' || fin.fmt_rub(amount) || ' · ' || 
 from fin.v_bank_ops order by day desc limit 200"""}})["data"]["rows"]
     items = [r[0] for r in call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {
         "query": "select item from fin.budget_articles order by sort"}})["data"]["rows"]]
+    # Операция, оплатившая плановый расход, закрывает его; статья — та же, что у плана, если не выбрана.
     fb.action("mark", models["bank_marks"], fin_db, "Разметить операцию", f"""
-insert into fin.bank_marks (operation_id, transfer_kind, budget_item, partner, note, entered_by)
-select b.operation_id, {fb.OPT % 'kind'}, {fb.OPT % 'item'}, {fb.OPT % 'partner'}, {fb.OPT % 'note'}, {{{{entered_by}}}}
+insert into fin.bank_marks (operation_id, transfer_kind, budget_item, partner, closes_plan_id, note, entered_by)
+select b.operation_id, {fb.OPT % 'kind'},
+       coalesce({fb.OPT % 'item'}, (select p.budget_item from fin.v_plans p where p.id = {fb.PLAN_ID % 'closes'})),
+       {fb.OPT % 'partner'}, {fb.PLAN_ID % 'closes'}, {fb.OPT % 'note'}, {{{{entered_by}}}}
 from (select distinct operation_id from fin.v_bank_ops where left(operation_id, 8) = right({{{{op}}}}, 8)) b
 """, [fb.field("op", "Операция (дата · сумма · статья · код)", "select", options=[r[0] for r in ops]),
       fb.field("kind", "Если это перевод себе — что это", "select", required=False,
                options=["на покупки", "вывод владельцем", "между своими счетами"]),
       fb.field("item", "Статья бюджета пилота", "select", required=False, options=items),
       fb.field("partner", "Если это взнос — чей вклад", "select", required=False, options=fb.AUTHORS),
+      fb.field("closes", "Закрывает план (операция оплатила плановый расход)", "select", required=False,
+               options=fb.open_plans(fin_db)),
       fb.NOTE, fb.AUTHOR], "Операция размечена — расходы, вклады, ДДС и сверка покупок с карты пересчитаны.")
     return models
 
@@ -751,9 +792,21 @@ def rows_height(sql, *, per_row=0.5, extra=1.5, low=2, high=12):
     return max(low, min(high, round(extra + per_row * int(n) + 0.49)))
 
 
-def put(did, tabs, dashcards):
+# Фильтр дашборда «Период»: FCF по месяцам или по неделям.
+GRAIN_PARAM = {"id": "grain", "name": "Период", "slug": "period", "type": "string/=", "sectionId": "string",
+               "default": ["месяц"], "values_query_type": "list", "values_source_type": "static-list",
+               "values_source_config": {"values": ["месяц", "неделя"]}}
+GRAIN_CARDS = ("m_fcf", "m_fcf_cum")
+
+
+def put(did, tabs, dashcards, parameters=()):
+    for dashcard in dashcards:
+        for key in GRAIN_CARDS:
+            if parameters and dashcard.get("card_id") == CARDS.get(key):
+                dashcard["parameter_mappings"] = [{"parameter_id": "grain", "card_id": CARDS[key],
+                                                   "target": ["variable", ["template-tag", "grain"]]}]
     call("PUT", f"/dashboard/{did}", {"tabs": [{"id": tid, "name": name} for name, tid in tabs.items()],
-                                      "dashcards": dashcards})
+                                      "dashcards": dashcards, "parameters": list(parameters)})
 
 
 def verify():
@@ -802,13 +855,16 @@ if __name__ == "__main__":
     cards_inputs(qcoll)
     cards_catalog(qcoll, models)
 
+    budget_h = rows_height("select * from fin.v_pilot_budget_status where not (coalesce(plan, 0) = 0 "
+                           "and coalesce(spent, 0) = 0 and coalesce(planned, 0) = 0)", extra=2.5)
+    ahead_h = rows_height("select * from fin.v_payments_ahead", extra=2.5, low=3, high=8)
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
     T, M, S, P = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"]
     E, C, R, I, K = ptabs["Ввод данных"], ptabs["Сверки"], ptabs["Отчёты"], ptabs["Вводные"], ptabs["Каталог"]
     # Скрытые без данных карточки Metabase убирает из сетки, и всё ниже поднимается: «убыток
     # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
     # когда капитал внесён.
-    put(pulse, ptabs, [
+    put(pulse, ptabs, parameters=[GRAIN_PARAM], dashcards=[
         dc("t_free", T, 0, 0, 6, 4), dc("t_runway", T, 0, 6, 6, 4), dc("t_capital", T, 0, 12, 6, 4),
         dc("t_pilot", T, 0, 18, 6, 4, hide_empty=True),
         dc("t_loss", T, 4, 18, 6, 4, hide_empty=True),
@@ -820,8 +876,10 @@ if __name__ == "__main__":
         dc("m_spend", M, 0, 0, 12, 8),
         dc("m_partners", M, 0, 12, 12, rows_height("select * from fin.v_partner_capital", extra=2.5)),
         dc("m_forecast", M, 4, 12, 12, 6),
-        dc("m_budget", M, 10, 0, 24, rows_height("select * from fin.v_pilot_budget_status "
-                                                 "where not (coalesce(plan, 0) = 0 and coalesce(spent, 0) = 0)", extra=2.5)),
+        dc("m_budget", M, 10, 0, 24, budget_h),
+        # Платежи впереди и FCF — под бюджетом.
+        dc("m_ahead_total", M, 10 + budget_h, 0, 6, 3), dc("m_ahead", M, 10 + budget_h, 6, 18, ahead_h),
+        dc("m_fcf", M, 10 + budget_h + ahead_h, 0, 14, 7), dc("m_fcf_cum", M, 10 + budget_h + ahead_h, 14, 10, 7),
         # Продажи: до первой оплаты — одна строка, что здесь будет.
         dc("s_soon", S, 0, 0, 24, 2, hide_empty=True),
         dc("s_funnel", S, 2, 0, 12, 7, True), dc("s_daily", S, 2, 12, 12, 7, True),
