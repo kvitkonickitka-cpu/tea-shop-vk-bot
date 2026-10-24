@@ -82,6 +82,11 @@ async def batch_codes(batch_id: int) -> list[tuple]:
         where i.batch_id = :b order by s.order_id, i.gtin, i.serial""", b=batch_id)
 
 
+def is_test_declaration(number: str) -> bool:
+    """Тестовая декларация (до настоящей): такую выгрузку в ЛК ЧЗ подавать нельзя."""
+    return "тест" in (number or "").casefold()
+
+
 def export_csv(codes: list[tuple], number: str, day: str) -> bytes:
     """Файл для документа «Ввод в оборот → Производство РФ»: код и разрешительная документация на каждый."""
     out = io.StringIO()

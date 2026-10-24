@@ -277,3 +277,28 @@ async def test_lot_export_has_every_code_of_the_lot_and_nothing_else(fin):
     assert unsellable == {"A2", "B1"}
     attention = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
     assert any(t.startswith("Нельзя продавать: 2 код") for t in attention)
+
+
+async def test_test_declaration_until_the_real_one(fin, monkeypatch):
+    """Настоящей декларации ещё нет: тестовая в вводных, выгрузка помечена и с предупреждением."""
+    number, day = await circulation.declaration()
+    assert circulation.is_test_declaration(number) and day == "24.10.2026"
+    attention = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
+    assert any("Декларация в выгрузке кодов — тестовая" in t for t in attention)
+
+    async def create_batch(*, by):
+        return 7, [("04600000000017", "A1", None, 501)]
+
+    monkeypatch.setattr(circulation, "create_batch", create_batch)
+    sender = {"id": 1, "username": "nikita"}
+    reply = await commands.codes_command(["новая"], sender)
+    assert "Декларация тестовая — в ЛК ЧЗ этот файл не подавать" in reply
+    ((name, body),) = commands._attachments.pop(id(sender))
+    assert name == "chz_vvod_7_TEST.csv" and "ТЕСТ ЕАЭС" in body.decode("utf-8-sig")
+    # Настоящая декларация — предупреждения нет.
+    await fin.execute("insert into fin.inputs (key, value_text, entered_by) values "
+                      "('chz_declaration_number', 'ЕАЭС N RU Д-CN.РА01.В.12345/26', 'Никита')")
+    attention = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
+    assert not any("тестовая" in t for t in attention)
+    reply = await commands.codes_command(["новая"], sender)
+    assert "тестовая" not in reply

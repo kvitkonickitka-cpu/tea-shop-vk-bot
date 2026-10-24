@@ -243,8 +243,12 @@ async def codes_command(args: list[str], sender: dict, message: dict | None = No
         raise ValueError("Нет номера и даты нашей декларации — вводные «chz_declaration_number» и "
                          "«chz_declaration_date» («Пульс → Вводные»). Без них ЛК код не примет.")
     batch_id, rows = await circulation.create_batch(by=who(sender))
-    _attachments[id(sender)] = [(f"chz_vvod_{batch_id}.csv", circulation.export_csv(rows, number, day))]
-    return (f"Выгрузка <code>{batch_id}</code>: {len(rows)} кодов, декларация {html.escape(number)} от "
+    test = circulation.is_test_declaration(number)
+    name = f"chz_vvod_{batch_id}{'_TEST' if test else ''}.csv"
+    _attachments[id(sender)] = [(name, circulation.export_csv(rows, number, day))]
+    warning = ("⚠️ <b>Декларация тестовая — в ЛК ЧЗ этот файл не подавать.</b> Настоящий номер и дату — "
+               "во «Вводных» (chz_declaration_number, chz_declaration_date).\n" if test else "")
+    return (f"{warning}Выгрузка <code>{batch_id}</code>: {len(rows)} кодов, декларация {html.escape(number)} от "
             f"{html.escape(day)}.\nФайл ниже — для документа «Производство РФ» в ЛК «Честного знака». "
             f"Подписали и документ принят — <code>/circulation {batch_id} введено</code>; не подаёте — "
             f"<code>/circulation {batch_id} отменена</code>.")
