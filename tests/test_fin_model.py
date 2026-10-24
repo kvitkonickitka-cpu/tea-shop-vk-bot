@@ -137,9 +137,11 @@ async def test_seed_matches_model(fin):
     assert m1["orders_to_break_even"] == 27
     assert r2(m1["fixed_costs"]) == Decimal("10575.50")
 
-    # Лист 6, C19: известные расходы пилота — 173 174 ₽.
+    # Лист 6, C19: известные расходы пилота — 173 174 ₽; с миграции 013 к ним добавлена
+    # декларация о соответствии (33 000 ₽, в v1.5 её не было).
     budget = await fin.fetch("select * from fin.v_pilot_budget order by line_no")
-    assert round(budget[0]["known_total"]) == 173174
+    assert round(budget[0]["known_total"]) == 173174 + 33000
+    assert {row["item"]: row["plan_amount"] for row in budget}["Декларация о соответствии"] == 33000
     assert {row["item"]: row["plan_amount"] for row in budget}["API тестов и консультаций до продаж"] is None
 
     assert await fin.fetchval("select fin.fmt_rub(173173.5975)") == "173 174 ₽"
@@ -313,6 +315,6 @@ async def test_metabase_fin_writes_only_fin(fin):
 
     async with fin.transaction():
         await fin.execute("set local role metabase_ro")
-        assert await fin.fetchval("select count(*) from fin.v_pilot_budget") == 15
+        assert await fin.fetchval("select count(*) from fin.v_pilot_budget") == 16
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await fin.execute("insert into fin.expenses (date, category, amount, entered_by) values (current_date, 'прочее', 1, 'Илья')")

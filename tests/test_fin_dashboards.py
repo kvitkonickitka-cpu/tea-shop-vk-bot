@@ -136,7 +136,10 @@ async def test_free_cash_and_runway(bank):
     assert money["runout_date"] == breach
     # Бюджет пилота тратится с прихода вкладов: до него прогноз ниже резерва не уходит.
     capital_day = await bank.fetchval("select min(day) from fin.v_runway_daily where capital_in > 0")
-    assert await bank.fetchval("select sum(budget_out) from fin.v_runway_daily where day < $1", capital_day) == 0
+    # coalesce: когда дата вкладов уже прошла, они стоят на завтра, и дней до них нет —
+    # пустая сумма значит «ничего не потрачено», а не провал (тест падал с 24.10.2026).
+    assert await bank.fetchval("select coalesce(sum(budget_out), 0) from fin.v_runway_daily where day < $1",
+                               capital_day) == 0
     assert breach is None or breach >= capital_day
     weeks = await bank.fetch("select * from fin.v_weekly_forecast")
     assert len(weeks) == 8 and weeks[0]["opening"] == Decimal("32730.51")
