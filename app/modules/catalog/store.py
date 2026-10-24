@@ -62,6 +62,33 @@ select b.bundle_sku, sum(b.quantity * c.net_weight_g) as grams
 """
 
 
+_VERSION_SQL = """
+select concat_ws(':', (select coalesce(max(id), 0) from shop.catalog_changes),
+                 (select coalesce(max(id), 0) from shop.stock_moves),
+                 (select max(updated_at) from shop.reservations),
+                 (select max(updated_at) from shop.lots), current_date)
+"""
+
+
+async def _stock_ok(session) -> dict[str, bool]:
+    """Хватает ли свободного сырья на единицу каждого артикула (у набора — на состав)."""
+    from app.modules.stock import service as stock
+
+    articles = {r["sku_id"]: dict(r) for r in (await session.execute(text(
+        "select sku_id, kind, raw_material, net_weight_g from shop.catalog where active"))).mappings()}
+    parts: dict[str, list[dict]] = {}
+    for row in await session.execute(text("select bundle_sku, item_sku, quantity from shop.bundle_items where active")):
+        if row.item_sku in articles:
+            parts.setdefault(row.bundle_sku, []).extend([articles[row.item_sku]] * int(row.quantity))
+    free = await stock.free_by_raw(session)
+    # Набор без состава собрать не из чего — сырья для него «не хватает».
+    return {
+        sku: (bool(parts.get(sku)) and stock.enough(article, parts[sku], free))
+        if article["kind"] in schema.BUNDLES else stock.enough(article, None, free)
+        for sku, article in articles.items()
+    }
+
+
 def current_items() -> list[dict]:
     """Товары из базы — копии, чтобы вызывающий не испортил память."""
     return [dict(item) for item in _memory]
@@ -77,8 +104,12 @@ def _grams(value) -> str:
     return f"{number:g} г"
 
 
-def build_items(rows: list[dict], set_weights: dict[str, float]) -> list[dict]:
-    """Строки `shop.catalog` → товары в том виде, в каком их ждёт бот."""
+def build_items(rows: list[dict], set_weights: dict[str, float], stock_ok: dict[str, bool] | None = None) -> list[dict]:
+    """Строки `shop.catalog` → товары в том виде, в каком их ждёт бот.
+
+    `stock_ok` — хватает ли сырья на единицу артикула; нет в словаре — хватает
+    (склад не прочитан — продажа не останавливается молча).
+    """
     names = {row["sku_id"]: row["name"] for row in rows}
     items = []
     for row in rows:
@@ -90,9 +121,11 @@ def build_items(rows: list[dict], set_weights: dict[str, float]) -> list[dict]:
             "name": row["name"],
             "price": int(row["price"]),
             "package_sizes": [_grams(weight)] if weight else [],
-            # «В наличии» для покупателя — решение владельца (`on_sale`).
-            # Блок склада добавит сюда «сырья хватает».
-            "in_stock": bool(row["on_sale"]),
+            # «В наличии» для покупателя — решение владельца (`on_sale`) и сырьё
+            # на складе. Само `on_sale` код не трогает: включено, но нет сырья —
+            # строка в «Требует внимания», решать владельцу.
+            "in_stock": bool(row["on_sale"]) and (stock_ok or {}).get(row["sku_id"], True),
+            "stock_ok": (stock_ok or {}).get(row["sku_id"], True),
             "gtin": row["gtin"] or "",
             "link": row["vk_market_url"] or "",
             "description": row["description"] or "",
@@ -117,7 +150,9 @@ async def ensure_fresh(*, force: bool = False) -> None:
     try:
         session_factory = get_session_factory()
         async with session_factory() as session:
-            version = await session.scalar(text("select coalesce(max(id), 0) from shop.catalog_changes"))
+            # Версия — правки каталога и склада, и день: партия у конца срока
+            # перестаёт годиться с наступлением нового дня.
+            version = await session.scalar(text(_VERSION_SQL))
             if not force and version == _version and _memory:
                 _checked_at = time.monotonic()
                 return
@@ -127,13 +162,14 @@ async def ensure_fresh(*, force: bool = False) -> None:
                 for row in (await session.execute(text(_PARTS_SQL)))
                 if row.grams is not None
             }
+            stock_ok = await _stock_ok(session)
     except Exception:
         # Прочитанное раньше остаётся; не читали ни разу — каталог пуст, и это
         # пауза для покупателя, а не откат на таблицу.
         logger.warning("Каталог из базы не прочитали", exc_info=True)
         _checked_at = time.monotonic()
         return
-    _memory = build_items(rows, set_weights)
+    _memory = build_items(rows, set_weights, stock_ok)
     _version = version
     _checked_at = time.monotonic()
 

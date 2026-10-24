@@ -31,7 +31,7 @@ ROOT = "Дашборды"
 QUESTIONS = "Пульс и Служебное — вопросы"
 PULSE = "Пульс"
 # Служебные вкладки — после «Товара», в том же дашборде.
-PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Ввод данных", "Сверки", "Отчёты", "Вводные", "Каталог"]
+PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Склад", "Ввод данных", "Сверки", "Отчёты", "Вводные", "Каталог"]
 OLD_DASHBOARDS = ("Сводка", "Финансы", "Служебное")
 
 # Рубли целые, проценты с одним знаком; разделители — из глобальных настроек
@@ -218,9 +218,10 @@ from fin.v_money_now where capital_remaining > 0""",
            "Тот же прогноз, но без вкладов, которые ещё не пришли. Карточка пропадает, когда весь стартовый капитал внесён.")
     card("t_attention", q, "Требует внимания", f"""
 select level as "Уровень", text as "Что", case place when 'money' then 'Деньги' when 'entry' then 'Ввод данных'
-            when 'checks' then 'Сверки' when 'sales' then 'Продажи' end as "Где",
+            when 'checks' then 'Сверки' when 'sales' then 'Продажи' when 'stock' then 'Склад' end as "Где",
        case place when 'money' then '{links["money"]}' when 'entry' then '{links["entry"]}'
-            when 'checks' then '{links["checks"]}' when 'sales' then '{links["sales"]}' end as "Ссылка"
+            when 'checks' then '{links["checks"]}' when 'sales' then '{links["sales"]}'
+            when 'stock' then '{links["stock"]}' end as "Ссылка"
 from fin.v_attention order by case level when 'Срочно' then 0 when 'Важно' then 1 else 2 end, sort""", "table",
          merge({"table.columns": [{"name": c, "enabled": c != "Ссылка"} for c in ("Уровень", "Что", "Где", "Ссылка")]},
                colfmt(Где={"view_as": "link", "link_text": "{{Где}}", "link_url": "{{Ссылка}}"}),
@@ -718,6 +719,108 @@ on conflict (bundle_sku, item_sku) do update
     return models
 
 
+# Сырьё — названием без кода поставщика, как на «Товаре».
+RAW = "coalesce(n.display_name, {0})"
+
+
+def cards_stock(q):
+    card("w_lots", q, "Партии сейчас", f"""
+select {RAW.format('b.raw_material')} as "Сырьё", b.lot_code as "Партия", round(b.on_hand) as "Осталось",
+       round(b.reserved) as "В резерве", round(b.free) as "Свободно", b.unit as "Ед.",
+       floor(b.free / nullif(case when b.unit = 'шт' then 1 else r.main_pack end, 0)) as "Пачек основной фасовки",
+       {d("b.best_before")} as "Годен до",
+       round(b.free / nullif(r.daily_use, 0)) as "Хватит, дней",
+       case when r.daily_from_sales then 'продажи 14 дн.' when r.daily_use is not null then 'план' end as "Расход по"
+from shop.v_lot_balance b
+left join fin.v_raw_stock r on r.raw_material = b.raw_material
+left join fin.product_names n on n.product = b.raw_material
+where b.active and b.on_hand > 0
+order by 1, b.best_before nulls last""", "table", None,
+         "Остаток партии — приход плюс движения журнала: резерв при оплате, списание при сборке, инвентаризация, "
+         "порча. Свободно = остаток − резерв. Хватит — по средним продажам за 14 дней, до старта — по плану из вводных. "
+         "Пустые партии скрыты.")
+    card("w_reorder", q, "Пора докупать", f"""
+select {RAW.format('o.raw_material')} as "Сырьё", round(o.free) || ' ' || o.unit as "Свободно",
+       round(o.days_left) as "Хватит, дней", o.lead_days as "Поставка, дней",
+       round(o.need) || ' ' || o.unit as "Нужно на срок", o.order_units || ' ' || o.order_unit as "Заказать"
+from fin.v_reorder_raw o left join fin.product_names n on n.product = o.raw_material
+where o.order_now order by o.days_left""", "table", None,
+         "Свободного сырья меньше, чем уйдёт за срок поставки + фасовку + запас (вводные и «Сроки поставки»). "
+         "Заказать — до кратности поставщика.")
+    card("w_expiring", q, "Скоро истекает", f"""
+select {RAW.format('e.raw_material')} as "Сырьё", e.lot_code as "Партия", {d("e.best_before")} as "Годен до",
+       e.days_left as "Дней", round(e.on_hand) || ' ' || e.unit as "Осталось"
+from fin.v_lots_expiring e left join fin.product_names n on n.product = e.raw_material order by e.best_before""",
+         "table", None, "Партии, у которых до «годен до» меньше 90 дней.")
+    card("w_diff", q, "Расхождения: инвентаризация и потери фасовки", f"""
+select {d("x.created_at at time zone 'Europe/Moscow'")} as "Когда", x.lot_code as "Партия", x.kind as "Что",
+       round(x.diff) || ' ' || x.unit as "Разница", round(100 * x.diff_share, 1) || ' %' as "От партии",
+       x.created_by as "Кто", x.note as "Примечание"
+from fin.v_stock_discrepancies x order by x.created_at desc limit 20""", "table", None,
+         "Последние инвентаризации (факт минус учёт) и потери фасовки (перевес против номинала).")
+    card("w_no_stock", q, "Включено, но нет сырья", """
+select sku_id as "Артикул", name as "Название", kind as "Тип" from fin.v_on_sale_no_stock order by 1""", "table", None,
+         "Владелец оставил в продаже, а сырья на единицу не хватает: бот такой артикул не продаёт. "
+         "Внести партию или снять с продажи — решение владельца.")
+
+
+def stock_forms(qcoll, fin_db, tables, models):
+    """Партии сырья с «Исправить» и формы склада: приход, инвентаризация, порча."""
+    body = {"name": "Ввод: Партии сырья", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
+            "type": "model", "dataset_query": {"type": "query", "database": fin_db,
+                                               "query": {"source-table": tables["shop.lots"]}}}
+    models["shop.lots"] = call("POST", "/card", body)["id"]
+    call("POST", "/action", {"name": "Исправить: партия сырья", "type": "implicit", "kind": "row/update",
+                             "model_id": models["shop.lots"]})
+    lots = [r[0] for r in call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query": """
+select b.lot_code || ' · ' || left(b.raw_material, 40) || ' · ' || trim_scale(round(b.on_hand))::text || ' ' || b.unit
+from shop.v_lot_balance b where b.active order by b.raw_material, b.best_before nulls last"""}})["data"]["rows"]]
+    lot = "(select id from shop.lots where lot_code = split_part({{%s}}, ' · ', 1))"
+    fb.action("lot", models["shop.lots"], fin_db, "Партия закупки", f"""
+insert into shop.lots (lot_code, raw_material, unit, qty, arrival_date, manufacture_date, best_before, manufacturer,
+                       manufacturer_address, country, importer, supplier, supplier_declaration, invoice_ref,
+                       price_per_unit, discount, delivery_cost, note, entered_by)
+values ({{{{lot_code}}}}, {{{{raw}}}}, {{{{unit}}}}, {{{{qty}}}}, {{{{arrival}}}}::date,
+        nullif([[{{{{made}}}} ||]] '', '')::date, nullif([[{{{{best_before}}}} ||]] '', '')::date,
+        {fb.OPT % 'manufacturer'}, {fb.OPT % 'address'}, coalesce({fb.OPT % 'country'}, 'Китай'), {fb.OPT % 'importer'},
+        {fb.OPT % 'supplier'}, {fb.OPT % 'declaration'}, {fb.OPT % 'invoice'}, {{{{price}}}},
+        coalesce([[{{{{discount}}}} / 100.0, ]]0), coalesce([[{{{{delivery}}}}, ]]0), {fb.OPT % 'note'}, {{{{entered_by}}}})
+""", [fb.field("lot_code", "Код партии (печатается на этикетке): L-ГГММДД-СОРТ", "text", placeholder="L-261101-TGY"),
+      fb.field("raw", "Сырьё", "select", options=fb.SKUS),
+      fb.field("unit", "Единица", "select", options=["г", "шт"]),
+      fb.field("qty", "Количество (граммы рассыпного или штуки блинов)", "number"),
+      fb.field("arrival", "Дата прихода", "date"),
+      fb.field("made", "Дата производства", "date", required=False),
+      fb.field("best_before", "Годен до (от производителя)", "date", required=False),
+      fb.field("manufacturer", "Изготовитель (латиницей)", "text", required=False),
+      fb.field("address", "Адрес изготовителя (латиницей)", "text", required=False),
+      fb.field("country", "Страна (по умолчанию Китай)", "text", required=False),
+      fb.field("importer", "Импортёр", "text", required=False),
+      fb.field("supplier", "Поставщик", "text", required=False, placeholder="I-TEA"),
+      fb.field("declaration", "Декларация поставщика (справочно)", "text", required=False),
+      fb.field("invoice", "Номер счёта-фактуры", "text", required=False),
+      fb.field("price", "Цена за кг или за штуку, ₽", "number"),
+      fb.field("discount", "Скидка, %", "number", required=False),
+      fb.field("delivery", "Доставка партии, ₽", "number", required=False),
+      fb.NOTE, fb.AUTHOR], "Партия записана: бот видит сырьё сразу, себестоимость пересчитана по партиям.")
+    fb.action("inventory", models["shop.lots"], fin_db, "Инвентаризация", f"""
+insert into shop.stock_moves (lot_id, kind, qty, note, created_by)
+select b.lot_id, 'корректировка', {{{{fact}}}} - b.on_hand,
+       concat_ws(' · ', 'инвентаризация: факт ' || trim_scale({{{{fact}}}}::numeric)::text || ', по учёту '
+                 || trim_scale(b.on_hand)::text, {fb.OPT % 'note'}), {{{{entered_by}}}}
+from shop.v_lot_balance b where b.lot_id = {lot % 'lot'} and {{{{fact}}}} <> b.on_hand
+""", [fb.field("lot", "Партия", "select", options=lots),
+      fb.field("fact", "Факт на полке (г или шт)", "number"), fb.NOTE, fb.AUTHOR],
+       "Записано: остаток партии — по факту, разница — в «Расхождениях».")
+    fb.action("spoil", models["shop.lots"], fin_db, "Списать сырьё", f"""
+insert into shop.stock_moves (lot_id, kind, qty, note, created_by)
+values ({lot % 'lot'}, 'порча', {{{{qty}}}}, concat_ws(' · ', {{{{reason}}}}, {fb.OPT % 'note'}), {{{{entered_by}}}})
+""", [fb.field("lot", "Партия", "select", options=lots), fb.field("qty", "Сколько (г или шт)", "number"),
+      fb.field("reason", "Причина", "select", options=["порча", "просрочка", "брак", "другое"]), fb.NOTE, fb.AUTHOR],
+       "Списано.")
+    return models
+
+
 # --- формы ------------------------------------------------------------------------------
 
 
@@ -840,13 +943,15 @@ if __name__ == "__main__":
                                     "и бот, на чём зарабатываем. Раз в неделю и в конце месяца: ввод данных, сверки, "
                                     "отчёты, вводные, каталог. Выписка — 07:00 и 21:00 МСК, заказы — сразу.", PULSE_TABS)
     links = {name: f"{SITE}/dashboard/{pulse}?tab={ptabs[tab]}"
-             for name, tab in (("money", "Деньги"), ("sales", "Продажи"), ("entry", "Ввод данных"), ("checks", "Сверки"))}
+             for name, tab in (("money", "Деньги"), ("sales", "Продажи"), ("entry", "Ввод данных"), ("checks", "Сверки"),
+                               ("stock", "Склад"))}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
         SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
 
     models = build_forms(qcoll, fin_db, tables)
     catalog_forms(qcoll, fin_db, tables, models)
+    stock_forms(qcoll, fin_db, tables, models)
     cards_today(qcoll, links)
     cards_money(qcoll)
     cards_sales(qcoll)
@@ -856,12 +961,14 @@ if __name__ == "__main__":
     cards_reports(qcoll)
     cards_inputs(qcoll)
     cards_catalog(qcoll, models)
+    cards_stock(qcoll)
 
     budget_h = rows_height("select * from fin.v_pilot_budget_status where not (coalesce(plan, 0) = 0 "
                            "and coalesce(spent, 0) = 0 and coalesce(planned, 0) = 0)", extra=2.5)
     ahead_h = rows_height("select * from fin.v_payments_ahead", extra=2.5, low=3, high=8)
+    lots_h = rows_height("select 1 from shop.v_lot_balance where active and on_hand > 0", extra=2.5, low=3, high=12)
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
-    T, M, S, P = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"]
+    T, M, S, P, W = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"], ptabs["Склад"]
     E, C, R, I, K = ptabs["Ввод данных"], ptabs["Сверки"], ptabs["Отчёты"], ptabs["Вводные"], ptabs["Каталог"]
     # Скрытые без данных карточки Metabase убирает из сетки, и всё ниже поднимается: «убыток
     # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
@@ -892,11 +999,17 @@ if __name__ == "__main__":
         dc("p_waterfall", P, 0, 0, 24, 7),
         dc("p_margin", P, 7, 0, 12, 11), dc("p_breakeven", P, 7, 12, 12, 4), dc("p_scenarios", P, 11, 12, 12, 4),
         dc("p_sales", P, 18, 0, 24, 6, True),
+        # Склад
+        button("lot", "Партия закупки", W, 0, 0, 6), button("inventory", "Инвентаризация", W, 0, 6, 6),
+        button("spoil", "Списать сырьё", W, 0, 12, 6),
+        dc("w_lots", W, 1, 0, 24, lots_h),
+        dc("w_reorder", W, 1 + lots_h, 0, 12, 5), dc("w_expiring", W, 1 + lots_h, 12, 12, 5),
+        dc("w_no_stock", W, 6 + lots_h, 0, 12, 5), dc("w_diff", W, 6 + lots_h, 12, 12, 5),
         text(E, 0, 0, 24, 1, "**Каждый день**"),
         button("ads", "Реклама за день", E, 1, 0), button("expense", "Добавить расход", E, 1, 4),
         text(E, 2, 0, 24, 1, "**Редко**"),
         button("capital", "Вклад / выплата партнёра", E, 3, 0), button("snapshot", "Остаток по выписке", E, 3, 4),
-        button("lot", "Партия закупки", E, 3, 8), button("packing", "Фасовка", E, 3, 12),
+        button("lot", "Партия закупки", E, 3, 8), button("inventory", "Инвентаризация", E, 3, 12),
         button("input", "Изменить вводную", E, 3, 16), button("mark", "Разметить операцию", E, 3, 20),
         button("act", "Акт перевозчика", E, 4, 0), button("lead", "Срок поставки", E, 4, 4),
         button("writeoff", "Списать код ЧЗ", E, 4, 8),

@@ -20,6 +20,7 @@ import pytest
 
 from app.core.config import settings
 from app.modules.catalog import schema, service as catalog_service, sheet, sheet_import, store
+from app.modules.stock import schema as stock_schema
 from tests.test_fin_model import fin  # noqa: F401
 
 
@@ -47,17 +48,31 @@ async def shop(clean, monkeypatch):
             f"do $$ begin if not exists (select from pg_roles where rolname = '{name}') "
             f"then create role {name}; end if; end $$"
         )
-    for statement in schema.DDL:
+    for statement in schema.DDL + stock_schema.DDL:
         await conn.execute(statement)
-    await conn.execute("truncate shop.bundle_items, shop.catalog, shop.catalog_changes restart identity cascade")
+    await conn.execute(CLEAR)
     monkeypatch.setattr(settings, "catalog_source", "db")
     store.reset()
     try:
         yield conn
     finally:
-        await conn.execute("truncate shop.bundle_items, shop.catalog, shop.catalog_changes restart identity cascade")
+        await conn.execute(CLEAR)
         await conn.close()
         store.reset()
+
+
+CLEAR = ("truncate shop.stock_moves, shop.reservations, shop.lots, shop.bundle_items, shop.catalog, "
+         "shop.catalog_changes restart identity cascade")
+
+
+async def lot(conn, raw="Те Гуань Инь ЭКО (XFI0044)", qty=3000, unit="г", code=None, best_before=None, **fields):
+    """Партия сырья на складе: без неё товар «не в наличии» для покупателя."""
+    code = code or f"L-261101-T{await conn.fetchval('select count(*) from shop.lots') + 1}"
+    row = {"lot_code": code, "raw_material": raw, "qty": Decimal(qty), "unit": unit, "best_before": best_before,
+           "entered_by": "Никита", **fields}
+    names = ", ".join(row)
+    marks = ", ".join(f"${i}" for i in range(1, len(row) + 1))
+    return await conn.fetchval(f"insert into shop.lots ({names}) values ({marks}) returning id", *row.values())
 
 
 async def add(conn, sku_id="P-TGI-ECO-100", **fields):
@@ -196,6 +211,7 @@ async def test_bot_sees_catalog_in_its_usual_shape(shop):
     await add(shop, "P-TGI-ECO-35", name="Те Гуань Инь, 35 г (в наборе)", net_weight_g=35, gtin=None,
               price=None, on_sale=False)
     await add(shop, "P-OLD-100", name="Старый сорт", gtin=None, on_sale=False, active=False)
+    await lot(shop)
     await store.ensure_fresh()
     items = {item["name"]: item for item in catalog_service.load_items()}
     # Пакетик без цены и архивный артикул бот не видит вовсе.
@@ -430,6 +446,10 @@ async def test_import_writes_new_articles_only(shop, monkeypatch):
     assert await shop.fetchval("select recommend_with from shop.catalog where sku_id = 'P-DHP-100'") == ["P-TGI-ECO-100"]
     # Записи импорта в Ops по одной не объявляются.
     assert await shop.fetchval("select count(*) from shop.catalog_changes where notified_at is null") == 0
+    # В продаже — только Да Хун Пао (есть GTIN), и то лишь когда на складе есть его сырьё.
+    assert [item["name"] for item in catalog_service.load_items() if item["in_stock"]] == []
+    await lot(shop, "Да Хун Пао, сильная прожарка (XFI0005)")
+    await store.ensure_fresh(force=True)
     assert [item["name"] for item in catalog_service.load_items() if item["in_stock"]] == ["Да Хун Пао"]
 
     await shop.execute("update shop.catalog set description = 'поправил Никита' where sku_id = 'P-DHP-100'")

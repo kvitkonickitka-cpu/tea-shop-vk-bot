@@ -73,7 +73,8 @@ async def repeat_order(peer_id: int, source_order_id: int):
             continue
         if float(match["price"]) != float(row.get("price") or 0):
             repriced.append(f"{match['name']}: было {row.get('price')} ₽, теперь {match['price']} ₽")
-        items.append({"name": match["name"], "quantity": int(row.get("quantity") or 1), "price": match["price"]})
+        items.append({"name": match["name"], "quantity": int(row.get("quantity") or 1), "price": match["price"],
+                      **catalog_service.sku_ref(match)})
 
     draft = OrderDraft(
         items=items,

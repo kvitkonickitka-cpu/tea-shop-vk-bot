@@ -21,7 +21,9 @@ alter default privileges in schema fin grant select on tables to metabase_fin, m
 
 -- Запись — только формы.
 grant insert on fin.inputs to metabase_fin;
-grant insert, update, delete on fin.expenses, fin.capital, fin.cash_snapshots, fin.purchase_lots,
+-- fin.purchase_lots с 014 — представление над shop.lots (права на партии выдаёт бот
+-- при старте); fin.packing_runs — без формы, остаётся до переделки кодов ЧЗ.
+grant insert, update, delete on fin.expenses, fin.capital, fin.cash_snapshots,
       fin.packing_runs, fin.ad_spend, fin.plan to metabase_fin;
 grant usage on all sequences in schema fin to metabase_fin;
 

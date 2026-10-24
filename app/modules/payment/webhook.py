@@ -208,6 +208,15 @@ async def handle_paid(payment: yookassa_client.Payment) -> dict:
         # Оплата в тестовом магазине ЮKassa — заказ тестовый, в аналитику не идёт.
         await orders_repository.mark_test(order.id)
 
+    # Резерв сырья под пачки — сразу после оплаты, до перевозчика. Сбой склада
+    # не останавливает заказ: деньги получены, посылку соберут, тревога — в лог.
+    from app.modules.stock import service as stock
+
+    try:
+        await stock.reserve_order(order.id)
+    except Exception:
+        logger.exception("Заказ %s: резерв сырья не записан", order.id)
+
     logger.info(
         "Заказ %s оплачен%s, заводим отправление",
         order.id, " по закрытому счёту" if was_closed else "",
@@ -436,11 +445,14 @@ async def _on_refund(refund_id: str) -> dict:
         released = await packing.release_codes(order.id)
         if released:
             card += "\n" + templates.manager_refund_codes_released(released)
+        await _release_stock(order.id)
     elif settlement.was_sent(order):
         # Товар уже продан по чеку с кодами. Чек возврата, который ЮKassa
         # соберёт по данным платежа, — предоплата без кодов — для такого
         # случая неверен. Автоматики на это нет: разбирает менеджер.
         card += "\n" + templates.manager_refund_after_settlement()
+    if order.delivered_at is not None:
+        await _note_stock_return(order.id)
     await order_chat.send(order, card)
     # Возврат делает менеджер в кабинете ЮKassa, и клиент об этом узнаёт
     # только от банка — через неизвестно сколько. Скажем сами. Сумма — та,
@@ -473,3 +485,23 @@ def _paid_card(order, payment: yookassa_client.Payment, *, was_closed: bool = Fa
     if pack_line:
         card += "\n" + pack_line
     return card
+
+
+async def _release_stock(order_id: int) -> None:
+    """Деньги вернули до вручения: несобранные пачки — резерв сырья снят."""
+    from app.modules.stock import service as stock
+
+    try:
+        await stock.release_order(order_id)
+    except Exception:
+        logger.exception("Заказ %s: резерв сырья не снят", order_id)
+
+
+async def _note_stock_return(order_id: int) -> None:
+    """Возврат после вручения: в журнал склада — запись «возврат», решает владелец."""
+    from app.modules.stock import service as stock
+
+    try:
+        await stock.note_return(order_id)
+    except Exception:
+        logger.exception("Заказ %s: возврат на складе не записан", order_id)

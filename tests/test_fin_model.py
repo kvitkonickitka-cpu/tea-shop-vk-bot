@@ -50,6 +50,9 @@ insert into finance.v_pending_summary values ('4673', now(), false, 2, 15995, 0,
 # С миграции 012 цена, GTIN и название товара — из каталога бота (shop.catalog).
 CATALOG_MIGRATION = "012_catalog_prices.sql"
 CLEAR_SHOP = """do $$ begin
+    if to_regclass('shop.lots') is not null then
+        truncate shop.stock_moves, shop.reservations, shop.lots restart identity cascade;
+    end if;
     if to_regclass('shop.catalog') is not null then
         truncate shop.bundle_items, shop.catalog, shop.catalog_changes restart identity cascade;
     end if;
@@ -187,10 +190,13 @@ async def test_input_history_is_kept(fin):
 
 async def test_purchase_lot_replaces_price_list(fin):
     # Партия со скидкой 10 % и без своей доставки: грамм дешевле, логистика — из вводных.
+    # С миграции 014 партию вносят в shop.lots (граммами), fin.purchase_lots — представление.
     await fin.execute(
-        "insert into fin.purchase_lots (date, sku_name, supplier, qty_units, price_per_unit, discount, entered_by) "
-        "values (current_date, 'Те Гуань Инь ЭКО (XFI0044)', 'I-TEA', 3, 603.75, 0.1, 'Никита')"
+        "insert into shop.lots (lot_code, arrival_date, raw_material, supplier, qty, unit, price_per_unit, discount, "
+        "entered_by) values ('L-261101-TGI', current_date, 'Те Гуань Инь ЭКО (XFI0044)', 'I-TEA', 3000, 'г', 603.75, "
+        "0.1, 'Никита')"
     )
+    assert await fin.fetchval("select qty_units from fin.purchase_lots") == 3
     row = await fin.fetchrow("select * from fin.v_unit_cost where product = 'Те Гуань Инь ЭКО (XFI0044)'")
     assert r2(row["product_cost"]) == Decimal("79.59") and row["cost_source"] == "партии закупки"
 
@@ -258,27 +264,28 @@ async def test_orders_economics_pack_set_bundle_refund(fin, db):
 
 
 async def test_stock_and_reorder_signal(fin, db):
-    await _order(db, 9201, [{"name": "Те Гуань Инь 100 г", "quantity": 2, "price": 390}], delivery=200, carrier=207.0)
-    await _order(db, 9202, [{"name": "Сет «Шу и Шен»", "quantity": 1, "price": 1790}], delivery=0, carrier=0,
-                 status="refunded")
+    """С миграции 014 склад — по сырью: партии shop.lots, резерв и списание бота."""
     await fin.execute(
         """
-        insert into fin.purchase_lots (date, sku_name, qty_units, price_per_unit, entered_by)
-            values (current_date - 3, 'Те Гуань Инь ЭКО (XFI0044)', 3, 603.75, 'Никита');
-        insert into fin.packing_runs (date, product, grams_in, packs_out, entered_by) values
-            (current_date - 2, 'Те Гуань Инь ЭКО (XFI0044)', 2900, 29, 'Илья'),
-            (current_date - 2, 'Набор «Точка входа»', null, 2, 'Илья'),
-            (current_date - 2, 'Сет «Шу и Шен»', null, 1, 'Илья');
+        insert into shop.lots (lot_code, arrival_date, raw_material, qty, unit, price_per_unit, entered_by) values
+            ('L-261021-TGI', current_date - 3, 'Те Гуань Инь ЭКО (XFI0044)', 3000, 'г', 603.75, 'Никита');
+        insert into shop.reservations (order_id, item_index, unit_no, sku_id, raw_material, lot_id, qty, status, packed_at)
+        select 1, 0, n, 'P-T1', 'Те Гуань Инь ЭКО (XFI0044)', 1, 100, 'списан', now() - interval '2 days'
+        from generate_series(0, 27) n;
+        insert into shop.reservations (order_id, item_index, unit_no, sku_id, raw_material, lot_id, qty)
+        values (2, 0, 0, 'P-T1', 'Те Гуань Инь ЭКО (XFI0044)', 1, 100);
+        insert into shop.stock_moves (lot_id, kind, qty, created_by) values (1, 'списание', 2800, 'бот');
         """
     )
     stock = {row["product"]: row for row in await fin.fetch("select * from fin.v_stock")}
     tgi = stock["Те Гуань Инь ЭКО (XFI0044)"]
-    # 3000 г куплено − 2900 расфасовано − 2 × 35 г в наборы.
-    assert tgi["grams_left"] == 30 and tgi["on_hand"] == 27 and not tgi["reorder"]
-    # Сет продан и возвращён: на полке 0 — «пора докупать».
-    assert stock["Сет «Шу и Шен»"]["on_hand"] == 0 and stock["Сет «Шу и Шен»"]["reorder"]
-    # Не фасовали — «нет данных», а не ноль.
-    assert stock["Габа Вулканическая (IT-162)"]["on_hand"] is None
+    # 3000 г куплено − 2800 списано при сборке; одна пачка в работе (резерв 100 г).
+    assert (tgi["grams_left"], tgi["on_hand"], tgi["packed"]) == (200, 1, 28)
+    # Расход — 2800 г за 14 дней, 200 г в день; свободно 100 г — пора докупать.
+    assert tgi["avg_daily_sales_14d"] == 200 and tgi["reorder"]
+    # Сырья без партий — нули, а не пропуск: «нет на складе».
+    assert stock["Габа Вулканическая (IT-162)"]["grams_left"] == 0
+    assert "Набор «Точка входа»" not in stock
 
 
 # --- права формы Metabase ------------------------------------------------------------

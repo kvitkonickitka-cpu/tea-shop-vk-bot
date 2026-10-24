@@ -47,11 +47,13 @@ def find(items, **match):
 # --- подключение для форм -----------------------------------------------------------
 
 
-FORM_TABLES = ("expenses", "capital", "cash_snapshots", "purchase_lots", "packing_runs", "ad_spend", "inputs",
+# Партии закупки с 014 — shop.lots (форма на «Пульс → Склад»); «Фасовка» убрана:
+# фасуем под заказ, списание пишет страница сборки.
+FORM_TABLES = ("expenses", "capital", "cash_snapshots", "ad_spend", "inputs",
                "carrier_acts", "supply_lead_times", "tax_calendar", "code_batches", "code_writeoffs")
 # Каталог бота (схема shop): правят формы «Пульс» → «Каталог». В словаре
 # таблиц — с именем схемы, чтобы не спутать с таблицами fin.
-SHOP_TABLES = ("shop.catalog", "shop.bundle_items")
+SHOP_TABLES = ("shop.catalog", "shop.bundle_items", "shop.lots", "shop.stock_moves")
 
 
 def form_tables(db):
@@ -167,8 +169,8 @@ OPT = "nullif([[{{%s}} ||]] '', '')"
 def build_forms(qcoll, fin_db, tables):
     models = {}
     for table, title in (("expenses", "Расходы"), ("capital", "Вклады и выплаты партнёров"),
-                         ("cash_snapshots", "Остатки по выписке"), ("purchase_lots", "Партии закупки"),
-                         ("packing_runs", "Фасовка"), ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)"),
+                         ("cash_snapshots", "Остатки по выписке"),
+                         ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)"),
                          ("carrier_acts", "Акты перевозчиков"), ("supply_lead_times", "Сроки поставки"),
                          ("tax_calendar", "Налоговый календарь"), ("code_batches", "Партии кодов ЧЗ"),
                          ("code_writeoffs", "Списанные коды ЧЗ")):
@@ -250,21 +252,6 @@ values ({{{{date}}}}::date, {{{{balance}}}}, {OPT % 'source'}, {OPT % 'note'}, {
 """, [field("date", "На дату", "date"), field("balance", "Остаток, ₽", "number"),
       field("source", "Источник", "text", required=False, placeholder="Выписка ТБанк 14.10"), NOTE, AUTHOR],
        "Остаток записан — сверка на дашборде «Деньги».")
-    action("lot", models["purchase_lots"], fin_db, "Партия закупки", f"""
-insert into fin.purchase_lots (date, sku_name, supplier, qty_units, price_per_unit, discount, delivery_cost, note, entered_by)
-values ({{{{date}}}}::date, {{{{sku_name}}}}, {OPT % 'supplier'}, {{{{qty_units}}}}, {{{{price_per_unit}}}},
-        coalesce([[{{{{discount}}}} / 100.0, ]]0), coalesce([[{{{{delivery_cost}}}}, ]]0), {OPT % 'note'}, {{{{entered_by}}}})
-""", [field("date", "Дата", "date"), field("sku_name", "SKU", "select", options=SKUS),
-      field("supplier", "Поставщик", "text", required=False, placeholder="I-TEA"),
-      field("qty_units", "Количество (кг или шт.)", "number"), field("price_per_unit", "Цена за кг или шт., ₽", "number"),
-      field("discount", "Скидка, %", "number", required=False), field("delivery_cost", "Доставка партии, ₽", "number", required=False),
-      NOTE, AUTHOR], "Партия записана — себестоимость пересчитана по партиям.")
-    action("packing", models["packing_runs"], fin_db, "Фасовка", f"""
-insert into fin.packing_runs (date, product, grams_in, packs_out, note, entered_by)
-values ({{{{date}}}}::date, {{{{product}}}}, coalesce([[{{{{grams_in}}}}, ]]null::numeric), {{{{packs_out}}}}, {OPT % 'note'}, {{{{entered_by}}}})
-""", [field("date", "Дата", "date"), field("product", "Что фасовали", "select", options=SKUS + BUNDLES),
-      field("grams_in", "Взяли чая, г (у сета и набора — пусто)", "number", required=False),
-      field("packs_out", "Получилось, шт.", "number"), NOTE, AUTHOR], "Фасовка записана.")
     action("ads", models["ad_spend"], fin_db, "Реклама за день", f"""
 insert into fin.ad_spend (date, channel, spend_own, spend_bonus, impressions, clicks, note, entered_by)
 values ({{{{date}}}}::date, {{{{channel}}}}, {{{{spend_own}}}}, coalesce([[{{{{spend_bonus}}}}, ]]0),
