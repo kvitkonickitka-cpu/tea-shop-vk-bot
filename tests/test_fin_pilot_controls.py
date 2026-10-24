@@ -154,7 +154,8 @@ async def test_pilot_gates_no_data_is_not_red(fin):
     assert [g["gate"] for g in gates] == ["Неделя 2", "Неделя 6", "Неделя 6", "М3", "М3", "М3"]
     assert {g["status"] for g in gates} == {"нет данных"}
     # Целевая доля повторов не задана — «нет данных», даже когда будут продажи.
-    assert gates[3]["threshold"] is None
+    # 019: порог повтора — вводная, по умолчанию 15 %; данных нет — «нет данных», а не красный.
+    assert gates[3]["threshold"] == Decimal("0.15") and gates[3]["threshold_key"] == "gate_m3_repeat45_target"
 
 
 async def test_tax_calendar_is_filled(fin):
