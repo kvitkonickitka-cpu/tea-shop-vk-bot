@@ -102,3 +102,10 @@ async def test_metabase_roles_run_without_jit(fin):
         "select r.rolname, s.setconfig from pg_db_role_setting s join pg_roles r on r.oid = s.setrole "
         "where r.rolname in ('metabase_ro', 'metabase_fin') and s.setdatabase = 0")
     assert {r["rolname"] for r in settings if "jit=off" in (r["setconfig"] or [])} == {"metabase_ro", "metabase_fin"}
+
+
+async def test_low_margin_follows_threshold_input(fin):
+    # Порог низкой маржи — вводная (с 24.10.2026 — 30 %): «Ниже порога» красит ровно то, что под ним.
+    await _input(fin, "low_margin_threshold", Decimal("0.30"))
+    cards = await fin.fetch("select margin_pct, low_margin from fin.v_product_card where margin_pct is not null")
+    assert cards and all(c["low_margin"] == (c["margin_pct"] < Decimal("0.30")) for c in cards)
