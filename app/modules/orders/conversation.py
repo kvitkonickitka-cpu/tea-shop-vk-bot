@@ -754,7 +754,8 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
     for wanted in tool_input.get("items", []):
         match = _find_catalog_item(catalog, wanted["name"])
         if match and match.get("in_stock", True):
-            resolved.append({"name": match["name"], "quantity": wanted["quantity"], "price": match["price"]})
+            resolved.append({"name": match["name"], "quantity": wanted["quantity"], "price": match["price"],
+                             **catalog_service.sku_ref(match)})
         else:
             unresolved.append(wanted["name"])
 
@@ -2469,7 +2470,8 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
                 row["quantity"] += quantity
                 break
         else:
-            draft.items.append({"name": match["name"], "quantity": quantity, "price": match["price"]})
+            draft.items.append({"name": match["name"], "quantity": quantity, "price": match["price"],
+                                **catalog_service.sku_ref(match)})
         added.append(f"{match['name']} × {quantity}")
 
     if not added:

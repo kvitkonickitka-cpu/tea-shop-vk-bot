@@ -96,14 +96,14 @@ async def test_breakeven_switches_to_fact_after_ten_orders(fin, db):
 
 
 async def test_reorder_point_and_days_of_stock(fin, db):
-    for n in range(7):
-        await _order(db, 9500 + n, [{"name": "Те Гуань Инь 100 г", "quantity": 2, "price": 390}],
-                     delivery=200, carrier=207.0, minutes=n)
+    """С миграции 014 — по сырью: расход — списания при сборке за 14 дней."""
     await fin.execute(
-        "insert into fin.purchase_lots (date, sku_name, supplier, qty_units, price_per_unit, entered_by)"
-        " values (current_date - 3, 'Те Гуань Инь ЭКО (XFI0044)', 'I-TEA', 3, 603.75, 'Никита');"
-        " insert into fin.packing_runs (date, product, grams_in, packs_out, entered_by)"
-        " values (current_date - 2, 'Те Гуань Инь ЭКО (XFI0044)', 2000, 20, 'Илья')")
+        "insert into shop.lots (lot_code, arrival_date, raw_material, supplier, qty, unit, price_per_unit, entered_by)"
+        " values ('L-261021-TGI', current_date - 3, 'Те Гуань Инь ЭКО (XFI0044)', 'I-TEA', 3000, 'г', 603.75, 'Никита');"
+        " insert into shop.reservations (order_id, item_index, unit_no, sku_id, raw_material, lot_id, qty, status, packed_at)"
+        " select 1, 0, n, 'P-T1', 'Те Гуань Инь ЭКО (XFI0044)', 1, 100, 'списан', now() - interval '2 days'"
+        " from generate_series(0, 13) n;"
+        " insert into shop.stock_moves (lot_id, kind, qty, created_by) values (1, 'списание', 1400, 'бот')")
     tgi = await fin.fetchrow("select * from fin.v_stock where product = 'Те Гуань Инь ЭКО (XFI0044)'")
     # Без сроков — точки заказа нет («нет данных»), а не «не пора».
     assert tgi["order_now"] is None and tgi["lead_days"] is None
@@ -113,10 +113,14 @@ async def test_reorder_point_and_days_of_stock(fin, db):
         " ('safety_stock_days', 3, 'дней', 'Никита');"
         " insert into fin.supply_lead_times (scope, name, lead_days, entered_by) values ('поставщик', 'I-TEA', 20, 'Илья')")
     tgi = await fin.fetchrow("select * from fin.v_stock where product = 'Те Гуань Инь ЭКО (XFI0044)'")
-    # Продано 14 пачек за 14 дней = 1 в день; точка заказа (20 + 2 + 3) × 1 = 25; на руках 6 → пора.
-    assert tgi["lead_days"] == 20 and tgi["on_hand"] == 6
-    assert r2(tgi["reorder_point"]) == Decimal("25.00") and tgi["order_now"] is True
-    # Непродаваемый товар — в списке, с пометкой «нет в каталоге бота».
+    # 14 пачек по 100 г за 14 дней = 100 г в день; точка заказа (20 + 2 + 3) × 100 = 2 500 г; свободно 1 600 → пора.
+    assert tgi["lead_days"] == 20 and tgi["grams_left"] == 1600
+    assert r2(tgi["reorder_point"]) == Decimal("2500.00") and tgi["order_now"] is True
+    order = await fin.fetchrow("select * from fin.v_reorder_raw where raw_material = 'Те Гуань Инь ЭКО (XFI0044)'")
+    assert (order["order_units"], order["order_unit"]) == (1, "мешк. по 1 кг")
+    attention = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
+    assert any(t.startswith("Пора докупать") and "1 мешк. по 1 кг" in t for t in attention)
+    # Сырьё, которое бот не продаёт, — в списке, с пометкой.
     stock = {row["product"]: row for row in await fin.fetch("select * from fin.v_stock")}
     assert any(row["not_in_bot"] for row in stock.values())
 

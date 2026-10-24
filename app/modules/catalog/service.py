@@ -55,6 +55,16 @@ def paused() -> bool:
     return store.unavailable()
 
 
+def sku_ref(item: dict | None) -> dict:
+    """{"sku_id": …} для позиции заказа, если товар из каталога в базе.
+
+    Артикул в позиции нужен складу: по нему резервируется сырьё (у набора — по
+    составу). У товара из Google Таблицы артикула нет — позиция как раньше.
+    """
+    sku = (item or {}).get("sku_id")
+    return {"sku_id": sku} if sku else {}
+
+
 def find_item(name: str, items: list[dict] | None = None) -> dict | None:
     """Товар каталога по названию из заказа.
 

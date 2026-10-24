@@ -45,6 +45,8 @@ CLIENT_UNREACHABLE = "client_unreachable"
 CATALOG_SHEET = "catalog_sheet"
 # Каталог в базе: цена изменена, артикул снят с продажи или включён — в Ops.
 CATALOG_CHANGES = "catalog_changes"
+# Склад по партиям: сырья на заказ не хватило — в Ops.
+STOCK = "stock"
 # Справочники из таблицы (себестоимость, настройки): строки не применены — в Ops-чат.
 REFERENCES = "references"
 # Счёт Anthropic не читается (админ-ключ) — в Ops-чат.

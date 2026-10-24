@@ -369,7 +369,7 @@ def _catalog_item(name: str, price: float, quantity: int) -> dict:
     for variant in variants:
         found = catalog_service.find_item(" ".join(variant.split()))
         if found is not None:
-            return {"name": found["name"], "quantity": quantity, "price": price}
+            return {"name": found["name"], "quantity": quantity, "price": price, **catalog_service.sku_ref(found)}
     return {"name": name, "quantity": quantity, "price": price}
 
 

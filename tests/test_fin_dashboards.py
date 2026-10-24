@@ -218,8 +218,8 @@ async def test_attention_says_all_is_well_when_nothing_is_wrong(fin):
     # Денег хватает, партия внесена, переводов нет — проверкам нечего сказать.
     await _bank(fin, [(TODAY - timedelta(days=30), "in", 900000, "cff_owner_contribution", "capital-1")], "900000")
     await fin.execute("insert into fin.bank_marks (operation_id, partner, entered_by) values ('capital-1', 'Илья', 'Илья')")
-    await fin.execute("insert into fin.purchase_lots (date, sku_name, qty_units, price_per_unit, entered_by) "
-                      "select current_date, sku_name, 1, 1000, 'Никита' from fin.sku limit 1")
+    await fin.execute("insert into shop.lots (lot_code, raw_material, qty, price_per_unit, entered_by) "
+                      "select 'L-261101-T1', sku_name, 1000, 1000, 'Никита' from fin.sku limit 1")
     rows = await fin.fetch("select * from fin.v_attention")
     started = await fin.fetchval("select started from fin.v_pilot_status")
     if not started:
