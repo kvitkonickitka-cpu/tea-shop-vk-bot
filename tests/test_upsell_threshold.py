@@ -14,7 +14,8 @@ PEER = 9960
 
 CATALOG = [
     {"name": "Те Гуань Инь 100 г", "price": 900, "in_stock": True,
-     "description": "Цветочный улун. Хорош по утрам.", "recommended": ["Шу Пуэр 100 г", "Да Хун Пао 100 г"]},
+     "description": "Цветочный улун. Хорош по утрам.", "recommended": ["Шу Пуэр 100 г", "Да Хун Пао 100 г"],
+     "brewing": "Вода 90 °C.\n5–7 г на 150 мл."},
     {"name": "Шу Пуэр 100 г", "price": 700, "in_stock": False, "description": "Тёмный.", "recommended": []},
     {"name": "Да Хун Пао 100 г", "price": 1200, "in_stock": True,
      "description": "Утёсный улун с жареными нотами. Для вечера.", "recommended": []},
@@ -49,6 +50,15 @@ def test_upsell_picks_first_in_stock_not_in_draft(catalog):
     assert catalog_service.upsell_for(both) is None
     # Пустой столбец — ничего.
     assert catalog_service.upsell_for([{"name": "Габа 50 г", "quantity": 1, "price": 450}]) is None
+
+
+async def test_catalog_prompt_advises_only_in_stock(catalog):
+    context = await catalog_service.build_catalog_context()
+    assert "С чем советуем: Да Хун Пао 100 г." in context
+    assert "Как заваривать: Вода 90 °C. 5–7 г на 150 мл." in context
+    # Чего нет — одной строкой, без цены: модель скажет «сейчас нет», а не позовёт менеджера.
+    assert "Шу Пуэр" not in context.split("Сейчас нет в наличии")[0]
+    assert context.splitlines()[-1].startswith("Сейчас нет в наличии") and context.endswith(": Шу Пуэр 100 г.")
 
 
 async def test_upsell_is_offered_once_per_draft(clean, catalog):

@@ -134,6 +134,10 @@ async def build_catalog_context() -> str:
         logger.exception("Failed to load catalog.json")
         return ""
 
+    # «С чем советуем» — только то, что есть в наличии: сорт, которого нет,
+    # модель предлагала сама (24.10.2026, Да Хун Пао к Те Гуань Иню), хотя
+    # допродажа кода его пропускала.
+    available = {item["name"].casefold() for item in items if item.get("in_stock", True)}
     lines = []
     for item in items:
         if not item.get("in_stock", True):
@@ -147,14 +151,27 @@ async def build_catalog_context() -> str:
         link = item.get("link")
         if link:
             line += f" Ссылка на товар (в т.ч. с фото): {link}"
+        # Без заварки в промпте модель на «как заваривать?» звала менеджера,
+        # хотя ответ лежит в каталоге (24.10.2026).
+        brewing = " ".join((item.get("brewing") or "").split())
+        if brewing:
+            line += f" Как заваривать: {brewing}"
         synonyms = item.get("synonyms") or []
         if synonyms:
             line += f" Ещё называют: {', '.join(synonyms)}."
-        recommended = item.get("recommended") or []
+        recommended = [name for name in item.get("recommended") or [] if name.casefold() in available]
         if recommended:
             line += f" С чем советуем: {', '.join(recommended)}."
         lines.append(line)
 
+    # Чего нет — только названиями: иначе на «а сет … есть?» модель не знает
+    # такого товара и зовёт менеджера, а ответ простой — сейчас нет.
+    missing = [item["name"] for item in items if not item.get("in_stock", True)]
+    if missing:
+        lines.append(
+            "Сейчас нет в наличии (заказать нельзя; спросят — скажи, что сейчас нет, и предложи похожее "
+            f"из списка выше): {', '.join(missing)}."
+        )
     return "\n".join(lines)
 
 
