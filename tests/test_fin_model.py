@@ -74,6 +74,19 @@ select 'S-T' || row_number() over (order by bundle),
        coalesce(bot_name, bundle), retail_price::int, 'тест'
 from fin.bundles where retail_price is not null;
 """
+# С миграции 016 состав наборов — тоже из каталога (shop.bundle_items). Импорт
+# кладёт его так: пакетик 35 г — своим артикулом, вложение — артикул с тем же
+# сырьём и фасовкой.
+COMPOSITION_MIGRATION = "016_bundles_from_catalog.sql"
+COMPOSITION_FROM_SEED = """
+insert into shop.catalog (sku_id, kind, name, net_weight_g, raw_material, updated_by)
+select 'P-T35-' || row_number() over (order by sku_name), 'пачка', sku_name || ' 35 г', 35, sku_name, 'тест'
+from (select distinct sku_name from fin.bundle_items where grams = 35) x;
+insert into shop.bundle_items (bundle_sku, item_sku, quantity, updated_by)
+select b.sku_id, c.sku_id, 1, 'тест'
+from fin.bundle_items i join fin.bundles b using (bundle)
+join shop.catalog c on c.raw_material = i.sku_name and c.net_weight_g = i.grams and c.kind in ('пачка', 'блин');
+"""
 
 
 def _dsn() -> str:
@@ -96,13 +109,16 @@ async def fin(db, clean):
                 f"then create role {name}; end if; end $$"
             )
         await conn.execute(CLEAR_SHOP)
-        seeded = False
+        seeded = composed = False
         for migration in sorted((FIN / "migrations").glob("*.sql")):
             if not seeded and migration.name >= CATALOG_MIGRATION:
                 seeded = True
                 # Как на бою: до миграции 012 каталог импортирован из таблицы
                 # с ценами финмодели — здесь его заменяет копия seed.
                 await conn.execute(CATALOG_FROM_SEED)
+            if not composed and migration.name >= COMPOSITION_MIGRATION:
+                composed = True
+                await conn.execute(COMPOSITION_FROM_SEED)
             await conn.execute(migration.read_text(encoding="utf-8"))
         await conn.execute((FIN / "grants.sql").read_text(encoding="utf-8"))
         yield conn
@@ -156,6 +172,36 @@ async def test_seed_matches_model(fin):
 
     # Лист 1, строка 22: в v1.5 — 5,148 %; с 009 — (3,4 % + 1 % за чек) × 1,22 = 5,368 %.
     assert await fin.fetchval("select fin.payment_rate()") == Decimal("0.05368")
+
+
+async def test_bundle_composition_comes_from_catalog(fin):
+    """Состав набора правят в Metabase (shop.bundle_items) — себестоимость считается по нему же."""
+    def cost(rows, name):
+        return next((r for r in rows if r["product"] == name), None)
+
+    before = cost(await fin.fetch("select * from fin.v_unit_cost"), "Сет «Шу и Шен»")
+    assert (before["codes"], before["pouches"], before["grams"]) == (3, 2, 200)
+    sku = await fin.fetchval("select sku_id from shop.catalog where name = 'Сет «Шу и Шен»'")
+    tgi = await fin.fetchval("select sku_id from shop.catalog where raw_material = 'Те Гуань Инь ЭКО (XFI0044)' "
+                             "and net_weight_g = 100")
+    # Третья пачка в сет: граммы, пакеты, коды и чай растут сразу, без правки финмодели.
+    await fin.execute("insert into shop.bundle_items (bundle_sku, item_sku, quantity, updated_by) values ($1, $2, 1, 'Илья')",
+                      sku, tgi)
+    after = cost(await fin.fetch("select * from fin.v_unit_cost"), "Сет «Шу и Шен»")
+    assert (after["codes"], after["pouches"], after["grams"]) == (4, 3, 300)
+    assert after["tea_cost"] > before["tea_cost"]
+    assert await fin.fetchval("select count(*) from fin.bundle_items where bundle = 'Сет «Шу и Шен»'") == 3
+
+    # Сырьё вложения не из справочника — себестоимость не «без него», а неизвестна, и это видно.
+    await fin.execute("update shop.catalog set raw_material = 'Габа Эко' where sku_id = $1", tgi)
+    rows = await fin.fetch("select * from fin.v_unit_cost")
+    assert cost(rows, "Сет «Шу и Шен»") is None and cost(rows, "Сет «Два Те Гуань Иня»") is None
+    assert cost(rows, "Набор «Точка входа»") is not None
+    missing = {r["sku_id"] for r in await fin.fetch("select * from fin.v_catalog_no_cost")}
+    assert {sku, tgi} <= missing
+    attention = [r for r in await fin.fetch("select * from fin.v_attention") if r["sort"] == 23]
+    assert len(attention) == 1 and "«Габа Эко»" in attention[0]["text"] and sku in attention[0]["text"]
+    assert attention[0]["place"] == "catalog"
 
 
 async def test_empty_fact_is_no_data_not_zero(fin):

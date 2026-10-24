@@ -220,10 +220,11 @@ from fin.v_money_now where capital_remaining > 0""",
     card("t_attention", q, "Требует внимания", f"""
 select level as "Уровень", text as "Что", case place when 'money' then 'Деньги' when 'entry' then 'Ввод данных'
             when 'checks' then 'Сверки' when 'sales' then 'Продажи' when 'stock' then 'Склад'
-            when 'codes' then 'Коды' end as "Где",
+            when 'codes' then 'Коды' when 'catalog' then 'Каталог' end as "Где",
        case place when 'money' then '{links["money"]}' when 'entry' then '{links["entry"]}'
             when 'checks' then '{links["checks"]}' when 'sales' then '{links["sales"]}'
-            when 'stock' then '{links["stock"]}' when 'codes' then '{links["codes"]}' end as "Ссылка"
+            when 'stock' then '{links["stock"]}' when 'codes' then '{links["codes"]}'
+            when 'catalog' then '{links["catalog"]}' end as "Ссылка"
 from fin.v_attention order by case level when 'Срочно' then 0 when 'Важно' then 1 else 2 end, sort""", "table",
          merge({"table.columns": [{"name": c, "enabled": c != "Ссылка"} for c in ("Уровень", "Что", "Где", "Ссылка")]},
                colfmt(Где={"view_as": "link", "link_text": "{{Где}}", "link_url": "{{Ссылка}}"}),
@@ -1104,7 +1105,7 @@ if __name__ == "__main__":
                                     "отчёты, вводные, каталог. Выписка — 07:00 и 21:00 МСК, заказы — сразу.", PULSE_TABS)
     links = {name: f"{SITE}/dashboard/{pulse}?tab={ptabs[tab]}"
              for name, tab in (("money", "Деньги"), ("sales", "Продажи"), ("entry", "Ввод данных"), ("checks", "Сверки"),
-                               ("stock", "Склад"), ("codes", "Коды"))}
+                               ("stock", "Склад"), ("codes", "Коды"), ("catalog", "Каталог"))}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
         SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
