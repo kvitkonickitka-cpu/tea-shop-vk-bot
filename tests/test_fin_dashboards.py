@@ -197,7 +197,7 @@ async def test_one_margin_names_and_low_margin_flag(fin):
     assert (tgi["name"], tgi["sku_id"], tgi["supplier_code"], tgi["kind_group"]) == (
         catalog["name"], catalog["sku_id"], "XFI0044", "Пачки")
     assert tgi["low_margin"] and not tgi["sold_by_bot"]
-    await fin.execute("update shop.catalog set gtin = '2000000000015', on_sale = true where sku_id = $1", catalog["sku_id"])
+    await fin.execute("update shop.catalog set gtin = '2000000000015', is_test = true, on_sale = true where sku_id = $1", catalog["sku_id"])
     assert await fin.fetchval("select sold_by_bot from fin.v_product_card where sku_id = $1", catalog["sku_id"])
     lead = cards["Набор «Точка входа»"]
     assert lead["name"] == "Набор «Точка входа»" and not lead["low_margin"] and lead["supplier_code"] is None

@@ -611,7 +611,7 @@ order by coalesce(label, key), valid_from desc, created_at desc""", "table", Non
 
 
 # Поля каталога в журнале — словами, как их видит владелец в форме.
-CATALOG_FIELDS = {"price": "Цена", "on_sale": "В продаже", "active": "Действует", "name": "Название",
+CATALOG_FIELDS = {"price": "Цена", "on_sale": "В продаже", "active": "Действует", "name": "Название", "is_test": "Тестовый",
                   "description": "Описание", "brew_guide": "Как заваривать", "gtin": "GTIN",
                   "vk_market_url": "Маркет ВК", "recommend_with": "С чем советуем", "is_new": "Новинка",
                   "net_weight_g": "Фасовка, г", "raw_material": "Сырьё", "video_url": "Видео",
@@ -648,26 +648,40 @@ enough as (
 )
 select c.sku_id as "Артикул", c.name as "Название", c.kind as "Тип", c.price as "Цена",
        case when c.on_sale then 'да' else 'нет' end as "В наличии",
+       -- Готов к продаже — те же условия, что проверяет форма «Снять с продажи / вернуть».
+       case when c.is_test then 'тестовый: только тестовым аккаунтам'
+            when cardinality(r.reasons) = 0 then 'да' else array_to_string(r.reasons, ', ') end as "Готов к продаже",
        case when coalesce(e.ok, false) then 'да' else 'нет' end as "Хватает сырья",
        coalesce(c.gtin, '—') as "GTIN",
        case when c.is_new then 'да' else '' end as "Новинка",
        case when c.vk_market_url is null then 'нет' else 'есть' end as "Маркет ВК",
        c.id
 from shop.catalog c left join enough e on e.sku_id = c.sku_id
+left join shop.v_catalog_readiness r on r.sku_id = c.sku_id
 where c.active
 order by c.on_sale desc, c.sort_order, c.name""", "table",
          # Карточка строки модели открывается по ключу id (столбец спрятан).
          merge(colfmt(Цена=RUB),
                {"table.column_formatting": color_rules("В наличии", {"да": GREEN, "нет": GREY})["table.column_formatting"]
-                + color_rules("Хватает сырья", {"да": GREEN, "нет": GREY})["table.column_formatting"]},
+                + color_rules("Хватает сырья", {"да": GREEN, "нет": GREY})["table.column_formatting"]
+                + color_rules("Готов к продаже", {"да": GREEN, "тестовый: только тестовым аккаунтам": BLUE})[
+                    "table.column_formatting"]},
                {"table.columns": [{"name": c, "enabled": c != "id"} for c in (
-                   "Артикул", "Название", "Тип", "Цена", "В наличии", "Хватает сырья", "GTIN", "Новинка",
+                   "Артикул", "Название", "Тип", "Цена", "В наличии", "Готов к продаже", "Хватает сырья", "GTIN", "Новинка",
                    "Маркет ВК", "id")]},
                {"column_settings": {'["name","Артикул"]': {
                    "click_behavior": {"type": "link", "linkType": "url",
                                       "linkTemplate": f"/model/{models['shop.catalog']}/{{{{id}}}}"}}}}),
          "Что продаёт бот. Клик по артикулу — карточка со всеми полями и кнопкой «Исправить». "
-         "Правка видна боту через несколько секунд; цена в заказах, уже оформленных, не меняется.")
+         "Правка видна боту через несколько секунд; цена в заказах, уже оформленных, не меняется. «Готов к "
+         "продаже» — есть GTIN, цена, описание и «Как заваривать», декларация не тестовая; без этого форма «Снять с "
+         "продажи / вернуть» продажу не включит. Тестовый артикул (поле «Тестовый» в карточке) видят и покупают "
+         "только тестовые аккаунты бота.")
+    number("k_ready", q, "Готово к продаже", """
+select count(*) filter (where not is_test and cardinality(reasons) = 0) || ' из ' || count(*) filter (where not is_test)
+       as "Готово" from shop.v_catalog_readiness""",
+           "Сколько настоящих (не тестовых) артикулов можно включить в продажу: есть GTIN, цена, описание и «Как "
+           "заваривать», декларация не тестовая. Чего не хватает — столбец «Готов к продаже» в таблице ниже.")
     card("k_changes", q, "Последние изменения каталога", f"""
 select to_char(h.changed_at at time zone 'Europe/Moscow', 'DD.MM.YYYY HH24:MI') as "Когда",
        h.sku_id as "Артикул",
@@ -1204,8 +1218,9 @@ if __name__ == "__main__":
         button("k_price", "Изменить цену", K, 0, 0, 5), button("k_texts", "Тексты и ссылки", K, 0, 5, 5),
         button("k_add", "Добавить артикул", K, 0, 10, 5), button("k_sale", "Снять с продажи / вернуть", K, 0, 15, 5),
         button("k_bundle", "Состав сета/набора", K, 0, 20, 4),
-        dc("k_catalog", K, 1, 0, 24, rows_height("select 1 from shop.catalog where active", extra=2.5, high=14)),
-        dc("k_changes", K, 15, 0, 14, 9), dc("k_bundles", K, 15, 14, 10, 9),
+        dc("k_ready", K, 1, 0, 6, 2),
+        dc("k_catalog", K, 3, 0, 24, rows_height("select 1 from shop.catalog where active", extra=2.5, high=14)),
+        dc("k_changes", K, 17, 0, 14, 9), dc("k_bundles", K, 17, 14, 10, 9),
     ])
 
     failed = verify()

@@ -230,6 +230,14 @@ async def _finish(rows: list[InboundMessage]) -> None:
 
 
 async def _respond(batch: Batch, budget_seconds: float) -> None:
+    from app.modules.catalog import service as catalog_service
+
+    # Каталог на весь ход — глазами этого покупателя: тестовые артикулы — только тестовым аккаунтам.
+    async with catalog_service.viewer(batch.peer_id):
+        await _respond_batch(batch, budget_seconds)
+
+
+async def _respond_batch(batch: Batch, budget_seconds: float) -> None:
     from app.modules.dialog import service
     from app.modules.orders import buttons
 

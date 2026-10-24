@@ -49,7 +49,7 @@ _alerted_at: float | None = None
 
 _ITEMS_SQL = """
 select sku_id, kind, name, description, net_weight_g, raw_material, gtin, price, on_sale,
-       vk_market_url, recommend_with, brew_guide, video_url, is_new, synonyms, category
+       vk_market_url, recommend_with, brew_guide, video_url, is_new, synonyms, category, is_test
   from shop.catalog
  where active and price is not null
  order by on_sale desc, sort_order, name
@@ -138,6 +138,8 @@ def build_items(rows: list[dict], set_weights: dict[str, float], stock_ok: dict[
             "synonyms": list(row["synonyms"] or []),
             "net_weight_g": float(weight) if weight else None,
             "category": row["category"] or "",
+            # Тестовый артикул видят и покупают только тестовые аккаунты (service.viewer).
+            "is_test": bool(row.get("is_test")),
         })
     return items
 
