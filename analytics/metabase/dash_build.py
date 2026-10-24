@@ -867,9 +867,10 @@ if __name__ == "__main__":
     # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
     # когда капитал внесён.
     put(pulse, ptabs, parameters=[GRAIN_PARAM], dashcards=[
-        dc("t_free", T, 0, 0, 6, 4), dc("t_runway", T, 0, 6, 6, 4), dc("t_capital", T, 0, 12, 6, 4),
-        dc("t_pilot", T, 0, 18, 6, 4, hide_empty=True),
-        dc("t_loss", T, 4, 18, 6, 4, hide_empty=True),
+        # «Денег хватит до» — вдвое шире: «на весь прогноз (до 31.03.2027)» в узкой плитке обрезалось.
+        dc("t_free", T, 0, 0, 6, 4), dc("t_runway", T, 0, 6, 12, 4), dc("t_capital", T, 0, 18, 6, 4),
+        dc("t_pilot", T, 4, 0, 6, 4, hide_empty=True),
+        dc("t_loss", T, 4, 6, 6, 4, hide_empty=True),
         dc("t_nocap", T, 8, 0, 24, 2, hide_empty=True),
         dc("t_attention", T, 10, 0, 24, att_h),
         dc("t_balance", T, 10 + att_h, 0, 24, 7),
