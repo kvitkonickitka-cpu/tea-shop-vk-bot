@@ -225,6 +225,14 @@ async def handle(peer_id: int, message: dict) -> Press:
     if handler is None:
         return TO_MODEL
     order_id = payload.get("o") if isinstance(payload.get("o"), int) else None
+    from app.modules.consent import flow as consent_flow
+    from app.modules.consent import service as consent
+
+    # Ворота согласия на ПДн — кодом, до обработчика: без согласия кнопка не
+    # запишет ни пункт, ни получателя, а корзина не спросит, куда везти.
+    gated = (action in consent_flow.PD_ACTIONS or action in consent_flow.CART_ACTIONS) and not (
+        await consent.has_pd(peer_id)
+    )
     await funnel.record(
         peer_id, f"button:{action}", order_id=order_id, source_=funnel.BUTTON, version=payload.get("v"),
         touch=payload.get("t") if isinstance(payload.get("t"), str) else None,
@@ -232,6 +240,8 @@ async def handle(peer_id: int, message: dict) -> Press:
     # Под ответом на нажатие свои кнопки — набор «Взять» под прошлым
     # сообщением больше не последний.
     await take.remember_set(peer_id, None)
+    if gated and action in consent_flow.PD_ACTIONS:
+        return await consent_flow.ask_press(peer_id)
     try:
         # Всё, что случится внутри нажатия (черновик, пункт, счёт), — с кнопки.
         with funnel.source(funnel.BUTTON):
@@ -243,6 +253,8 @@ async def handle(peer_id: int, message: dict) -> Press:
         await funnel.record(peer_id, "button_stale", order_id=order_id, source_=funnel.BUTTON, action=action)
     if press is STALE:
         return await _stale_reply(peer_id)
+    if gated:
+        return await consent_flow.with_prompt(peer_id, press)
     return press
 
 
@@ -696,6 +708,12 @@ async def _on_rate(peer_id: int, payload: dict) -> Press:
 
     rating = payload.get("r")
     order = await orders_repository.by_id(payload.get("o")) if isinstance(payload.get("o"), int) else None
+    if rating in ("1", "2", "3", "4", "5") and order is not None and order.peer_id == peer_id \
+            and order.payment_status == orders_repository.PAID and order.delivered_at is not None:
+        # Оценка 1–5 (C7): отзыв или жалоба — решает код.
+        from app.modules.orders import reviews
+
+        return Press(reply=await reviews.on_star(peer_id, order, int(rating)))
     if (
         rating not in templates.RATINGS
         or order is None
@@ -720,6 +738,32 @@ async def _to_model(peer_id: int, payload: dict) -> Press:
     return TO_MODEL
 
 
+async def _on_invite(peer_id: int, payload: dict) -> Press:
+    """«Пригласить друга» (пакет D): код и ссылка — кодом, без модели."""
+    from app.modules.referral import service as referral
+
+    return Press(reply=await referral.invite_text(peer_id))
+
+
+async def _on_review_consent(peer_id: int, payload: dict) -> Press:
+    """Согласие на публикацию отзыва (C7): с именем, анонимно, не публиковать."""
+    from app.modules.orders import reviews
+
+    order_id = payload.get("o")
+    if not isinstance(order_id, int):
+        return STALE
+    reply = await reviews.on_consent(peer_id, order_id, str(payload.get("c") or ""))
+    if not reply:
+        return STALE
+    # После хорошего отзыва — предложить поделиться с другом (пакет D).
+    from app.modules.referral import service as referral
+
+    if await referral.enabled(peer_id):
+        return Press(reply=reply, keyboard=keyboards.inline([[keyboards.text_button(
+            "Пригласить друга", {"a": "ref_invite"}, "positive")]]))
+    return Press(reply=reply)
+
+
 _HANDLERS = {
     "pt": _on_point,
     "ship": _on_ship,
@@ -736,10 +780,21 @@ _HANDLERS = {
     "add_item": _on_add_item,
     "edit": _to_model,
     "rate": _on_rate,
+    "rv_consent": _on_review_consent,
+    "ref_invite": _on_invite,
     # «Подобрать чай» под реактивацией — консультация, её ведёт модель.
     "advise": _to_model,
     "other": _to_model,
 }
+
+
+def _consent_handlers() -> None:
+    from app.modules.consent import flow as consent_flow
+
+    _HANDLERS.update(consent_flow.HANDLERS)
+
+
+_consent_handlers()
 
 
 def register(action: str, handler) -> None:

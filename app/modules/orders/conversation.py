@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app import privacy
+from app.core import flags, worktime
 from app.core.config import free_delivery_threshold, settings
 from app.modules.catalog import service as catalog_service
+from app.modules.consent import service as consent
 from app.modules.delivery import cdek_client, ozon_catalog, ozon_client, ozon_quote
 from app.modules.delivery import pricing as delivery_pricing
 from app.messages import client as client_messages, funnel, manager as manager_messages, marketing, templates
@@ -41,6 +43,7 @@ from app.modules.orders import repository as orders_repository
 from app.modules.orders import state
 from app.modules.orders import upgrade
 from app.modules.orders.state import OrderDraft
+from app.modules.payment import methods as payment_methods
 from app.modules.payment import service as payment_service
 from app.modules.payment import yookassa_client
 
@@ -393,6 +396,27 @@ TOOLS = [
 
 TOOLS.append(repeat_one_tap.TOOL)
 
+# Код друга (пакет D): только за флагом referral, отдельно от TOOLS — список
+# инструментов в кэше промпта у остальных клиентов не меняется.
+REFERRAL_TOOL = {
+    "name": "apply_referral_code",
+    "description": (
+        "Применить код друга (вида ЧАЙ-XXXX-XXXX), который прислал клиент. Скидку, её размер и условия "
+        "считает и проверяет код — сама скидку не обещай и не считай, передай клиенту то, что вернёт инструмент."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"code": {"type": "string", "description": "Код так, как его написал клиент"}},
+        "required": ["code"],
+    },
+}
+_INVITE = re.compile(r"^\s*(пригласить друга|код для друга|код для друзей|реферальн\w*( код)?)\s*[.!?]?\s*$",
+                     re.IGNORECASE)
+_REFERRAL_PROMPT = (
+    "Если клиент прислал код друга (ЧАЙ-XXXX-XXXX) — вызови apply_referral_code. Никаких скидок, промокодов "
+    "и «специальных цен» сама не предлагай и не придумывай."
+)
+
 
 @dataclass
 class ToolExecution:
@@ -402,6 +426,8 @@ class ToolExecution:
     # детерминирован и не зависит от остального контекста реплики.
     tool_result: str
     client_reply: str | None = None
+    # Инструмент не выполнен: нет согласия на ПДн. К ответу — запрос согласия.
+    needs_consent: bool = False
 
 
 def _tools_for_stage(
@@ -561,6 +587,30 @@ def _offer_upsell(draft: OrderDraft, catalog: list[dict]) -> str:
     return "".join(f"\n{line}" for line in lines)
 
 
+async def _free_delivery_nudge(peer_id: int, draft: OrderDraft, catalog: list[dict]) -> str:
+    """C5: сколько не хватает до бесплатной доставки в пункт Ozon и какая пачка это закроет.
+
+    Пачку выбирает код — самую дешёвую в наличии из тех, что одна закрывают
+    разницу. Один раз на черновик; у СДЭКа бесплатной доставки не обещаем.
+    """
+    if draft.details.get("free_delivery_nudge") or draft.delivery_method in ("cdek_pvz", "cdek_courier"):
+        return ""
+    gap = _threshold_gap(draft.items_total)
+    if gap is None or not await flags.enabled_for(flags.FREE_DELIVERY_NUDGE, peer_id):
+        return ""
+    fitting = [item for item in catalog
+               if item.get("in_stock", True) and float(item.get("price") or 0) >= gap]
+    if not fitting:
+        return ""
+    pick = min(fitting, key=lambda item: float(item["price"]))
+    draft.details["free_delivery_nudge"] = {"item": pick["name"], "gap": gap}
+    return (
+        f"\nДо бесплатной доставки в пункт Ozon не хватает {templates.amount(gap)} ₽ — разницу закроет "
+        f"{pick['name']} ({templates.amount(pick['price'])} ₽). Скажи это одной фразой; если предлагаешь "
+        "дополнить заказ — в том же предложении, отдельным сообщением не надо. Согласится — add_to_order."
+    )
+
+
 def _threshold_gap(items_total: float) -> float | None:
     """Сколько не хватает до бесплатной доставки. None — порога нет или он пройден."""
     threshold = free_delivery_threshold()
@@ -704,7 +754,8 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
     for wanted in tool_input.get("items", []):
         match = _find_catalog_item(catalog, wanted["name"])
         if match and match.get("in_stock", True):
-            resolved.append({"name": match["name"], "quantity": wanted["quantity"], "price": match["price"]})
+            resolved.append({"name": match["name"], "quantity": wanted["quantity"], "price": match["price"],
+                             **catalog_service.sku_ref(match)})
         else:
             unresolved.append(wanted["name"])
 
@@ -743,6 +794,11 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         )
     was_draft = live is not None or await state.get_draft(peer_id) is not None
     upsell_line = _offer_upsell(draft, catalog)
+    nudge_line = await _free_delivery_nudge(peer_id, draft, catalog)
+    if nudge_line:
+        # Подсказка с конкретной пачкой заменяет общее «не хватает N ₽».
+        upsell_line = "".join(f"\n{line}" for line in upsell_line.split("\n")
+                              if line and not line.startswith("До бесплатной доставки не хватает")) + nudge_line
     origin = None
     if not was_draft:
         # Откуда черновик: «беру» словами, «Взять», «Повторить», витрина —
@@ -758,14 +814,29 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         await funnel.record(peer_id, "draft_created", origin=origin)
     if draft.details.get("upsell_item"):
         await funnel.record(peer_id, "upsell_offered", source_=funnel.CODE, item=draft.details["upsell_item"])
+    if nudge_line:
+        await funnel.record(peer_id, "free_delivery_nudge_shown", source_=funnel.CODE,
+                            item=draft.details["free_delivery_nudge"]["item"],
+                            gap=draft.details["free_delivery_nudge"]["gap"])
 
     lines = [f"{i['name']} x{i['quantity']} = {i['price'] * i['quantity']} ₽" for i in resolved]
     result = "Черновик заказа создан:\n" + "\n".join(lines) + f"\nСумма товаров: {items_total} ₽"
     if unresolved:
         result += f"\nНе нашли в ассортименте: {', '.join(unresolved)} — уточни у клиента точное название."
     result += upsell_line
+    # Код друга по ссылке или введённый раньше — применяется сам (пакет D).
+    from app.modules.referral import service as referral
+
+    fresh = await state.get_draft(peer_id)
+    if fresh is not None:
+        result += await referral.auto_apply(peer_id, fresh)
     if recalc:
         return result + recalc
+    if not await consent.has_pd(peer_id):
+        # Без согласия на ПДн — только состав: ни «как в прошлый раз» по
+        # прошлым данным, ни вопроса «куда везти». Просьбу о согласии с
+        # кнопками код допишет к ответу сам.
+        return result + _NO_CONSENT_AFTER_PROPOSE
     # Пункт выдачи называем первым и объясняем почему: клиенту проще
     # согласиться на вариант, который уже предложен, чем выбирать из списка.
     # Первым идёт Ozon: на живом расчёте он вышел 121 руб против 397 у
@@ -1792,15 +1863,21 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
         if not match or not match.get("in_stock", True):
             missing.append(item["name"])
             continue
-        if float(match["price"]) != float(item["price"]):
+        # Со скидкой по коду друга в `price` — цена со скидкой, прайс — в `list_price`.
+        listed = "list_price" if "list_price" in item else "price"
+        if float(match["price"]) != float(item[listed]):
             # Цену в таблице поменяли, пока клиент выбирал: платит текущую.
-            item["price"] = match["price"]
+            item[listed] = match["price"]
     if missing:
         return (
             f"Счёт не выставлен: {', '.join(missing)} сейчас нет в наличии. Скажи "
             "клиенту и предложи похожее из ассортимента."
         )
-    draft.items_total = sum(float(i["price"]) * i["quantity"] for i in draft.items)
+    from app.modules.referral import pricing as referral_pricing, service as referral
+
+    referral_pricing.reprice(draft)
+    # Код друга: данные получателя не совпадают с владельцем и прежними покупателями.
+    referral_note = await referral.check_before_invoice(peer_id, draft)
 
     quoted_at = draft.details.get("quoted_at")
     if quoted_at is None or time.time() - float(quoted_at) > settings.delivery_quote_ttl_minutes * 60:
@@ -1819,7 +1896,8 @@ async def _refresh_before_invoice(peer_id: int, draft: OrderDraft) -> str | None
     await state.set_draft(peer_id, draft)
     if seen is not None and abs(float(seen) - total) >= 0.01:
         return (
-            f"Счёт не выставлен: итог изменился — клиент видел {templates.amount(seen)} ₽, "
+            (f"{referral_note} " if referral_note else "")
+            + f"Счёт не выставлен: итог изменился — клиент видел {templates.amount(seen)} ₽, "
             f"теперь {templates.amount(total)} ₽ (товары {templates.amount(draft.items_total)} ₽, "
             f"доставка {templates.amount(draft.delivery_cost or 0)} ₽). Покажи клиенту новую "
             "сводку: состав, пункт, получатель, итог — и спроси «Оформляем?». После «да» "
@@ -1897,6 +1975,7 @@ async def _returning_invoice_reply(peer_id: int, draft: OrderDraft, payment, ord
         upsell_price=match["price"] if match else None,
         gap=_threshold_gap(draft.items_total) if item else None,
         button=await keyboards.shows_link_button(peer_id),
+        trust=await payment_methods.trust_line(peer_id),
     )
     # Ссылка — своим рядом: open_link ВК растягивает на всю ширину.
     rows = [[keyboards.link_button(f"Оплатить {templates.amount(total)} ₽", payment.confirmation_url)]]
@@ -2218,6 +2297,10 @@ async def _confirm_with_payment(
             if row.payment_id != payment.id:
                 await orders_repository.close_payment(row.payment_id)
         await funnel.record(peer_id, source, order_id=order.id, attempt=attempt, total=payment.amount)
+        # Скидка по коду друга — резерв на этот счёт (применится при оплате).
+        from app.modules.referral import service as referral
+
+        await referral.reserve(peer_id, draft, order.id)
     except Exception as error:
         # Заказ не записался, но счёт уже выставлен — деньги придут, а следа
         # у нас не будет. Зовём человека, пока клиент ещё в диалоге.
@@ -2255,6 +2338,7 @@ async def _confirm_with_payment(
         button=await keyboards.shows_link_button(peer_id),
         surcharge=bool(draft.details.get(upgrade.SURCHARGE)),
         point_note=bool(draft.details.get("single_point")),
+        trust=await payment_methods.trust_line(peer_id),
     )
     return ToolExecution(reply, client_reply=reply)
 
@@ -2274,6 +2358,19 @@ async def _notify_manager(
     «уточню у менеджера».
     """
     return await manager_messages.notify(kind, message, peer_id=peer_id, chat_id=chat_id)
+
+
+async def _for_manager(peer_id: int, text: str) -> str:
+    """Текст для телеграма — с метками вместо ФИО, телефона, почты и адреса."""
+    if not text:
+        return text
+    try:
+        masked = await privacy.tokenize(peer_id, text, names=False, addresses=True)
+    except Exception:
+        logger.exception("Метки: не заменили данные в вопросе менеджеру peer_id=%s", peer_id)
+        masked = text
+    # Без хранилища меток (флаг выключен) — хотя бы телефоны и почты.
+    return privacy.scrub(masked)[0]
 
 
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
@@ -2297,8 +2394,11 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
             await feedback.mark_complaint(peer_id)
         except Exception:
             logger.exception("Не отметили жалобу у peer_id=%s", peer_id)
-    question = html.escape(question_raw)
-    reason = html.escape(reason_raw)
+    # Телеграм — за границей (и ходим к нему через прокси в Нидерландах):
+    # личное клиента туда не уходит. Модель писала метки, инструмент получил
+    # значения — для менеджера снова метки, настоящее видно в диалоге ВК.
+    question = html.escape(await _for_manager(peer_id, question_raw))
+    reason = html.escape(await _for_manager(peer_id, reason_raw))
     dialog_link = vk_client.dialog_link(peer_id)
     message = templates.manager_question(question, reason, dialog_link)
 
@@ -2326,6 +2426,13 @@ async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolEx
         logger.critical(
             "Вопрос клиента peer_id=%s нигде не сохранён: база недоступна", peer_id
         )
+
+    if not worktime.is_working() and await flags.enabled_for(flags.ESCALATION_AFTER_HOURS, peer_id):
+        # Ночью «менеджер ответит здесь» без срока читается как «ждите». Говорим,
+        # когда он будет, и не обрываем ход готовой фразой: модель отвечает на
+        # остальное и ведёт заказ дальше (C6).
+        await funnel.record(peer_id, "escalation_after_hours", source_=funnel.CODE)
+        return ToolExecution(tool_result=templates.escalation_after_hours(worktime.manager_back_phrase()))
 
     return ToolExecution(
         tool_result=(
@@ -2363,7 +2470,8 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
                 row["quantity"] += quantity
                 break
         else:
-            draft.items.append({"name": match["name"], "quantity": quantity, "price": match["price"]})
+            draft.items.append({"name": match["name"], "quantity": quantity, "price": match["price"],
+                                **catalog_service.sku_ref(match)})
         added.append(f"{match['name']} × {quantity}")
 
     if not added:
@@ -2373,6 +2481,9 @@ async def _execute_add_to_order(peer_id: int, tool_input: dict) -> str:
     upsell = draft.details.get("upsell_item")
     if upsell and any(item.startswith(f"{upsell} ×") for item in added):
         await funnel.record(peer_id, "upsell_accepted", item=upsell)
+    nudged = (draft.details.get("free_delivery_nudge") or {}).get("item")
+    if nudged and any(item.startswith(f"{nudged} ×") for item in added):
+        await funnel.record(peer_id, "free_delivery_nudge_accepted", item=nudged)
 
     draft.items_total = sum(row["price"] * row["quantity"] for row in draft.items)
     if draft.details.get("offer"):
@@ -2472,7 +2583,32 @@ async def _execute_cancel_order(peer_id: int) -> ToolExecution:
     )
 
 
+# Инструменты, которые записывают или берут из прошлых заказов ФИО, телефон,
+# почту, адрес или пункт: без согласия на ПДн они не выполняются.
+_PD_TOOLS = {"set_delivery_method", "set_recipient", "confirm_order", "accept_offer", "repeat_order"}
+
+_NEED_CONSENT = (
+    "НЕ ВЫПОЛНЕНО: нет согласия клиента на обработку персональных данных, ничего не записано. "
+    "Не спрашивай ФИО, телефон, почту, адрес, город или пункт и не повторяй данные, если клиент "
+    "их прислал. Ответь коротко по сути (состав, цена, вопрос клиента); просьбу о согласии с "
+    "кнопками код допишет к твоему ответу сам — не пересказывай её."
+)
+_NO_CONSENT_AFTER_PROPOSE = (
+    "\nСогласия клиента на обработку персональных данных пока нет. Подтверди состав и сумму "
+    "одной-двумя фразами, допродажу можно. Не спрашивай, куда везти, и не проси данные: "
+    "просьбу о согласии с кнопками код допишет к твоему ответу сам."
+)
+
+
 async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecution:
+    if name in _PD_TOOLS and not await consent.has_pd(peer_id):
+        # Ворота согласия — в коде, а не только в промпте: модель могла бы и
+        # не послушаться, а инструмент без согласия просто не сработает.
+        logger.info("peer_id=%s: %s без согласия на ПДн — не выполнен", peer_id, name)
+        return ToolExecution(_NEED_CONSENT, needs_consent=True)
+    if name == "propose_order" and not await consent.has_pd(peer_id):
+        tool_input = {key: value for key, value in tool_input.items()
+                      if key not in ("delivery_hint", "recipient_hint")}
     if name == "propose_order":
         result = await _execute_propose_order(peer_id, tool_input)
         return result if isinstance(result, ToolExecution) else ToolExecution(result)
@@ -2494,6 +2630,11 @@ async def _execute_tool(peer_id: int, name: str, tool_input: dict) -> ToolExecut
         return await _execute_escalate_to_manager(peer_id, tool_input)
     if name == "save_feedback":
         return ToolExecution(await feedback.save(peer_id, tool_input))
+    if name == "apply_referral_code":
+        from app.modules.referral import service as referral
+
+        _, said = await referral.apply(peer_id, str(tool_input.get("code") or ""))
+        return ToolExecution(said)
     return ToolExecution(f"Неизвестный инструмент: {name}")
 
 
@@ -2593,6 +2734,34 @@ _ASKED_NOT_TO_WRITE = (
 )
 
 
+_CONSENT_BLOCKED = "consent_blocked"
+_ORDER_TOOLS = {"propose_order", "add_to_order"}
+
+
+async def _with_consent_prompt(peer_id: int, text: str, called: set[str], spoken: str) -> str:
+    """Без согласия: к ответу — запрос согласия с кнопками, когда клиент идёт к заказу.
+
+    Когда: инструмент упёрся в ворота, ход собрал корзину, клиент прислал
+    данные (их код скрыл) или черновик есть, а запроса ещё не было. Просто
+    разговор о чае после запроса — без повторов.
+    """
+    from app.modules.orders import buttons
+
+    draft = await state.get_draft(peer_id)
+    # После «Не согласен» сам черновик о согласии не напоминает: только новая попытка заказа.
+    first_time = (draft is not None and not await consent.pd_prompt_pending(peer_id)
+                  and not await consent.pd_declined(peer_id))
+    pushing = _CONSENT_BLOCKED in called or called & _ORDER_TOOLS or consent.HIDDEN in (spoken or "")
+    if not (pushing or first_time):
+        return text
+    if draft is None and _CONSENT_BLOCKED not in called and consent.HIDDEN not in (spoken or ""):
+        return text
+    prompt, keyboard = await consent.pd_prompt(peer_id)
+    await consent.claim_pd_prompt(peer_id)
+    buttons.stash(peer_id, keyboard)
+    return f"{text}\n\n{prompt}"
+
+
 async def _with_buttons(peer_id: int, reply: str, *, consult: bool = False, with_points: bool = True) -> str:
     """Кнопки под ответом хода — по тому, чем ход закончился."""
     from app.modules.orders import buttons
@@ -2639,8 +2808,32 @@ async def handle_turn(
     spent = _Spent()
     cold = _cold_start
     _cold_start = False
+    from app.modules.dialog import consultation, sessions
+    from app.modules.ops import journal
+
+    # Чей расход Claude и на каком этапе — для рублей на диалог (llm_usage).
+    session_id = await sessions.current_id(peer_id)
+    draft_before = await state.get_draft(peer_id)
+    live_before = None
+    if draft_before is None:
+        try:
+            live_before = await orders_repository.live_invoice_order(peer_id)
+        except Exception:
+            logger.warning("Не проверили счёт клиента peer_id=%s", peer_id, exc_info=True)
     try:
-        return await _handle_turn(peer_id, user_text, spent, attached, budget_seconds)
+        with journal.llm_scope(
+            peer_id=peer_id, dialog_id=session_id, purpose="sales_bot",
+            stage=consultation.funnel_stage(draft_before, live_before),
+            order_id=consultation.open_order_id(draft_before, live_before),
+        ):
+            reply = await _handle_turn(peer_id, user_text, spent, attached, budget_seconds)
+        if spent.claude_calls:
+            # Консультация — по ходу модели: пара коротких запросов, не бросает.
+            await consultation.after_turn(
+                peer_id, session_id, had_draft=draft_before is not None, had_invoice=live_before is not None,
+                text=user_text, reply=reply,
+            )
+        return reply
     finally:
         logger.info(
             "ход peer_id=%s %s%s",
@@ -2672,6 +2865,15 @@ async def _handle_turn(
         logger.info("peer_id=%s отписался от напоминаний", peer_id)
         return reply
 
+    if not (attached and attached.any) and _INVITE.search(user_text or ""):
+        # «Пригласить друга» словами — код и ссылка кодом, без модели (пакет D).
+        from app.modules.referral import service as referral
+
+        if await referral.enabled(peer_id):
+            reply = await referral.invite_text(peer_id)
+            await dialog_history.append_exchange(peer_id, user_text, reply)
+            return reply
+
     # «Отпишите меня», «не пишите» посреди заказа отвечает модель — по-человечески,
     # а код тихо гасит продающие напоминания: «заказ ждёт вас» после такой
     # просьбы был бы ровно тем, о чём просили не делать. Вернётся клиент сам —
@@ -2682,8 +2884,21 @@ async def _handle_turn(
         logger.info("peer_id=%s попросил не писать — напоминания отключены", peer_id)
         stop_note = _ASKED_NOT_TO_WRITE
 
+    # Фоновый обработчик очереди идёт мимо HTTP: версию каталога сверяем и здесь.
+    await catalog_service.ensure_fresh()
+    if catalog_service.paused():
+        # Каталог в базе пуст или не читается: модель без ассортимента начала
+        # бы выдумывать цены. Покупателю — пауза, в Ops — тревога.
+        from app.modules.catalog import store as catalog_store
+
+        await catalog_store.alert_unavailable()
+        reply = templates.catalog_paused()
+        await dialog_history.append_exchange(peer_id, user_text, reply)
+        return reply
+
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
+    pd_ok = await consent.has_pd(peer_id)
     storefront_note = ""
     if (
         (draft is None or draft.details.get("vk_order_id"))
@@ -2715,6 +2930,14 @@ async def _handle_turn(
     if bought:
         system_prompt += f"\n\n{await privacy.tokenize(peer_id, bought)}"
     system_prompt += f"\n\n{order_flow_prompt()}"
+    methods_note = await payment_methods.prompt_note(peer_id)
+    if methods_note:
+        system_prompt += f"\n{methods_note}"
+    if not pd_ok:
+        declined = await consent.pd_declined(peer_id)
+        system_prompt += "\n\n" + (
+            templates.pd_consent_declined_note() if declined else templates.pd_consent_needed_note()
+        )
     system_prompt += f"\n\n{_describe_draft(draft)}"
     live = None
     if draft is None:
@@ -2725,7 +2948,7 @@ async def _handle_turn(
     if live is not None:
         system_prompt += "\n" + _describe_live_invoice(live)
     repeatable = None
-    if draft is None and live is None and repeat_one_tap.is_enabled():
+    if draft is None and live is None and pd_ok and repeat_one_tap.is_enabled():
         try:
             repeatable = await repeat_one_tap.repeatable_order(peer_id)
         except Exception:
@@ -2742,7 +2965,10 @@ async def _handle_turn(
         # Пояснение, почему повтор не выставил счёт, — один раз, этому ходу.
         draft.details.pop("repeat_note")
         await state.set_draft(peer_id, draft)
-    if draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
+    if not pd_ok:
+        # Без согласия прошлые пункт и получателя не предлагаем: это их данные.
+        pass
+    elif draft is not None and draft.stage == "awaiting_delivery" and not draft.delivery_method:
         # То же предложение, что в ответе propose_order, — и для черновика
         # из витрины ВК, который собирается без propose_order.
         last = await repeat_delivery.last_for(peer_id)
@@ -2786,6 +3012,13 @@ async def _handle_turn(
         with_offer=bool(draft and draft.details.get("offer")),
         repeatable=repeatable is not None,
     )
+    from app.modules.referral import service as referral
+
+    referral_on = await referral.enabled(peer_id)
+    if referral_on:
+        # Код друга — только инструментом: скидку считает код, не модель (пакет D).
+        tools = tools + [REFERRAL_TOOL]
+        system_prompt += f"\n{_REFERRAL_PROMPT}"
 
     # Вложения, которые показать нельзя, объясняем словами — и тем же текстом
     # кладём в историю. Иначе следующий ход увидит реплику клиента пустой и
@@ -2800,7 +3033,16 @@ async def _handle_turn(
     last_bot = next(
         (m["content"] for m in reversed(history) if m["role"] == "assistant" and isinstance(m["content"], str)), ""
     )
-    spoken = await privacy.tokenize(peer_id, spoken, stage=privacy.stages(draft, last_bot))
+    spoken = await privacy.tokenize(peer_id, spoken, stage=privacy.stages(draft, last_bot), addresses=True)
+    if pd_ok and not images:
+        # Получатель одним сообщением — разбирает код (C1): данные уже метками.
+        from app.modules.orders import recipient_fast
+
+        fast = await recipient_fast.try_handle(peer_id, draft, spoken)
+        if fast is not None:
+            reply = await _with_buttons(peer_id, plain_text(fast))
+            await dialog_history.append_exchange(peer_id, spoken, reply)
+            return await privacy.detokenize(peer_id, reply)
     system_prompt = system_prompt[:personal_from] + await privacy.tokenize(
         peer_id, system_prompt[personal_from:], names=False
     )
@@ -2864,6 +3106,8 @@ async def _handle_turn(
         # confirm_order: тот выставил счёт сам.
         names = {block.name for block, _ in executions}
         called |= names
+        if any(execution.needs_consent for _, execution in executions):
+            called.add(_CONSENT_BLOCKED)
         if (
             executions
             and executions[-1][1].client_reply is None
@@ -2897,12 +3141,18 @@ async def _handle_turn(
         # черновик ждёт подтверждения, и confirm_order должен стать доступен
         # в этом же ходу, а не со следующего сообщения клиента.
         fresh_draft = await state.get_draft(peer_id)
+        from app.modules.dialog import consultation
+        from app.modules.ops import journal
+
+        journal.update_llm_scope(stage=consultation.funnel_stage(fresh_draft, None) if fresh_draft else None)
         tools = _tools_for_stage(
             fresh_draft.stage if fresh_draft else None,
             with_feedback=delivered is not None,
             live_invoice=fresh_draft is None and live is not None,
             with_offer=bool(fresh_draft and fresh_draft.details.get("offer")),
         )
+        if referral_on:
+            tools = tools + [REFERRAL_TOOL]
 
         # Последний круг зовём без инструментов: модель обязана ответить
         # словами. Раньше здесь просто стояла заглушка «Записала, спасибо»,
@@ -2944,6 +3194,8 @@ async def _handle_turn(
             text = await _ask_for_words(messages, system_prompt, response, spent, tools)
     if text is None:
         text = _NO_TEXT_FALLBACK
+    if not pd_ok and not stop_note:
+        text = await _with_consent_prompt(peer_id, text, called, spoken)
     if stop_note:
         # «Не пишите мне» — ответ без кнопок: ни пунктов, ни «Взять».
         reply = plain_text(text)

@@ -58,6 +58,10 @@
   .message.bad { background: var(--bad-bg); color: var(--bad); }
   .message.warn { background: var(--warn-bg); color: var(--warn); }
   label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+  .lot { margin: 6px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--bg); font-size: 14px; }
+  .lot.bad { background: var(--bad-bg); color: var(--bad); }
+  .lot select, .lot input { font: inherit; margin-top: 6px; width: 100%; padding: 6px 8px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--card); color: var(--text); }
   input, textarea {
     width: 100%; font: inherit; color: var(--text); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; padding: 10px;
@@ -190,6 +194,18 @@
         warn.textContent = "Нет GTIN в каталоге — собрать эту позицию с кодами нельзя.";
         div.appendChild(warn);
       }
+      for (const lot of position.lots || []) div.appendChild(lotBlock(position, lot));
+      if ((position.lots || []).some(l => l.unit === "г") && !state.packed_at) {
+        const weight = document.createElement("input");
+        weight.type = "number"; weight.inputMode = "decimal"; weight.min = "0";
+        weight.placeholder = "Фактический вес, г (необязательно)";
+        weight.value = weights[position.index] || "";
+        weight.addEventListener("input", () => { weights[position.index] = weight.value; });
+        const box = document.createElement("div");
+        box.className = "lot";
+        box.appendChild(weight);
+        div.appendChild(box);
+      }
       const list = document.createElement("ul");
       list.className = "codes";
       for (const code of position.codes) {
@@ -225,6 +241,45 @@
     }
     $("finishButton").disabled = !state.can_finish;
     $("finishButton").textContent = state.packed_at ? "Собрано ✓" : "Собрано";
+  }
+
+  // Фактический вес по позициям — до нажатия «Собрано»: перевес уйдёт в потери фасовки.
+  const weights = {};
+
+  // Из какой партии брать: код и срок, а пока не собрано — выбор другой партии.
+  function lotBlock(position, lot) {
+    const box = document.createElement("div");
+    const missing = !lot.lot_id;
+    box.className = "lot" + (missing || !lot.shelf_ok ? " bad" : "");
+    const amount = lot.places + " × " + (lot.qty / lot.places) + " " + lot.unit;
+    box.textContent = missing
+      ? "Сырьё «" + lot.raw_material + "»: нет свободной партии (" + amount + ") — внесите партию и выберите её"
+      : "Партия " + lot.lot_code + " · годен до " + (lot.best_before || "—") + " · пачка годна до " +
+        (lot.pack_best_before || "—") + " · " + amount + (lot.status === "списан" ? " · списано" : "");
+    if (lot.status === "резерв" && !state.packed_at && lot.choices.length) {
+      const select = document.createElement("select");
+      const first = document.createElement("option");
+      first.textContent = missing ? "Выбрать партию…" : "Взять другую партию…";
+      first.value = "";
+      select.appendChild(first);
+      for (const choice of lot.choices) {
+        if (choice.lot_id === lot.lot_id) continue;
+        const option = document.createElement("option");
+        option.value = choice.lot_id;
+        option.textContent = choice.lot_code + " · свободно " + choice.free + " " + lot.unit +
+          " · годен до " + (choice.best_before || "—");
+        select.appendChild(option);
+      }
+      select.addEventListener("change", async () => {
+        if (!select.value) return;
+        const data = await call("/lot", { index: position.index, raw_material: lot.raw_material,
+                                          lot_id: Number(select.value) });
+        if (data.state) { state = data.state; render(); }
+        show(data.message || (data.ok ? "Партия заменена." : "Не получилось."), data.ok ? "ok" : "bad");
+      });
+      box.appendChild(select);
+    }
+    return box;
   }
 
   async function load() {
@@ -271,7 +326,7 @@
   }
 
   $("finishButton").addEventListener("click", async () => {
-    const data = await call("/finish", { by: $("packer").value.trim() });
+    const data = await call("/finish", { by: $("packer").value.trim(), weights });
     if (data.state) { state = data.state; render(); }
     show(data.message || "Не получилось.", data.ok ? "ok" : "bad");
     if (data.ok) stopCamera();

@@ -83,6 +83,18 @@ _MONTHS = (
 )
 
 
+def catalog_paused() -> str:
+    """Каталог в базе пуст или не читается: продавать нечего, но молчать нельзя.
+
+    Без обещания перезвонить: механизма, который сам вернётся к клиенту
+    после паузы, нет. Ops в это время получает тревогу.
+    """
+    return (
+        "Извините, сейчас обновляем ассортимент и ненадолго приостановили приём "
+        "заказов. Напишите, пожалуйста, чуть позже — с радостью поможем выбрать чай."
+    )
+
+
 def day_month(day) -> str:
     """«5 октября» — дата без года: срок хранения всегда в ближайшие дни."""
     return f"{day.day} {_MONTHS[day.month - 1]}"
@@ -190,6 +202,7 @@ def invoice_summary(
     button: bool = False,
     surcharge: bool = False,
     point_note: bool = False,
+    trust: str = "",
 ) -> str:
     """2.1. Сводка и ссылка одним сообщением — вместо «Оформляем?» и «да».
 
@@ -203,7 +216,8 @@ def invoice_summary(
     head = f"Заказ №{order_id} — проверьте, всё ли верно:" if order_id else "Проверьте, всё ли верно:"
     lines = [head, *_order_block(items, delivery_method, delivery_label, delivery_cost, eta, surcharge,
                                  point_note)]
-    lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button)
+    lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button,
+                            extra=trust)
     return "\n".join(lines)
 
 
@@ -378,6 +392,175 @@ def pay_line(link: str, button: bool = False) -> str:
 
 def _link_noun(button: bool) -> str:
     return "Кнопка оплаты" if button else "Ссылка"
+
+
+# --- пакет C: короткий путь до оплаты и доверие ---------------------------------------
+
+# Названия способов оплаты ЮKassa (GET /me → payment_methods) для текста клиенту.
+PAYMENT_METHOD_NAMES = {
+    "bank_card": "картой", "sbp": "СБП", "sberbank": "SberPay", "tinkoff_bank": "T-Pay",
+    "yoo_money": "ЮMoney", "alfa_pay": "Alfa Pay", "mir_pay": "Mir Pay",
+}
+
+
+def payment_methods_phrase(methods: list[str]) -> str:
+    """«картой, СБП, SberPay или T-Pay» — только включённые в магазине способы."""
+    names = [PAYMENT_METHOD_NAMES[m] for m in methods if m in PAYMENT_METHOD_NAMES]
+    if not names:
+        return ""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " или " + names[-1]
+
+
+def payment_trust_line(methods: list[str], requisites_url: str = "") -> str:
+    """Строка доверия под счётом: кто принимает оплату, чек по 54-ФЗ, реквизиты ИП."""
+    how = payment_methods_phrase(methods)
+    line = "Оплата через ЮKassa" + (f" — {how}" if how else "") + ". Чек по 54-ФЗ придёт на почту."
+    if requisites_url:
+        line += f"\nРеквизиты ИП: {requisites_url}"
+    return line
+
+
+def recipient_missing(missing: list[str], recorded: list[str]) -> str:
+    """Получатель прислан не целиком: что записали и чего не хватает — одним вопросом."""
+    words = {"name": "ФИО получателя", "phone": "телефон", "email": "почту для чека"}
+    asked = [words[m] for m in missing]
+    ask = asked[0] if len(asked) == 1 else ", ".join(asked[:-1]) + " и " + asked[-1]
+    head = ""
+    if recorded:
+        names = {"name": "ФИО", "phone": "телефон", "email": "почту"}
+        got = [names[k] for k in recorded]
+        head = ("Записала " + (got[0] if len(got) == 1 else ", ".join(got[:-1]) + " и " + got[-1]) + ". ")
+    tail = " — на неё придёт чек, без неё оплату не выставить" if missing == ["email"] else ""
+    return f"{head}Пришлите, пожалуйста, {ask}{tail}."
+
+
+def payment_declined_new_link(order, methods: list[str]) -> str:
+    """Банк отказал — сразу новая ссылка на ту же сумму, другим способом."""
+    how = payment_methods_phrase([m for m in methods if m != "bank_card"])
+    other = f" другой картой или {how}" if how else " другой картой"
+    return (
+        f"Платёж по заказу №{order.id} не прошёл — банк отказал. Если сумма "
+        "заблокировалась на карте, она вернётся автоматически.\n"
+        f"Вот новая ссылка на ту же сумму — можно оплатить{other}:"
+    )
+
+
+ABANDONED_TOUCH = "abandoned_touch"
+PICKUP_REMINDER_1 = "pickup_reminder_1"
+
+
+def abandoned_touch(items: list[dict], *, total, delivery: str = "") -> str:
+    """C3. Брошенный черновик или счёт: состав сохранён, итог, «Оформить» пересчитает всё кодом."""
+    lines = ["Ваш заказ сохранился:", *[
+        f"• {item.get('name', 'товар')} × {int(item.get('quantity') or 1)}" for item in items]]
+    if delivery:
+        lines.append(f"Доставка: {delivery}")
+    lines += [f"Итого: {amount(total)} ₽", "",
+              "Нажмите «Оформить» — проверю цены, наличие и доставку и пришлю новую ссылку на оплату. "
+              + _NUDGE_CLOSING]
+    return "\n".join(lines)
+
+
+def pickup_reminder(order, *, carrier: str, address: str, storage_until, last_day: bool) -> str:
+    """C4. Посылка в пункте: на 2-й день и за день до конца хранения. Служебное — «стоп» не гасит."""
+    where = f"в пункте выдачи {carrier}" + (f": {address}" if address else "")
+    head = (f"Завтра последний день: посылка по заказу №{order.id} ждёт вас {where}."
+            if last_day else f"Напоминаем: посылка по заказу №{order.id} ждёт вас {where}.")
+    code = ("Код для получения — в приложении Ozon, в разделе заказов." if carrier == "Ozon"
+            else f"Код для получения {carrier} присылает в SMS — возьмите его с собой.")
+    tail = "После этого её вернут нам — заберите, пожалуйста, до этой даты 🙏" if last_day else ""
+    return "\n".join(x for x in (head, f"Хранится до {day_month(storage_until)}.", code, tail) if x)
+
+
+REVIEW_VARIANTS = {"named": "С именем из ВК", "anonymous": "Анонимно", "no": "Не публиковать"}
+
+
+def review_request() -> str:
+    """C7. Оценка 4–5: короткий отзыв, согласие на публикацию — кнопками после текста."""
+    return ("Спасибо, очень приятно! 🙏 Напишите пару слов о чае — что понравилось. "
+            "Если разрешите, опубликуем отзыв в сообществе.")
+
+
+def review_consent_ask() -> str:
+    return "Можно опубликовать ваш отзыв в сообществе?"
+
+
+def review_consent_saved(variant: str) -> str:
+    if variant == "no":
+        return "Хорошо, не публикуем — отзыв останется только у нас. Спасибо, что написали! 🙏"
+    how = "с вашим именем из ВК" if variant == "named" else "без имени"
+    return f"Спасибо! Опубликуем {how}, когда менеджер проверит отзыв 🙏"
+
+
+def complaint_apology(phrase: str) -> str:
+    """C7. Оценка 1–3: извинение и обещание ответа — сразу, вопрос уже у менеджера."""
+    return ("Нам очень жаль, что чай не порадовал 😔 Передала ваш отзыв менеджеру — он разберётся "
+            f"и ответит здесь, в этом диалоге, {phrase}. Если хотите, напишите, что именно не так.")
+
+
+def review_publication(text: str, stars: int, author: str) -> str:
+    """Текст поста с отзывом. Только слова клиента и подпись, никаких правок."""
+    head = "⭐" * stars if stars else "Отзыв покупателя"
+    return f"{head}\n«{text.strip()}»\n— {author}"
+
+
+def manager_review_card(order_id, text: str, variant: str, stars, link: str, *, wall: bool) -> str:
+    """Отзыв с согласием на публикацию. `text` уже экранирован."""
+    how = REVIEW_VARIANTS.get(variant, variant)
+    action = ("Проверьте текст и нажмите «Опубликовать» — бот выложит отзыв на стену сообщества."
+              if wall else "Опубликуйте вручную (стена или обсуждение «Отзывы») и нажмите «Опубликовал вручную».")
+    return (f"⭐ <b>Отзыв по заказу №{order_id} — к публикации</b>\n"
+            + (f"Оценка: {stars} из 5\n" if stars else "")
+            + f"{text}\n\nПубликация: {how}\n{action}\n{link}")
+
+
+def manager_complaint_from_rating(order, score: int, composition_line: str) -> str:
+    return (f"Клиент поставил {score} из 5 заказу №{order.id} ({composition_line}). "
+            "Выясните, что не так, и ответьте в диалоге.")
+
+
+def referral_invite(code: str, link: str, *, percent: int) -> str:
+    """Пакет D. Персональный код и ссылка для друга."""
+    return (f"Ваш код для друзей: {code}\nДругу — скидка {percent} % на первый заказ: пусть напишет нам по ссылке "
+            f"{link} или пришлёт код в сообщении.\nСкидка — только на чай, не на доставку, одна на человека.")
+
+
+def referral_reward(percent: int) -> str:
+    return (f"Ваш друг получил заказ по вашему коду — спасибо, что советуете нас! 🍵 "
+            f"На ваш следующий заказ — скидка {percent} % на чай, применится сама.")
+
+
+def referral_not_yet() -> str:
+    return "Код для друзей появится после вашего первого полученного заказа 🙂"
+
+
+def referral_unavailable() -> str:
+    return "Приглашения друзей пока не работают — скоро запустим."
+
+
+def referral_pending(percent: int) -> str:
+    return (f"Код принят: скидка {percent} % на чай применится к заказу, как только соберём его. "
+            "Скажи клиенту это и продолжай консультацию.")
+
+
+def referral_applied(terms: dict) -> str:
+    """Для модели: что применилось — сумма скидки и итог считает код."""
+    if not terms.get("active"):
+        return (f"Код принят, но скидка начнёт действовать от суммы товаров {amount(terms.get('min_total'))} ₽ — "
+                "скажи клиенту, сколько не хватает, и предложи дополнить заказ.")
+    return (f"Код друга применён: скидка {terms.get('percent')} % на чай — −{amount(terms.get('discount'))} ₽, "
+            f"товары теперь {amount(float(terms.get('list_total') or 0) - float(terms.get('discount') or 0))} ₽. "
+            "Скажи клиенту именно эти цифры. На доставку скидка не действует.")
+
+
+def escalation_after_hours(phrase: str) -> str:
+    """Для модели: вопрос передан ночью — когда ответит менеджер, и что продолжать."""
+    return (
+        "Вопрос зафиксирован и передан менеджеру. Сейчас нерабочее время: менеджер на связи "
+        f"с 10:00 до 23:00 по Москве и ответит здесь {phrase}. Скажи клиенту об этом одной фразой "
+        "и продолжай: ответь на остальные вопросы, а если идёт заказ — веди оформление дальше, "
+        "черновик не трогай."
+    )
 
 
 def reminder_1(order, link: str, button: bool = False) -> str:
@@ -589,6 +772,156 @@ def marketing_stopped() -> str:
     return (
         "Хорошо, больше не буду присылать напоминания. Сообщения по вашим "
         "заказам и доставке будут приходить как обычно."
+    )
+
+
+# --- согласия (152-ФЗ) ------------------------------------------------------
+# Все тексты про согласия — здесь. Ссылку и редакцию задают PD_CONSENT_URL и
+# PD_CONSENT_VERSION; число рассылок в месяц — MARKETING_MAX_PER_MONTH.
+
+# События журнала отправок: запрос согласия и вопрос о рассылке.
+PD_CONSENT_ASK = "pd_consent_ask"
+MARKETING_CONSENT_ASK = "marketing_consent_ask"
+
+PD_YES_LABEL = "Согласен"
+PD_NO_LABEL = "Не согласен"
+PD_RETRY_LABEL = "Оформить заказ"
+MARKETING_YES_LABEL = "Да"
+MARKETING_NO_LABEL = "Нет"
+REVOKE_LABEL = "Отозвать согласие"
+UNSUBSCRIBE_LABEL = "Отписаться"
+MY_DATA_LABEL = "Мои данные"
+
+
+def pd_consent_request(url: str, *, buttons: bool = True) -> str:
+    """Запрос согласия на обработку ПДн — до первого вопроса про имя, телефон, почту, адрес."""
+    text = (
+        "Чтобы оформить и доставить заказ, нам нужны ваши имя, телефон и адрес или пункт "
+        "выдачи. Они передаются только службе доставки (СДЭК или Ozon) и ЮKassa для чека. "
+        f"Хранятся в России. Полный текст согласия: {url}"
+    )
+    if not buttons:
+        text += f"\nОтветьте «{PD_YES_LABEL}» или «{PD_NO_LABEL}»."
+    return text
+
+
+def pd_consent_declined() -> str:
+    return (
+        "Без согласия мы не сможем доставить заказ. Если передумаете, нажмите «Оформить заказ» "
+        "ещё раз. А с выбором чая я помогу и так."
+    )
+
+
+def pd_consent_thanks() -> str:
+    """Перед продолжением оформления — его ведёт модель или код по черновику."""
+    return "Спасибо! Продолжаем оформление."
+
+
+def pd_resend() -> str:
+    """Данные пришли до согласия — их не сохранили."""
+    return "Данные, которые вы присылали до согласия, я не сохранила — пришлите их, пожалуйста, ещё раз."
+
+
+def pd_consent_next() -> str:
+    return "Напишите, что хотите заказать, — или спросите, помогу выбрать чай."
+
+
+def pd_consent_needed_note() -> str:
+    """Для модели: согласия нет — данные не спрашивать."""
+    return (
+        "Согласия клиента на обработку персональных данных пока нет. Не спрашивай и не записывай "
+        "ФИО, телефон, почту, адрес, город доставки или пункт выдачи и не обещай, что запишешь. "
+        "Консультируй как обычно. Когда клиент хочет купить — вызывай propose_order, остальные "
+        "инструменты заказа ответят, что нужно согласие: просьбу о согласии с кнопками код "
+        "допишет к твоему ответу сам, ты её не повторяй и не пересказывай. Если в сообщении "
+        f"клиента стоит «[скрыто до согласия]» — это данные, которые код не сохранил: не "
+        "угадывай их."
+    )
+
+
+def pd_consent_declined_note() -> str:
+    return (
+        "Клиент отказался дать согласие на обработку персональных данных. Помогай с выбором чая, "
+        "данных не спрашивай. Если он снова захочет оформить заказ — вызови propose_order: код "
+        "ещё раз спросит согласие."
+    )
+
+
+def storefront_consent_intro(order_id: int, listed: str, total) -> str:
+    """Заказ из «Товаров» без согласия: состав — и сразу просьба о согласии."""
+    return f"Заказ №{order_id} принят: {listed} — {amount(total)} ₽."
+
+
+def marketing_consent_ask(per_month: int, *, buttons: bool = True) -> str:
+    """Вопрос о рассылке — один раз, после успешной оплаты. Ничего не выбрано заранее."""
+    text = (
+        "Хотите получать новости о новых сортах и скидках? Не чаще "
+        f"{per_month} {_times(per_month)} в месяц, отписаться можно в любой момент."
+    )
+    if not buttons:
+        text += f"\nОтветьте «{MARKETING_YES_LABEL}» или «{MARKETING_NO_LABEL}»."
+    return text
+
+
+def _times(n: int) -> str:
+    return "раза" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else "раз"
+
+
+def marketing_consent_yes() -> str:
+    return (
+        "Отлично, будем присылать новости о новых сортах и скидках. Отписаться можно в любой "
+        f"момент — напишите «{UNSUBSCRIBE_LABEL.lower()}»."
+    )
+
+
+def marketing_consent_no() -> str:
+    return "Хорошо, рассылку присылать не будем. Сообщения по заказу придут как обычно."
+
+
+MY_DATA_HINT = f"Посмотреть или отозвать согласия — «{MY_DATA_LABEL}»."
+
+
+def marketing_unsubscribed() -> str:
+    return (
+        "Готово, вы отписаны от новостей и скидок. Сообщения по вашим заказам и доставке "
+        "будут приходить как обычно."
+    )
+
+
+def pd_revoked() -> str:
+    """Отзыв согласия и просьба удалить данные."""
+    return (
+        "Заявку приняли. Удалим ваши данные в течение 10 рабочих дней. Данные о покупках и "
+        "чеках храним столько, сколько требует закон."
+    )
+
+
+def my_data(*, pd_active: bool, marketing_active: bool, url: str) -> str:
+    """«Мои данные»: какие согласия действуют и что можно сделать."""
+    lines = [
+        "Ваши согласия:",
+        "• на обработку данных для заказа — " + ("действует" if pd_active else "не дано"),
+        "• на новости и скидки — " + ("действует" if marketing_active else "не дано"),
+        f"Текст согласия: {url}",
+        f"Отозвать согласие и удалить данные — кнопка «{REVOKE_LABEL}» или фраза «отзываю согласие». "
+        "Тогда мы удалим ваши данные в течение 10 рабочих дней; данные о покупках и чеках храним "
+        "столько, сколько требует закон.",
+    ]
+    if marketing_active:
+        lines.append(f"Отписаться только от новостей — «{UNSUBSCRIBE_LABEL}».")
+    return "\n".join(lines)
+
+
+def manager_pd_delete(vk_user_id: int, due, link: str) -> str:
+    """Задача менеджеру: покупатель отозвал согласие."""
+    return (
+        f"🗑 <b>Удалить ПДн покупателя {vk_user_id}</b>\n"
+        f"Покупатель отозвал согласие на обработку персональных данных. Срок — до "
+        f"{due:%d.%m.%Y} (10 рабочих дней).\n"
+        f"Обезличить заказы и удалить переписку: <code>scripts/api.sh 'clients/{vk_user_id}/anonymize'</code> "
+        f"(пробный прогон), затем с <code>?apply=1</code>. Суммы, товары, коды маркировки и чеки "
+        "останутся. Данные у СДЭКа, Ozon и ЮKassa — по их правилам, в кабинетах.\n"
+        f"Журнал согласий: <code>scripts/api.sh consents/{vk_user_id}</code>\nДиалог: {link}"
     )
 
 
@@ -1118,6 +1451,7 @@ def returning_invoice(
     upsell_price=None,
     gap=None,
     button: bool = False,
+    trust: str = "",
 ) -> str:
     """Постоянному клиенту — заказ как в прошлый раз сразу со ссылкой.
 
@@ -1127,7 +1461,7 @@ def returning_invoice(
     lines = ["Как в прошлый раз — проверьте, всё ли верно:",
              *_order_block(items, delivery_method, delivery_label, delivery_cost, eta)]
     lines += _payment_block(name=name, phone=phone, email=email, total=total, link=link, button=button,
-                            extra=upsell_line(upsell, upsell_price, gap))
+                            extra="\n".join(x for x in (upsell_line(upsell, upsell_price, gap), trust) if x))
     return "\n".join(lines)
 
 

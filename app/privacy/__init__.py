@@ -130,7 +130,8 @@ async def _replace(text: str, found: list[detect.Found], key: str, collect: list
 
 
 async def tokenize(
-    peer_id: int, text: str, *, names: bool = True, stage: frozenset[str] = frozenset(), collect: list | None = None
+    peer_id: int, text: str, *, names: bool = True, stage: frozenset[str] = frozenset(), collect: list | None = None,
+    addresses: bool = False,
 ) -> str:
     """Текст с метками вместо персональных данных клиента.
 
@@ -139,6 +140,9 @@ async def tokenize(
     имён по словарю дал бы ложные срабатывания на ровном месте.
     `collect` — сюда складываются замены (метка, вид, значение): для отчёта
     переноса истории.
+    `addresses` — искать улицу с домом где угодно в тексте: для слов клиента
+    и менеджера. В результатах инструментов это адреса пунктов выдачи — их
+    модели видеть можно и нужно.
     """
     if not text or not is_enabled():
         return text
@@ -148,6 +152,10 @@ async def tokenize(
     text = await _replace(text, contacts, key, collect)
     phones = detect.phones(text)
     text = await _replace(text, phones, key, collect)
+    if addresses and COURIER_ADDRESS not in stage:
+        # До имён: «ул. Ленина 5» иначе стала бы «ул. [NAME_1] 5». Когда ждём
+        # адрес курьера, его целиком, с городом, заберёт courier_address ниже.
+        text = await _replace(text, detect.street_addresses(text), key, collect)
 
     if names:
         # Распознавание — раньше известных значений: «иванов иван иванович»

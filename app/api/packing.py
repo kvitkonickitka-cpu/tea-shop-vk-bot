@@ -104,14 +104,55 @@ async def remove(token: str, request: Request):
                         headers=_PRIVATE)
 
 
+def _weights(data: dict) -> dict[int, float]:
+    """Фактический вес позиций, г: {"номер позиции": граммы}. Пустое и кривое — пропускаем."""
+    result = {}
+    for key, value in (data.get("weights") or {}).items():
+        try:
+            grams = float(str(value).replace(",", "."))
+            if grams > 0:
+                result[int(key)] = grams
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+@router.post("/pack/{token}/lot")
+async def change_lot(token: str, request: Request):
+    """Сборщик взял другую партию сырья для позиции — переносим резерв."""
+    from app.modules.stock import service as stock
+
+    data = await _body(request)
+    try:
+        order_id = packing.read_token(token)
+        moved = await stock.change_lot(order_id, int(data.get("index")), str(data.get("raw_material") or ""),
+                                       int(data.get("lot_id")))
+        current = await packing.state(order_id)
+    except packing.LinkError as error:
+        return _error(str(error), 403)
+    except stock.StockError as error:
+        return _error(str(error))
+    except (TypeError, ValueError):
+        return _error("Не понял, какую партию взять.")
+    return JSONResponse({"ok": True, "message": f"Партия заменена ({moved} шт.).", "state": current.as_dict()},
+                        headers=_PRIVATE)
+
+
 @router.post("/pack/{token}/finish")
 async def finish(token: str, request: Request):
     data = await _body(request)
     try:
         order_id = packing.read_token(token)
-        current = await packing.finish(order_id, by=str(data.get("by") or ""))
+        current = await packing.finish(order_id, by=str(data.get("by") or ""), weights=_weights(data))
     except packing.LinkError as error:
         return _error(str(error))
+    # Собран — подтвердить отправление Ozon (C8). Ошибка здесь сборку не отменяет.
+    from app.modules.delivery import ozon_approve
+
+    try:
+        await ozon_approve.after_packed(order_id)
+    except Exception:
+        logger.exception("Автоподтверждение Ozon после сборки заказа %s упало", order_id)
     return JSONResponse(
         {"ok": True, "message": f"Заказ №{order_id} собран, коды закреплены.",
          "state": current.as_dict()},

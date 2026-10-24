@@ -140,6 +140,22 @@ _MISSING_COLUMNS = (
     # Аналитика: тестовые заказы не попадают в представления для DataLens.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS source VARCHAR",
+    # Сессия диалога (dialog_sessions): рубли Claude на диалог и время между
+    # шагами воронки. Источник клиента — first touch и метка «свои».
+    "ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS dialog_id INTEGER",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS first_source VARCHAR",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS own_at TIMESTAMPTZ",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS own_by VARCHAR",
+    # Расход Claude по диалогам: чей ход, на каком этапе, для чего.
+    "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS client_key VARCHAR",
+    "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS dialog_id INTEGER",
+    "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS order_id INTEGER",
+    "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS stage VARCHAR",
+    "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS purpose VARCHAR",
+    # Отзывы (C7): оценка 1–5 рядом с прежней great/ok/no, публикация отзыва.
+    "ALTER TABLE order_ratings ADD COLUMN IF NOT EXISTS score INTEGER",
+    "ALTER TABLE order_feedback ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ",
+    "ALTER TABLE order_feedback ADD COLUMN IF NOT EXISTS published_how VARCHAR",
     # Попытки оплаты: способ и сколько получит магазин — из уведомлений ЮKassa.
     "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR",
     "ALTER TABLE order_payments ADD COLUMN IF NOT EXISTS income_amount NUMERIC(10, 2)",
@@ -215,6 +231,7 @@ def _import_models() -> None:
     from app.modules.orders import models as orders_models  # noqa: F401
     from app.modules.delivery import models as delivery_models  # noqa: F401
     from app.core import heartbeat as heartbeat_models  # noqa: F401
+    from app.core import flags as flag_models  # noqa: F401
     from app.messages import models as message_models  # noqa: F401
     from app.modules.marking import models as marking_models  # noqa: F401
     from app.modules.catalog import models as catalog_models  # noqa: F401
@@ -222,6 +239,8 @@ def _import_models() -> None:
     from app.modules.analytics import models as analytics_models  # noqa: F401
     from app.privacy import models as privacy_models  # noqa: F401
     from app.modules.queue import models as queue_models  # noqa: F401
+    from app.modules.consent import models as consent_models  # noqa: F401
+    from app.modules.referral import models as referral_models  # noqa: F401
 
 
 async def _connect() -> bool:
@@ -268,6 +287,27 @@ async def _connect() -> bool:
             await analytics_views.create(conn)
     except Exception:
         logger.exception("Не пересоздали схему analytics для DataLens")
+    # Реестр ЮKassa и витрина КУДиР в схеме finance — тоже отдельно: без них
+    # бот работает, нет только сверки выплат.
+    from app.modules.payment import registry as yk_registry
+
+    try:
+        async with engine.begin() as conn:
+            await yk_registry.ensure_tables(conn)
+    except Exception:
+        logger.exception("Не создали таблицы реестра ЮKassa в схеме finance")
+    # Каталог в схеме shop — тоже отдельно: при CATALOG_SOURCE=sheet бот без
+    # неё работает, а при db без неё бот сам скажет о паузе (`catalog.store`).
+    from app.modules.catalog import schema as catalog_schema
+
+    from app.modules.stock import schema as stock_schema
+
+    try:
+        async with engine.begin() as conn:
+            await catalog_schema.ensure(conn)
+            await stock_schema.ensure(conn)
+    except Exception:
+        logger.exception("Не создали схему каталога и склада shop")
     return True
 
 

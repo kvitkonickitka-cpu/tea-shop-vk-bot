@@ -61,7 +61,21 @@ SAMPLES = {
     "brewing": [{"name": "Те Гуань Инь", "text": "85 °C", "video": ""}], "hint": "", "per_point_prices": True,
     "shown": [{"n": 1, "address": "Краснодар, Ставропольская улица, 230", "price": 121}],
     "name": "Иванов Иван", "method": "ozon_pvz", "label": "Ozon, пункт выдачи: Краснодар, Красная, 1",
+    "buttons": True, "listed": "Те Гуань Инь × 1", "per_month": 2, "pd_active": True, "marketing_active": False,
+    "vk_user_id": 123456, "due": date(2026, 11, 3),
 }
+
+
+# Пакет C: способы оплаты, недостающие данные получателя, срок ответа менеджера.
+SAMPLES.update({
+    "methods": ["bank_card", "sbp", "sberbank"], "requisites_url": "https://vk.com/@teapotwice-rekvizity",
+    "missing": ["phone", "email"], "recorded": ["name"], "phrase": "завтра с 10:00",
+    "trust": "Оплата через ЮKassa — картой или СБП. Чек по 54-ФЗ придёт на почту.",
+    "delivery": "в пункт выдачи Ozon (Краснодар, Красная, 176)", "last_day": True,
+    "score": 2, "composition_line": "Те Гуань Инь × 1", "variant": "named", "stars": 5, "author": "Иван", "wall": False,
+    "code": "ЧАЙ-ABCD-EFGH", "percent": 10,
+    "terms": {"active": True, "percent": 10, "discount": 150, "list_total": 1500, "min_total": 1490},
+})
 
 
 def _render_all():

@@ -148,6 +148,8 @@ class PackingState:
         return bool(self.positions) and all(p.done for p in self.positions)
 
     delivered_without_codes: bool = False
+    # Партии сырья по позициям (`stock.packing_view`); пусто — склад по партиям выключен.
+    stock: list = field(default_factory=list)
 
     @property
     def can_finish(self) -> bool:
@@ -167,6 +169,8 @@ class PackingState:
                     "index": p.index, "name": p.name, "quantity": p.quantity,
                     "gtin": p.gtin, "kind": p.kind, "scanned": len(p.codes), "done": p.done,
                     "codes": p.codes,
+                    # Из какой партии брать (склад по партиям): по сырью позиции.
+                    "lots": [row for row in self.stock if row["index"] == p.index],
                 }
                 for p in self.positions
             ],
@@ -233,7 +237,19 @@ async def _state(session, order: Order) -> PackingState:
         # Вручённый заказ без кодов собрать всё ещё можно: так исправляют
         # закрывающий чек, если сборку через страницу пропустили.
         delivered_without_codes=order.delivered_at is not None and order.packed_at is None,
+        stock=await _stock_view(order.id),
     )
+
+
+async def _stock_view(order_id: int) -> list:
+    """Партии для страницы сборки. Сбой склада страницу не ломает — коды важнее."""
+    from app.modules.stock import service as stock
+
+    try:
+        return await stock.packing_view(order_id)
+    except Exception:
+        logger.exception("Заказ %s: партии для сборки не прочитаны", order_id)
+        return []
 
 
 async def state(order_id: int) -> PackingState:
@@ -408,8 +424,12 @@ async def remove(order_id: int, code_id: int) -> PackingState:
         return await _state(session, order)
 
 
-async def finish(order_id: int, *, by: str = "") -> PackingState:
-    """«Собрано»: коды есть на все единицы — закрепить их за заказом."""
+async def finish(order_id: int, *, by: str = "", weights: dict[int, float] | None = None) -> PackingState:
+    """«Собрано»: коды есть на все единицы — закрепить их за заказом и списать сырьё.
+
+    Сырьё списывается до отметки «собрано»: нет партии или срок пачки меньше
+    допустимого — сборка не проходит, а сборщик видит, что сделать.
+    """
     by = (by or "").strip()[:60] or "сборщик"
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -425,6 +445,12 @@ async def finish(order_id: int, *, by: str = "") -> PackingState:
                 for p in current.positions if not p.done
             ]
             raise LinkError("Коды есть не на все позиции — " + "; ".join(missing))
+        from app.modules.stock import service as stock
+
+        try:
+            await stock.write_off(order_id, by=by, weights=weights)
+        except stock.StockError as error:
+            raise LinkError(str(error)) from None
         now = datetime.now(timezone.utc)
         await session.execute(
             update(Order).where(Order.id == order.id, Order.packed_at.is_(None))

@@ -11,7 +11,7 @@ from app.api.vk import router as vk_router
 from app.core import diagnostics, logs
 from app.core.config import settings
 from app.core.database import init_models, is_available
-from app.modules.catalog import sheet as catalog_sheet
+from app.modules.catalog import service as catalog_service
 from app.modules.ops import journal as ops_journal
 
 # Строка JSON на запись: Cloud Logging разбирает её на поля, а форматтер
@@ -43,10 +43,10 @@ async def flush_ops_journal(request: Request, call_next):
 
 @app.middleware("http")
 async def fresh_catalog(request: Request, call_next):
-    # Каталог из Google Таблицы кладёт в базу тик расписания; здесь каждый
-    # контейнер подтягивает его в память — отпечаток сверяет раз в 5 секунд. Путь
+    # Каталог (из базы или из Google Таблицы, которую кладёт в базу тик) каждый
+    # контейнер подтягивает в память — версию сверяет раз в 5 секунд. Путь
     # сообщения клиента в Google не ходит: у вебхука ВК около восьми секунд.
-    await catalog_sheet.ensure_fresh()
+    await catalog_service.ensure_fresh()
     return await call_next(request)
 
 

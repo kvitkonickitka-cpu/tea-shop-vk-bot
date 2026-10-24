@@ -185,8 +185,10 @@ async def test_escalation_with_phone(clean, wire):
     await say("Хочу оптом, перезвоните мне 89001234567", 1)
     async with clean() as session:
         question = (await session.execute(select(Escalation.question))).scalar_one()
-    assert question == "Опт: клиент просит перезвонить на +79001234567"  # менеджеру — значение
-    assert any("+79001234567" in card for card in wire["manager"])
+    assert question == "Опт: клиент просит перезвонить на +79001234567"  # у нас в базе — значение
+    # Телеграм — за границей: в карточке метка, настоящий номер — в диалоге ВК.
+    assert wire["manager"] and not any("+79001234567" in card or "89001234567" in card for card in wire["manager"])
+    assert any("[PHONE_1]" in card for card in wire["manager"])
     assert_clean(wire)
 
 

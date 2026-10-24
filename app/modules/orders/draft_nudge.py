@@ -38,6 +38,7 @@ from app.core import worktime
 from app.core.config import free_delivery_threshold, settings
 from app.core.database import get_session_factory
 from app.messages import client as client_messages, keyboard as keyboards, marketing, templates
+from app.modules.consent import service as consent
 from app.modules.catalog import service as catalog_service
 from app.modules.dialog import escalation_state, history as dialog_history
 from app.modules.dialog.models import ConversationMessage
@@ -217,6 +218,10 @@ async def check_drafts(now: datetime | None = None) -> dict:
         if await escalation_state.is_open(row.peer_id):
             continue
         if await marketing.is_opted_out(row.peer_id) or await marketing.is_unreachable(row.peer_id):
+            continue
+        if not await consent.has_pd(row.peer_id):
+            # Без согласия на ПДн дальше корзины заказ не идёт: звать к нему
+            # («где удобно забрать?») — значит снова просить данные.
             continue
         text, keyboard = await _message(row)
         if await client_messages.send(
