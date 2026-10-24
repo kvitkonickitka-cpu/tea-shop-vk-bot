@@ -939,10 +939,11 @@ from fin.v_code_batches limit 15""", "table",
 select '01' || i.gtin || '21' || i.serial as "КИ", i.gtin as "GTIN", 'Декларация о соответствии' as "Вид документа",
        (select value_text from fin.inputs_current where key = 'chz_declaration_number') as "Номер декларации",
        (select value_text from fin.inputs_current where key = 'chz_declaration_date') as "Дата декларации",
-       {d("(o.packed_at at time zone 'Europe/Moscow')::date")} as "Дата упаковки", b.id as "Выгрузка"
+       -- Дата упаковки — из журнала («наклеен» ставит «Собрано»): к orders у роли дашбордов доступа нет.
+       (select {d("(max(e.at) at time zone 'Europe/Moscow')::date")} from shop.code_events e
+         where e.gtin = i.gtin and e.serial = i.serial and e.status = 'applied') as "Дата упаковки",
+       b.id as "Выгрузка"
 from shop.code_batches b join shop.code_batch_items i on i.batch_id = b.id
-left join shop.v_code_status s on s.gtin = i.gtin and s.serial = i.serial
-left join orders o on o.id = s.order_id
 where b.status = 'выгружена' order by b.id, i.gtin, i.serial""", "table", None,
          "Документ «Ввод в оборот → Производство РФ»: КИ и наша декларация на каждый код. Скачайте CSV, загрузите в "
          "ЛК, подпишите; документ принят — «Введено». Номер и дату декларации — во «Вводных». Формат сверить на первой "
