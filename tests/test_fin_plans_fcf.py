@@ -182,7 +182,8 @@ async def test_runway_says_whole_forecast_instead_of_a_bare_date(bank):
     await _bank(bank, BANK_2410, "10000000")
     money = await bank.fetchrow("select * from fin.v_money_now")
     assert money["runout_date"] is None
-    assert money["runway_text"] == f"на весь прогноз (до {money['horizon']:%d.%m.%Y})"
+    # 019: коротко — помещается в плитку.
+    assert money["runway_text"] == f"позже {money['horizon']:%d.%m.%Y}"
     await _bank(bank, BANK_2410, "100")
     assert (await bank.fetchrow("select runway_text from fin.v_money_now"))["runway_text"] == "уже ниже резерва"
 

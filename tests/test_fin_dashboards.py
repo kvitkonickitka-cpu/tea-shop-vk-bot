@@ -168,7 +168,8 @@ async def test_pilot_budget_plan_spent_left(bank):
     assert (rows["Термопринтер"]["plan"], rows["Термопринтер"]["spent"], rows["Термопринтер"]["left_amount"]) == (4831, 4831, 0)
     assert rows["Весы"]["spent"] == 12296
     assert rows["Упаковка и расходники (лимит)"]["spent"] == Decimal("4172")  # 473 по выписке + 3 699 с карты
-    assert rows["Сервисы за пилот"]["spent"] == Decimal("17812.49")
+    # 019: серверы до старта — в своей статье, план пилота они не съедают.
+    assert rows["Сервисы до старта"]["spent"] == Decimal("17812.49") and rows["Сервисы за пилот"]["spent"] == 0
     assert rows["Не сопоставлено"]["spent"] == 5000 and rows["Не сопоставлено"]["plan"] is None
 
 
@@ -190,9 +191,14 @@ async def test_one_margin_names_and_low_margin_flag(fin):
     """D8–D10: маржа одна — fin.v_unit_cost; имя без кода поставщика; низкая маржа — ниже порога."""
     cards = {r["product"]: r for r in await fin.fetch("select * from fin.v_product_card")}
     tgi = cards["Те Гуань Инь ЭКО (XFI0044)"]
-    assert (tgi["name"], tgi["supplier_code"], tgi["kind_group"]) == ("Те Гуань Инь ЭКО", "XFI0044", "Пачки")
-    assert tgi["low_margin"] and tgi["sold_by_bot"]
-    assert cards["Дянь Хунь фермерский (XFI0095)"]["name"] == "Дянь Хун фермерский"
+    # 019: название, вид и «в продаже» — из каталога бота (shop.catalog), а не справочника финмодели.
+    catalog = await fin.fetchrow("select sku_id, name from shop.catalog where raw_material = 'Те Гуань Инь ЭКО (XFI0044)' "
+                                 "and net_weight_g = 100")
+    assert (tgi["name"], tgi["sku_id"], tgi["supplier_code"], tgi["kind_group"]) == (
+        catalog["name"], catalog["sku_id"], "XFI0044", "Пачки")
+    assert tgi["low_margin"] and not tgi["sold_by_bot"]
+    await fin.execute("update shop.catalog set gtin = '2000000000015', on_sale = true where sku_id = $1", catalog["sku_id"])
+    assert await fin.fetchval("select sold_by_bot from fin.v_product_card where sku_id = $1", catalog["sku_id"])
     lead = cards["Набор «Точка входа»"]
     assert lead["name"] == "Набор «Точка входа»" and not lead["low_margin"] and lead["supplier_code"] is None
     unit = await fin.fetchval("select margin_before_cac from fin.v_unit_cost where product = 'Набор «Точка входа»'")
@@ -274,8 +280,9 @@ async def test_refunded_payment_is_not_in_transit(bank):
         await bank.execute("insert into finance.yk_refunds (id, payment_id, status, amount, created_at) "
                            "values ('r-1', 'p-refunded', 'succeeded', 217, now() - interval '25 days')")
         assert await bank.fetchval("select sum(payouts_in) from fin.v_runway_daily") == Decimal("1430.40")
-        week = await bank.fetchrow("select * from fin.v_weekly_forecast where week_no = 1")
-        assert week["inflow"] == Decimal("220000") + Decimal("1430.40")
+        # Недели с понедельника (019): вклады и выплата — где-то в первых восьми.
+        inflow = await bank.fetchval("select sum(inflow) from fin.v_weekly_forecast")
+        assert inflow == Decimal("220000") + Decimal("1430.40")
     finally:
         await bank.execute("delete from finance.yk_refunds; delete from finance.yk_payments")
 

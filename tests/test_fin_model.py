@@ -169,8 +169,9 @@ async def test_seed_matches_model(fin):
     # декларация о соответствии (33 000 ₽, в v1.5 её не было).
     budget = await fin.fetch("select * from fin.v_pilot_budget order by line_no")
     # С 017 вместо Габы IT-162 (3750 ₽/кг) — Габа Эко (3400 ₽/кг): 1,5 кг × 350 ₽ со скидкой
-    # первой закупки — на 473 ₽ меньше.
-    assert round(budget[0]["known_total"]) == 173174 + 33000 - 473
+    # первой закупки — на 473 ₽ меньше. С 019 — и сервисы до старта отдельной статьёй.
+    before = {row["item"]: row["plan_amount"] for row in budget}["Сервисы до старта"]
+    assert round(budget[0]["known_total"]) == round(173174 + 33000 - 473 + before)
     assert {row["item"]: row["plan_amount"] for row in budget}["Декларация о соответствии"] == 33000
     assert {row["item"]: row["plan_amount"] for row in budget}["API тестов и консультаций до продаж"] is None
 
@@ -387,6 +388,6 @@ async def test_metabase_fin_writes_only_fin(fin):
 
     async with fin.transaction():
         await fin.execute("set local role metabase_ro")
-        assert await fin.fetchval("select count(*) from fin.v_pilot_budget") == 16
+        assert await fin.fetchval("select count(*) from fin.v_pilot_budget") == 17
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await fin.execute("insert into fin.expenses (date, category, amount, entered_by) values (current_date, 'прочее', 1, 'Илья')")

@@ -283,6 +283,11 @@ async def test_test_declaration_until_the_real_one(fin, monkeypatch):
     """Настоящей декларации ещё нет: тестовая в вводных, выгрузка помечена и с предупреждением."""
     number, day = await circulation.declaration()
     assert circulation.is_test_declaration(number) and day == "24.10.2026"
+    # 019: пока выгружать нечего и до старта далеко — не шумим.
+    attention = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
+    assert not any("Декларация в выгрузке кодов — тестовая" in t for t in attention)
+    await fin.execute("insert into fin.inputs (key, value_text, entered_by) values "
+                      "('pilot_start_date', (current_date + 10)::text, 'Никита')")
     attention = [r["text"] for r in await fin.fetch("select * from fin.v_attention")]
     assert any("Декларация в выгрузке кодов — тестовая" in t for t in attention)
 
