@@ -51,6 +51,14 @@ def test_upsell_picks_first_in_stock_not_in_draft(catalog):
     assert catalog_service.upsell_for([{"name": "Габа 50 г", "quantity": 1, "price": 450}]) is None
 
 
+async def test_catalog_prompt_advises_only_in_stock(catalog):
+    context = await catalog_service.build_catalog_context()
+    assert "С чем советуем: Да Хун Пао 100 г." in context
+    # Чего нет — одной строкой, без цены: модель скажет «сейчас нет», а не позовёт менеджера.
+    assert "Шу Пуэр" not in context.split("Сейчас нет в наличии")[0]
+    assert context.splitlines()[-1].startswith("Сейчас нет в наличии") and context.endswith(": Шу Пуэр 100 г.")
+
+
 async def test_upsell_is_offered_once_per_draft(clean, catalog):
     result = await conversation._execute_propose_order(
         PEER, {"items": [{"name": "Те Гуань Инь 100 г", "quantity": 1}]}
