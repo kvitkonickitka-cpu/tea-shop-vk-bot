@@ -94,3 +94,11 @@ async def test_services_before_start_and_in_pilot_without_double_count(bank):
     total = await bank.fetchval("select sum(amount) from fin.v_spend where budget_item in "
                                 "('Сервисы до старта', 'Сервисы за пилот')")
     assert rows["Сервисы до старта"]["spent"] + rows["Сервисы за пилот"]["spent"] == total == Decimal("17812.49")
+
+
+async def test_metabase_roles_run_without_jit(fin):
+    # 020: JIT-компиляция съедала 3 с на запрос — у ролей Metabase он выключен.
+    settings = await fin.fetch(
+        "select r.rolname, s.setconfig from pg_db_role_setting s join pg_roles r on r.oid = s.setrole "
+        "where r.rolname in ('metabase_ro', 'metabase_fin') and s.setdatabase = 0")
+    assert {r["rolname"] for r in settings if "jit=off" in (r["setconfig"] or [])} == {"metabase_ro", "metabase_fin"}
