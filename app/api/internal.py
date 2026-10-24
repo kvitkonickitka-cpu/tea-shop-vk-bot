@@ -207,6 +207,11 @@ async def _run_scheduled() -> dict:
     from app.modules.catalog import store as catalog_store
 
     result["catalog_changes"] = await _run_task("Каталог: правки в Ops", catalog_store.notify_changes())
+    # Коды введены в оборот — собранные заказы Ozon подтвердить к отгрузке.
+    from app.modules.marking import circulation
+
+    result["codes_introduced"] = await _run_task("Коды ЧЗ: подтверждение Ozon после ввода",
+                                                 circulation.approve_introduced())
     # Справочники (себестоимость, настройки) — та же таблица, раз в 15 минут.
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
     # Счёт Anthropic по дням — раз в час, админ-ключом.

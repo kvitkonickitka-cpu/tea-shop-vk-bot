@@ -35,6 +35,9 @@ os.environ.setdefault("PII_ENCRYPTION_KEY", "dGVzdC1waWkta2V5LXRlc3QtcGlpLWtleS1
 # Сценарии сверяют суммы с ценой, которую вернул подменённый перевозчик.
 # Надбавку на эквайринг проверяет отдельно tests/test_delivery_acquiring.py.
 os.environ.setdefault("DELIVERY_ACQUIRING_PERCENT", "0")
+# Запрет отгрузки и чека до ввода кодов в оборот проверяет tests/test_code_statuses.py;
+# остальным тестам чека и сборки он мешал бы вводить коды в каждом.
+os.environ.setdefault("REQUIRE_INTRODUCED_BEFORE_SHIP", "false")
 
 # Таблицы, которые чистит фикстура `clean` сверх основного списка: новые
 # механики дописывают сюда, не трогая общий список.

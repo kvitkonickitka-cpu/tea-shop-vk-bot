@@ -300,12 +300,14 @@ async def _connect() -> bool:
     # неё работает, а при db без неё бот сам скажет о паузе (`catalog.store`).
     from app.modules.catalog import schema as catalog_schema
 
+    from app.modules.marking import schema as marking_schema
     from app.modules.stock import schema as stock_schema
 
     try:
         async with engine.begin() as conn:
             await catalog_schema.ensure(conn)
             await stock_schema.ensure(conn)
+            await marking_schema.ensure(conn)
     except Exception:
         logger.exception("Не создали схему каталога и склада shop")
     return True

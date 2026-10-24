@@ -108,7 +108,8 @@
   </details>
 </div>
 
-<div class="footer"><button id="finishButton" disabled>Собрано</button></div>
+<div class="footer"><button id="finishButton" disabled>Собрано</button>
+  <button id="shipButton" class="secondary" hidden>Отгружено</button></div>
 
 <script src="/pack/static/zxing-reader.js"></script>
 <script>
@@ -233,6 +234,12 @@
           remove.textContent = "Убрать";
           remove.addEventListener("click", () => removeCode(code.id));
           li.appendChild(remove);
+          // Этикетку переклеили: код «испорчен», на пачку — новая этикетка и новый скан.
+          const spoiled = document.createElement("button");
+          spoiled.className = "secondary small";
+          spoiled.textContent = "Этикетка испорчена";
+          spoiled.addEventListener("click", () => spoilCode(code.id));
+          li.appendChild(spoiled);
         }
         list.appendChild(li);
       }
@@ -241,6 +248,11 @@
     }
     $("finishButton").disabled = !state.can_finish;
     $("finishButton").textContent = state.packed_at ? "Собрано ✓" : "Собрано";
+    // Отгрузка — после «Собрано» и только с введёнными в оборот кодами (ст. 15.12 КоАП).
+    $("shipButton").hidden = !state.packed_at;
+    $("shipButton").disabled = !state.can_ship || !state.introduced;
+    $("shipButton").textContent = state.handed_over_at ? "Отгружено " + state.handed_over_at
+      : state.introduced ? "Отгружено" : "Отгрузка — после ввода кодов в оборот";
   }
 
   // Фактический вес по позициям — до нажатия «Собрано»: перевес уйдёт в потери фасовки.
@@ -324,6 +336,18 @@
     if (data.state) { state = data.state; render(); }
     show(data.message || (data.ok ? "Код убран." : "Не получилось убрать код."), data.ok ? "ok" : "bad");
   }
+
+  async function spoilCode(id) {
+    const data = await call("/spoil", { id, by: $("packer").value.trim() });
+    if (data.state) { state = data.state; render(); }
+    show(data.message || (data.ok ? "Код испорчен." : "Не получилось."), data.ok ? "ok" : "bad");
+  }
+
+  $("shipButton").addEventListener("click", async () => {
+    const data = await call("/ship", { by: $("packer").value.trim() });
+    if (data.state) { state = data.state; render(); }
+    show(data.message || "Не получилось.", data.ok ? "ok" : "bad");
+  });
 
   $("finishButton").addEventListener("click", async () => {
     const data = await call("/finish", { by: $("packer").value.trim(), weights });

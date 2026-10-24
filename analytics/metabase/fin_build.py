@@ -50,10 +50,11 @@ def find(items, **match):
 # Партии закупки с 014 — shop.lots (форма на «Пульс → Склад»); «Фасовка» убрана:
 # фасуем под заказ, списание пишет страница сборки.
 FORM_TABLES = ("expenses", "capital", "cash_snapshots", "ad_spend", "inputs",
-               "carrier_acts", "supply_lead_times", "tax_calendar", "code_batches", "code_writeoffs")
+               "carrier_acts", "supply_lead_times", "tax_calendar")
 # Каталог бота (схема shop): правят формы «Пульс» → «Каталог». В словаре
 # таблиц — с именем схемы, чтобы не спутать с таблицами fin.
-SHOP_TABLES = ("shop.catalog", "shop.bundle_items", "shop.lots", "shop.stock_moves")
+# Коды ЧЗ с 015 — журнал бота: формы ввода в оборот пишут в shop.code_batches.
+SHOP_TABLES = ("shop.catalog", "shop.bundle_items", "shop.lots", "shop.stock_moves", "shop.code_batches")
 
 
 def form_tables(db):
@@ -172,8 +173,7 @@ def build_forms(qcoll, fin_db, tables):
                          ("cash_snapshots", "Остатки по выписке"),
                          ("ad_spend", "Реклама по дням"), ("inputs", "Вводные (история)"),
                          ("carrier_acts", "Акты перевозчиков"), ("supply_lead_times", "Сроки поставки"),
-                         ("tax_calendar", "Налоговый календарь"), ("code_batches", "Партии кодов ЧЗ"),
-                         ("code_writeoffs", "Списанные коды ЧЗ")):
+                         ("tax_calendar", "Налоговый календарь")):
         # Модель прямо на таблице, без SQL: только такой Metabase даёт действия
         # «Исправить» и «Удалить» (row/update, row/delete).
         body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
@@ -184,7 +184,7 @@ def build_forms(qcoll, fin_db, tables):
             # Исправить или удалить ошибочную строку — прямо в модели. Вводные — только дописываются;
             # налоговый календарь — только отмечается (оплачено, подано), не удаляется.
             for kind, name in (("row/update", "Исправить"), ("row/delete", "Удалить")):
-                if table in ("tax_calendar", "code_batches") and kind == "row/delete":
+                if table == "tax_calendar" and kind == "row/delete":
                     continue
                 call("POST", "/action", {"name": f"{name}: {title.lower()}", "type": "implicit", "kind": kind,
                                          "model_id": models[table]})
@@ -284,12 +284,6 @@ values ({{{{carrier}}}}, {{{{track}}}}, {{{{amount}}}}, {{{{kind}}}}, coalesce([
       field("kind", "Что", "select", options=["доставка", "возврат"]),
       field("act_date", "Дата акта", "date", required=False), field("act_number", "Номер акта", "text", required=False),
       AUTHOR], "Строка акта записана — сверка с котировкой на вкладке «Юнитка». Много строк — CSV командой /act в чате Ops.")
-    action("writeoff", models["code_writeoffs"], fin_db, "Списать код ЧЗ", f"""
-insert into fin.code_writeoffs (gtin, serial, reason, note, entered_by)
-values ({{{{gtin}}}}, {{{{serial}}}}, {{{{reason}}}}, {OPT % 'note'}, {{{{entered_by}}}})
-""", [field("gtin", "GTIN", "text"), field("serial", "Серийный номер", "text"),
-      field("reason", "Причина", "select", options=["испорчена этикетка", "брак печати", "утеря", "другое"]),
-      NOTE, AUTHOR], "Код списан — в заказ он попасть не должен.")
     action("lead", models["supply_lead_times"], fin_db, "Срок поставки", f"""
 insert into fin.supply_lead_times (scope, name, lead_days, valid_from, note, entered_by)
 values ({{{{scope}}}}, {{{{name}}}}, {{{{lead_days}}}}, coalesce([[{{{{valid_from}}}}::date, ]]current_date), {OPT % 'note'}, {{{{entered_by}}}})

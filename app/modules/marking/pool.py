@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from sqlalchemy import exists, select
 from sqlalchemy.dialects.postgresql import insert
 
+from app.modules.marking import events
 from app.core.database import get_session_factory
 from app.modules.marking import codes
 from app.modules.marking.models import IN_STOCK, MarkingCodeRow
@@ -101,9 +102,11 @@ async def import_codes(text: str, *, skip: str = "") -> dict:
                 # плодить строки. Где пачка сейчас, пул не знает — это
                 # `order_marking_codes`.
                 .on_conflict_do_nothing()
-                .returning(MarkingCodeRow.id)
+                .returning(MarkingCodeRow.gtin, MarkingCodeRow.serial)
             )
-            added += len(result.scalars().all())
+            fresh = [(row.gtin, row.serial) for row in result.all()]
+            # Журнал статусов: код получен из СУЗ.
+            added += await events.record(session, fresh, "received", note="импорт из СУЗ")
         await session.commit()
 
     logger.info(

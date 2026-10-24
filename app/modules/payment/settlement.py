@@ -276,6 +276,11 @@ async def _check_ready(order: Order) -> list[OrderMarkingCode]:
     codes = await packing.codes_of(order.id)
     if order.packed_at is None or not codes:
         raise NotReady("нет кодов маркировки — заказ не собирали через страницу сборки")
+    from app.modules.marking import circulation
+
+    if circulation.must_wait() and not await circulation.order_introduced(order.id):
+        # Продажа кода, не введённого в оборот, — ст. 15.12 КоАП: чек не уходит.
+        raise NotReady("коды заказа не введены в оборот — сначала документ «Производство РФ» в ЛК ЧЗ")
     return codes
 
 

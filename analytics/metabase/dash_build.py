@@ -31,7 +31,8 @@ ROOT = "Дашборды"
 QUESTIONS = "Пульс и Служебное — вопросы"
 PULSE = "Пульс"
 # Служебные вкладки — после «Товара», в том же дашборде.
-PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Склад", "Ввод данных", "Сверки", "Отчёты", "Вводные", "Каталог"]
+PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Склад", "Коды", "Ввод данных", "Сверки", "Отчёты", "Вводные",
+              "Каталог"]
 OLD_DASHBOARDS = ("Сводка", "Финансы", "Служебное")
 
 # Рубли целые, проценты с одним знаком; разделители — из глобальных настроек
@@ -218,10 +219,11 @@ from fin.v_money_now where capital_remaining > 0""",
            "Тот же прогноз, но без вкладов, которые ещё не пришли. Карточка пропадает, когда весь стартовый капитал внесён.")
     card("t_attention", q, "Требует внимания", f"""
 select level as "Уровень", text as "Что", case place when 'money' then 'Деньги' when 'entry' then 'Ввод данных'
-            when 'checks' then 'Сверки' when 'sales' then 'Продажи' when 'stock' then 'Склад' end as "Где",
+            when 'checks' then 'Сверки' when 'sales' then 'Продажи' when 'stock' then 'Склад'
+            when 'codes' then 'Коды' end as "Где",
        case place when 'money' then '{links["money"]}' when 'entry' then '{links["entry"]}'
             when 'checks' then '{links["checks"]}' when 'sales' then '{links["sales"]}'
-            when 'stock' then '{links["stock"]}' end as "Ссылка"
+            when 'stock' then '{links["stock"]}' when 'codes' then '{links["codes"]}' end as "Ссылка"
 from fin.v_attention order by case level when 'Срочно' then 0 when 'Важно' then 1 else 2 end, sort""", "table",
          merge({"table.columns": [{"name": c, "enabled": c != "Ссылка"} for c in ("Уровень", "Что", "Где", "Ссылка")]},
                colfmt(Где={"view_as": "link", "link_text": "{{Где}}", "link_url": "{{Ссылка}}"}),
@@ -821,6 +823,104 @@ values ({lot % 'lot'}, 'порча', {{{{qty}}}}, concat_ws(' · ', {{{{reason}}
     return models
 
 
+STATUS_ORDER = ("получен", "напечатан", "наклеен", "введён в оборот", "продан", "возвращён", "испорчен",
+                "выведен из оборота")
+# Фильтр «Партия» вкладки «Коды»: что стало с пачками партии сырья.
+LOT_PARAM = {"id": "lot", "name": "Партия", "slug": "lot", "type": "string/=", "sectionId": "string"}
+LOT_CARDS = ("c_by_lot", "c_lot_codes")
+
+
+def cards_codes(q):
+    number("c_bought", q, "Куплено кодов", """
+select bought || ' шт. · ' || fin.fmt_rub(coalesce(bought_rub, 0)) from fin.v_codes_money""",
+           "Получено из СУЗ, по цене кода из вводных (code_price).")
+    number("c_spoiled", q, "Испорчено кодов", """
+select spoiled || ' шт. · ' || fin.fmt_rub(coalesce(spoiled_rub, 0)) from fin.v_codes_money""",
+           "Испорченные этикетки (до ввода в оборот), по цене кода из вводных.")
+    pivot = ", ".join(f"sum(codes) filter (where status_name = '{s}') as \"{s}\"" for s in STATUS_ORDER)
+    card("c_status", q, "Коды по статусам", f"""
+select coalesce(sku_id, '—') as "Артикул", coalesce(name, 'нет в каталоге') as "Название", gtin as "GTIN", {pivot}
+from fin.v_codes_by_status group by sku_id, name, gtin order by 1""", "table", None,
+         "Сколько кодов в каждом статусе по артикулу. Куплено — получено из СУЗ; деньги — по вводной «Код DataMatrix».")
+    card("c_unsellable", q, "Нельзя продавать: не введены дольше рабочего дня", """
+select '№' || order_id as "Заказ", name as "Товар", gtin as "GTIN", serial as "Серийный номер",
+       to_char(applied_at at time zone 'Europe/Moscow', 'DD.MM HH24:MI') as "Наклеен"
+from fin.v_codes_unsellable order by applied_at""", "table", None,
+         "Пачка собрана, код наклеен, а в оборот не введён. Отгружать и продавать её нельзя (ст. 15.12 КоАП): "
+         "«Сформировать выгрузку» → документ «Производство РФ» в ЛК → «Введено».")
+    card("c_stuck", q, "Застряли: введены и не проданы дольше 3 дней", """
+select coalesce('№' || order_id, '—') as "Заказ", name as "Товар", gtin as "GTIN", serial as "Серийный номер",
+       to_char(introduced_at at time zone 'Europe/Moscow', 'DD.MM') as "Введён"
+from fin.v_codes_stuck order by introduced_at""", "table", None,
+         "При фасовке под заказ такого быть не должно: пачка потерялась или не отправлена.")
+    card("c_runway", q, "Хватит ли кодов", """
+select coalesce(sku_id, '—') as "Артикул", coalesce(name, '') as "Название", gtin as "GTIN", free as "Свободно",
+       round(per_day * 14) as "Ушло за 14 дней", round(days_left) as "Хватит, дней",
+       case when days_left < 14 then 'заказать в СУЗ' end as "Сигнал"
+from fin.v_codes_runway order by days_left nulls last""", "table",
+         color_rules("Сигнал", {"заказать в СУЗ": RED}),
+         "Свободные коды в пуле против наклеенных за 14 дней; меньше чем на 14 дней — строка в «Требует внимания».")
+    lot = {"lot": {"id": "lot", "name": "lot", "display-name": "Партия", "type": "text", "required": False}}
+    card("c_by_lot", q, "По партии сырья", """
+select lot_code as "Партия", raw_material as "Сырьё", packed as "Собрано", introduced as "Введено",
+       sold as "Продано", returned as "Возвращено", at_customers as "У покупателей"
+from fin.v_codes_by_lot where true [[and lot_code = {{lot}}]] order by lot_code""", "table", None,
+         "Пачки по партиям сырья: собрано, введено в оборот, продано, возвращено, у покупателей. Фильтр «Партия».",
+         tags=lot)
+    card("c_lot_codes", q, "Коды партии (для отзыва — скачать CSV)", """
+select lot_code as "Партия", ki as "КИ", gtin as "GTIN", serial as "Серийный номер", status as "Статус",
+       order_id as "Заказ"
+from fin.v_lot_codes where true [[and lot_code = {{lot}}]] order by lot_code, order_id, serial""", "table", None,
+         "Все коды пачек из партии — на случай отзыва партии или вывода из оборота. Выберите партию в фильтре и "
+         "скачайте CSV (значок загрузки у таблицы).", tags=lot)
+    card("c_batches", q, "Выгрузки для ввода в оборот", f"""
+select id as "Выгрузка", {d("created_at at time zone 'Europe/Moscow'")} as "Создана", status as "Статус",
+       codes_count as "Кодов", {d("introduced_at at time zone 'Europe/Moscow'")} as "Введена", document as "Документ"
+from fin.v_code_batches limit 15""", "table",
+         color_rules("Статус", {"выгружена": YELLOW, "введена": GREEN, "отменена": GREY}), "Последние выгрузки.")
+    card("c_export", q, "Файл для ЛК ЧЗ: коды открытых выгрузок (скачать CSV)", f"""
+select '01' || i.gtin || '21' || i.serial as "КИ", i.gtin as "GTIN", 'Декларация о соответствии' as "Вид документа",
+       (select value_text from fin.inputs_current where key = 'chz_declaration_number') as "Номер декларации",
+       (select value_text from fin.inputs_current where key = 'chz_declaration_date') as "Дата декларации",
+       {d("(o.packed_at at time zone 'Europe/Moscow')::date")} as "Дата упаковки", b.id as "Выгрузка"
+from shop.code_batches b join shop.code_batch_items i on i.batch_id = b.id
+left join shop.v_code_status s on s.gtin = i.gtin and s.serial = i.serial
+left join orders o on o.id = s.order_id
+where b.status = 'выгружена' order by b.id, i.gtin, i.serial""", "table", None,
+         "Документ «Ввод в оборот → Производство РФ»: КИ и наша декларация на каждый код. Скачайте CSV, загрузите в "
+         "ЛК, подпишите; документ принят — «Введено». Номер и дату декларации — во «Вводных». Формат сверить на первой "
+         "подаче.")
+
+
+def code_forms(qcoll, fin_db, tables, models):
+    """Выгрузка для ввода в оборот и «Введено» — формами; журнал пишут триггеры базы."""
+    body = {"name": "Ввод: Выгрузки кодов ЧЗ", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
+            "type": "model", "dataset_query": {"type": "query", "database": fin_db,
+                                               "query": {"source-table": tables["shop.code_batches"]}}}
+    models["shop.code_batches"] = call("POST", "/card", body)["id"]
+    fb.action("c_new", models["shop.code_batches"], fin_db, "Сформировать выгрузку", """
+insert into shop.code_batches (created_by, note) values ({{entered_by}}, nullif([[{{note}} ||]] '', ''))
+""", [fb.NOTE, fb.AUTHOR], "Выгрузка готова — скачайте CSV в таблице «Файл для ЛК ЧЗ».")
+    batch = "split_part({{%s}}, ' · ', 1)::bigint"
+    open_batches = [r[0] for r in call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query": """
+select b.id || ' · ' || to_char(b.created_at at time zone 'Europe/Moscow', 'DD.MM HH24:MI') || ' · '
+       || (select count(*) from shop.code_batch_items i where i.batch_id = b.id) || ' кодов'
+from shop.code_batches b where b.status = 'выгружена' order by b.id desc"""}})["data"]["rows"]]
+    fb.action("c_done", models["shop.code_batches"], fin_db, "Введено", f"""
+update shop.code_batches set status = 'введена', introduced_by = {{{{entered_by}}}},
+       document = nullif([[{{{{document}}}} ||]] '', '')
+where id = {batch % 'batch'} and status = 'выгружена'
+""", [fb.field("batch", "Выгрузка", "select", options=open_batches),
+      fb.field("document", "Номер документа в ЛК ЧЗ", "text", required=False), fb.AUTHOR],
+       "Коды введены в оборот: отгрузка открыта, Ozon подтвердится на ближайшем тике.")
+    fb.action("c_cancel", models["shop.code_batches"], fin_db, "Отменить выгрузку", f"""
+update shop.code_batches set status = 'отменена', note = nullif([[{{{{note}}}} ||]] '', '')
+where id = {batch % 'batch'} and status = 'выгружена'
+""", [fb.field("batch", "Выгрузка", "select", options=open_batches), fb.NOTE],
+       "Выгрузка отменена — коды попадут в следующую.")
+    return models
+
+
 # --- формы ------------------------------------------------------------------------------
 
 
@@ -905,11 +1005,13 @@ GRAIN_CARDS = ("m_fcf", "m_fcf_cum")
 
 
 def put(did, tabs, dashcards, parameters=()):
+    names = {p["id"] for p in parameters}
     for dashcard in dashcards:
-        for key in GRAIN_CARDS:
-            if parameters and dashcard.get("card_id") == CARDS.get(key):
-                dashcard["parameter_mappings"] = [{"parameter_id": "grain", "card_id": CARDS[key],
-                                                   "target": ["variable", ["template-tag", "grain"]]}]
+        for param, keys, tag in (("grain", GRAIN_CARDS, "grain"), ("lot", LOT_CARDS, "lot")):
+            for key in keys:
+                if param in names and dashcard.get("card_id") == CARDS.get(key):
+                    dashcard["parameter_mappings"] = [{"parameter_id": param, "card_id": CARDS[key],
+                                                       "target": ["variable", ["template-tag", tag]]}]
     call("PUT", f"/dashboard/{did}", {"tabs": [{"id": tid, "name": name} for name, tid in tabs.items()],
                                       "dashcards": dashcards, "parameters": list(parameters)})
 
@@ -944,7 +1046,7 @@ if __name__ == "__main__":
                                     "отчёты, вводные, каталог. Выписка — 07:00 и 21:00 МСК, заказы — сразу.", PULSE_TABS)
     links = {name: f"{SITE}/dashboard/{pulse}?tab={ptabs[tab]}"
              for name, tab in (("money", "Деньги"), ("sales", "Продажи"), ("entry", "Ввод данных"), ("checks", "Сверки"),
-                               ("stock", "Склад"))}
+                               ("stock", "Склад"), ("codes", "Коды"))}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
         SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
@@ -952,6 +1054,7 @@ if __name__ == "__main__":
     models = build_forms(qcoll, fin_db, tables)
     catalog_forms(qcoll, fin_db, tables, models)
     stock_forms(qcoll, fin_db, tables, models)
+    code_forms(qcoll, fin_db, tables, models)
     cards_today(qcoll, links)
     cards_money(qcoll)
     cards_sales(qcoll)
@@ -962,18 +1065,19 @@ if __name__ == "__main__":
     cards_inputs(qcoll)
     cards_catalog(qcoll, models)
     cards_stock(qcoll)
+    cards_codes(qcoll)
 
     budget_h = rows_height("select * from fin.v_pilot_budget_status where not (coalesce(plan, 0) = 0 "
                            "and coalesce(spent, 0) = 0 and coalesce(planned, 0) = 0)", extra=2.5)
     ahead_h = rows_height("select * from fin.v_payments_ahead", extra=2.5, low=3, high=8)
     lots_h = rows_height("select 1 from shop.v_lot_balance where active and on_hand > 0", extra=2.5, low=3, high=12)
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
-    T, M, S, P, W = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"], ptabs["Склад"]
+    T, M, S, P, W, Q = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"], ptabs["Склад"], ptabs["Коды"]
     E, C, R, I, K = ptabs["Ввод данных"], ptabs["Сверки"], ptabs["Отчёты"], ptabs["Вводные"], ptabs["Каталог"]
     # Скрытые без данных карточки Metabase убирает из сетки, и всё ниже поднимается: «убыток
     # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
     # когда капитал внесён.
-    put(pulse, ptabs, parameters=[GRAIN_PARAM], dashcards=[
+    put(pulse, ptabs, parameters=[GRAIN_PARAM, LOT_PARAM], dashcards=[
         dc("t_free", T, 0, 0, 6, 4), dc("t_capital", T, 0, 6, 6, 4),
         dc("t_pilot", T, 0, 12, 6, 4, hide_empty=True), dc("t_loss", T, 0, 18, 6, 4, hide_empty=True),
         # «Денег хватит до» — строкой во всю ширину, как прогноз без вкладов под ним: текст
@@ -1005,6 +1109,15 @@ if __name__ == "__main__":
         dc("w_lots", W, 1, 0, 24, lots_h),
         dc("w_reorder", W, 1 + lots_h, 0, 12, 5), dc("w_expiring", W, 1 + lots_h, 12, 12, 5),
         dc("w_no_stock", W, 6 + lots_h, 0, 12, 5), dc("w_diff", W, 6 + lots_h, 12, 12, 5),
+        # Коды
+        button("c_new", "Сформировать выгрузку", Q, 0, 0, 8), button("c_done", "Введено", Q, 0, 8, 8),
+        button("c_cancel", "Отменить выгрузку", Q, 0, 16, 8),
+        dc("c_bought", Q, 1, 0, 12, 2), dc("c_spoiled", Q, 1, 12, 12, 2),
+        dc("c_status", Q, 3, 0, 24, 4),
+        dc("c_unsellable", Q, 7, 0, 12, 6), dc("c_stuck", Q, 7, 12, 12, 6),
+        dc("c_runway", Q, 13, 0, 12, 6), dc("c_batches", Q, 13, 12, 12, 6),
+        dc("c_export", Q, 19, 0, 24, 6),
+        dc("c_by_lot", Q, 25, 0, 24, 5), dc("c_lot_codes", Q, 30, 0, 24, 8),
         text(E, 0, 0, 24, 1, "**Каждый день**"),
         button("ads", "Реклама за день", E, 1, 0), button("expense", "Добавить расход", E, 1, 4),
         text(E, 2, 0, 24, 1, "**Редко**"),
@@ -1012,7 +1125,6 @@ if __name__ == "__main__":
         button("lot", "Партия закупки", E, 3, 8), button("inventory", "Инвентаризация", E, 3, 12),
         button("input", "Изменить вводную", E, 3, 16), button("mark", "Разметить операцию", E, 3, 20),
         button("act", "Акт перевозчика", E, 4, 0), button("lead", "Срок поставки", E, 4, 4),
-        button("writeoff", "Списать код ЧЗ", E, 4, 8),
         dc("e_recent", E, 5, 0, 24, 8),
         dc("c_snapshot", C, 0, 0, 12, 3), dc("c_card", C, 0, 12, 12, 3),
         dc("c_ops", C, 3, 0, 24, 8), dc("c_claude", C, 11, 0, 24, 7), dc("c_yk", C, 18, 0, 24, 5, True),

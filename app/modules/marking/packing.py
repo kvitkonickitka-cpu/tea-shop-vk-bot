@@ -31,6 +31,7 @@ from app.messages import templates
 from app.core.config import settings
 from app.core.database import get_session_factory
 from app.modules.catalog import service as catalog_service
+from app.modules.marking import events
 from app.modules.marking import codes, pool
 from app.modules.marking.models import (
     PACK, RETURNED, SCANNED, SET, SOLD, MarkingCodeRow, OrderMarkingCode,
@@ -150,6 +151,9 @@ class PackingState:
     delivered_without_codes: bool = False
     # Партии сырья по позициям (`stock.packing_view`); пусто — склад по партиям выключен.
     stock: list = field(default_factory=list)
+    # Коды заказа введены в оборот — можно отгружать; и когда отгрузили.
+    introduced: bool = False
+    handed_over_at: datetime | None = None
 
     @property
     def can_finish(self) -> bool:
@@ -164,6 +168,10 @@ class PackingState:
             "closed_reason": self.closed_reason,
             "delivered_without_codes": self.delivered_without_codes,
             "can_finish": self.can_finish,
+            "introduced": self.introduced,
+            "handed_over_at": worktime.to_msk(self.handed_over_at).strftime("%d.%m %H:%M")
+            if self.handed_over_at else None,
+            "can_ship": bool(self.packed_at) and not self.handed_over_at and not self.closed_reason,
             "positions": [
                 {
                     "index": p.index, "name": p.name, "quantity": p.quantity,
@@ -238,7 +246,22 @@ async def _state(session, order: Order) -> PackingState:
         # закрывающий чек, если сборку через страницу пропустили.
         delivered_without_codes=order.delivered_at is not None and order.packed_at is None,
         stock=await _stock_view(order.id),
+        introduced=await _introduced(order),
+        handed_over_at=order.handed_over_at,
     )
+
+
+async def _introduced(order: Order) -> bool:
+    """Введены ли коды собранного заказа. Сбой журнала — «не введены»: так безопаснее."""
+    if order.packed_at is None:
+        return False
+    from app.modules.marking import circulation
+
+    try:
+        return await circulation.order_introduced(order.id)
+    except Exception:
+        logger.exception("Заказ %s: статус кодов не прочитан", order.id)
+        return False
 
 
 async def _stock_view(order_id: int) -> list:
@@ -324,6 +347,10 @@ async def scan(order_id: int, raw: str, *, by: str = "", manual: bool = False) -
             parsed = codes.parse(raw)
         except codes.CodeError as error:
             return refuse(str(error))
+        status = await events.current(session, parsed.gtin, parsed.serial)
+        if status in ("spoiled", "withdrawn"):
+            return refuse("Код " + ("испорчен" if status == "spoiled" else "выведен из оборота")
+                          + " — возьмите новую этикетку.")
 
         # Действующая строка с этой парой — не возвращённая: возвращённый по
         # чеку возврата код снова в обороте и годится для новой продажи.
@@ -424,6 +451,42 @@ async def remove(order_id: int, code_id: int) -> PackingState:
         return await _state(session, order)
 
 
+async def spoil(order_id: int, code_id: int, *, by: str = "") -> PackingState:
+    """Этикетку переклеили до ввода в оборот: код «испорчен», на пачку — новый скан."""
+    by = (by or "").strip()[:60] or "сборщик"
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        order = await _order(session, order_id)
+        if order.packed_at is not None:
+            raise LinkError("Заказ уже собран — испорченный код после сборки списывают командой /spoil в Ops.")
+        row = await session.get(OrderMarkingCode, code_id)
+        if row is None or row.order_id != order.id or row.status != SCANNED:
+            raise LinkError("Такого кода в этом заказе нет.")
+        await session.execute(delete(OrderMarkingCode).where(OrderMarkingCode.id == row.id))
+        await events.record(session, [(row.gtin, row.serial)], "spoiled", by=by, order_id=order.id,
+                            note="этикетку переклеили при сборке")
+        await session.commit()
+        return await _state(session, order)
+
+
+async def ship(order_id: int, *, by: str = "") -> PackingState:
+    """«Отгружено»: собранный заказ передан перевозчику — только с введёнными в оборот кодами."""
+    from app.modules.marking import circulation
+    from app.modules.orders import delivery_events
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        order = await _order(session, order_id)
+        if order.packed_at is None:
+            raise LinkError("Сначала «Собрано».")
+    if circulation.must_wait() and not await circulation.order_introduced(order_id):
+        raise LinkError("Коды заказа не введены в оборот — продавать и отгружать нельзя. Выгрузка для ввода — "
+                        "/codes новая в Ops или «Сформировать выгрузку» на «Пульс → Коды».")
+    await delivery_events.record(order_id, delivery_events.HANDED_OVER, source="сборка")
+    logger.info("Заказ %s отгружен со страницы сборки (%s)", order_id, by or "сборщик")
+    return await state(order_id)
+
+
 async def finish(order_id: int, *, by: str = "", weights: dict[int, float] | None = None) -> PackingState:
     """«Собрано»: коды есть на все единицы — закрепить их за заказом и списать сырьё.
 
@@ -452,10 +515,18 @@ async def finish(order_id: int, *, by: str = "", weights: dict[int, float] | Non
         except stock.StockError as error:
             raise LinkError(str(error)) from None
         now = datetime.now(timezone.utc)
-        await session.execute(
+        packed = await session.execute(
             update(Order).where(Order.id == order.id, Order.packed_at.is_(None))
             .values(packed_at=now, packed_by=by)
         )
+        if packed.rowcount:
+            # Журнал статусов: пачка собрана — код наклеен и связан со строкой
+            # заказа (а через резерв — с партией).
+            rows = (await session.execute(
+                select(OrderMarkingCode.gtin, OrderMarkingCode.serial)
+                .where(OrderMarkingCode.order_id == order.id, OrderMarkingCode.status == SCANNED)
+            )).all()
+            await events.record(session, [(r.gtin, r.serial) for r in rows], "applied", by=by, order_id=order.id)
         await session.commit()
         order.packed_at = now
         logger.info("Заказ %s собран (%s)", order_id, by)
@@ -498,9 +569,12 @@ async def mark_sold(order_id: int) -> int:
             update(OrderMarkingCode)
             .where(OrderMarkingCode.order_id == order_id, OrderMarkingCode.status == SCANNED)
             .values(status=SOLD, sold_at=datetime.now(timezone.utc))
+            .returning(OrderMarkingCode.gtin, OrderMarkingCode.serial)
         )
+        sold = [(r.gtin, r.serial) for r in result.all()]
+        await events.record(session, sold, "sold", order_id=order_id, note="закрывающий чек")
         await session.commit()
-    return int(result.rowcount or 0)
+    return len(sold)
 
 
 async def mark_returned(order_id: int, refund_id: str) -> int:
@@ -515,12 +589,15 @@ async def mark_returned(order_id: int, refund_id: str) -> int:
             update(OrderMarkingCode)
             .where(OrderMarkingCode.order_id == order_id, OrderMarkingCode.status == SOLD)
             .values(status=RETURNED, returned_at=datetime.now(timezone.utc), refund_id=refund_id)
+            .returning(OrderMarkingCode.gtin, OrderMarkingCode.serial)
         )
+        returned = [(r.gtin, r.serial) for r in result.all()]
+        await events.record(session, returned, "returned", order_id=order_id, note=f"чек возврата {refund_id}")
         await session.commit()
-    if result.rowcount:
+    if returned:
         logger.info("Заказ %s: коды маркировки возвращены по чеку возврата %s — %s шт.",
-                    order_id, refund_id, result.rowcount)
-    return int(result.rowcount or 0)
+                    order_id, refund_id, len(returned))
+    return len(returned)
 
 
 async def release_codes(order_id: int) -> int:

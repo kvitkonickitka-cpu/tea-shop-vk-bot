@@ -138,6 +138,34 @@ async def change_lot(token: str, request: Request):
                         headers=_PRIVATE)
 
 
+@router.post("/pack/{token}/spoil")
+async def spoil(token: str, request: Request):
+    """Этикетка испорчена: код «испорчен», на пачку клеят новую и сканируют её."""
+    data = await _body(request)
+    try:
+        order_id = packing.read_token(token)
+        current = await packing.spoil(order_id, int(data.get("id") or 0), by=str(data.get("by") or ""))
+    except packing.LinkError as error:
+        return _error(str(error))
+    except (TypeError, ValueError):
+        return _error("Не понял, какой код испорчен.")
+    return JSONResponse({"ok": True, "message": "Код отмечен испорченным — отсканируйте новую этикетку.",
+                         "state": current.as_dict()}, headers=_PRIVATE)
+
+
+@router.post("/pack/{token}/ship")
+async def ship(token: str, request: Request):
+    """«Отгружено» — только когда коды заказа введены в оборот."""
+    data = await _body(request)
+    try:
+        order_id = packing.read_token(token)
+        current = await packing.ship(order_id, by=str(data.get("by") or ""))
+    except packing.LinkError as error:
+        return _error(str(error))
+    return JSONResponse({"ok": True, "message": f"Заказ №{order_id} отгружен.", "state": current.as_dict()},
+                        headers=_PRIVATE)
+
+
 @router.post("/pack/{token}/finish")
 async def finish(token: str, request: Request):
     data = await _body(request)
@@ -148,9 +176,13 @@ async def finish(token: str, request: Request):
         return _error(str(error))
     # Собран — подтвердить отправление Ozon (C8). Ошибка здесь сборку не отменяет.
     from app.modules.delivery import ozon_approve
+    from app.modules.marking import circulation
 
+    # Подтвердить Ozon — значит отгрузить; до ввода кодов в оборот нельзя.
+    # Тогда подтвердит тик после «Введено» (`circulation.approve_introduced`).
     try:
-        await ozon_approve.after_packed(order_id)
+        if not circulation.must_wait() or await circulation.order_introduced(order_id):
+            await ozon_approve.after_packed(order_id)
     except Exception:
         logger.exception("Автоподтверждение Ozon после сборки заказа %s упало", order_id)
     return JSONResponse(
