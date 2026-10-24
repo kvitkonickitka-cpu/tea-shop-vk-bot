@@ -239,8 +239,21 @@ async def _respond(batch: Batch, budget_seconds: float) -> None:
 
     from app.modules.dialog import test_mode, vk_client
 
+    from app.modules.consent import flow as consent_flow
+    from app.modules.consent import service as consent
+
     texts: list[InboundMessage] = []
     for row in batch.rows:
+        # Доказательство для журнала согласий: какое сообщение и событие ВК.
+        consent.set_evidence(row.message, row.event_id)
+        if not is_button(row.message) and row.message.get("text"):
+            # «Согласен», «отзываю согласие», «мои данные» — решает код.
+            answered = await consent_flow.intercept(batch.peer_id, row.message.get("text"))
+            if answered is not None:
+                if answered.reply:
+                    await service.send_press_reply(batch.peer_id, row.message.get("text") or "", answered.reply,
+                                                   answered.keyboard, to_model=False)
+                continue
         if not is_button(row.message) and test_mode.command_of(row.message.get("text")):
             # Команда тестового аккаунта — коду, не модели и не в историю.
             answer = await test_mode.handle(batch.peer_id, row.message.get("text"))
@@ -390,10 +403,17 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     from app.modules.analytics import service as analytics
 
     await analytics.ensure_client(peer_id, ref=message.get("ref"), ref_source=message.get("ref_source"))
+    # Сессия диалога: продлить или открыть новую (после суток тишины или оплаты),
+    # с источником визита из ссылки (last touch).
+    from app.modules.dialog import sessions
+
+    await sessions.touch(peer_id, ref=message.get("ref"), ref_source=message.get("ref_source"))
 
     try:
         get_session_factory()
     except RuntimeError:
+        # Без базы согласие не записать — и личное до него не держим.
+        message = await _without_pd_before_consent(peer_id, message)
         # Без базы — по-старому, но всё равно по одному ходу на диалог.
         lock = _local_locks.setdefault(peer_id, asyncio.Lock())
         async with lock:
@@ -410,12 +430,43 @@ async def accept(event_id: str, message: dict, client_info: dict | None = None) 
     # не должны лежать ни в inbound_messages, ни где-то ещё.
     from app.modules.orders import geo
 
+    message = await _without_pd_before_consent(peer_id, message)
     if geo.coordinates_of(message) is not None:
         message = await geo.hide(peer_id, message)
     await _store(event_id, message)
     if is_enabled() and not is_button(message):
         await _wait_for_quiet(peer_id)
     await _run_turn(peer_id, started)
+
+
+async def _without_pd_before_consent(peer_id: int, message: dict) -> dict:
+    """До согласия на ПДн телефон, почта, адрес и геопозиция не сохраняются.
+
+    Меняем текст до записи в `inbound_messages`: ни в базе, ни в истории, ни у
+    модели этих значений нет. После согласия бот попросит прислать их снова.
+    """
+    from app.modules.consent import service as consent
+    from app.modules.orders import geo
+
+    has_geo = geo.coordinates_of(message) is not None
+    if is_button(message) and not has_geo:
+        return message
+    if not (message.get("text") or has_geo):
+        return message
+    if await consent.has_pd(peer_id):
+        return message
+    text, hidden = message.get("text") or "", 0
+    if not is_button(message):
+        text, hidden = await consent.hide_pd(peer_id, text)
+    if has_geo:
+        # Координаты — тоже адрес: без согласия не храним даже метку.
+        text = f"{text} {consent.HIDDEN} (геопозиция)".strip()
+        message = {key: value for key, value in message.items() if key != "geo"}
+        await consent.mark_hidden(peer_id)
+        hidden += 1
+    if not hidden:
+        return message
+    return {**message, "text": text}
 
 
 DIALOG_GAP = 24 * 3600

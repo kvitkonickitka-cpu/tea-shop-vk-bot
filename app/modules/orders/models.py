@@ -171,6 +171,9 @@ class OrderFeedback(Base):
     text: Mapped[str] = mapped_column(String)
     # yes / no / unknown — можно ли опубликовать в сообществе.
     publish_consent: Mapped[str] = mapped_column(String, default="unknown")
+    # Отзыв опубликован (C7): когда и как — wall (бот) или manual (менеджер руками).
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_how: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -191,6 +194,8 @@ class OrderRating(Base):
     peer_id: Mapped[int] = mapped_column(BigInteger, index=True)
     # great — «Очень понравился», ok — «Нормально», no — «Не моё».
     rating: Mapped[str] = mapped_column(String)
+    # Оценка 1–5 (C7, флаг review_flow); rating — та же оценка тремя словами для аналитики.
+    score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # button — кнопкой, text — по отзыву словами (save_feedback).
     source: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.messages import manager as manager_messages, templates
 from app.modules import events
 from app.modules.analytics import references as analytics_references
+from app.modules.ops import anthropic_costs
 from app.modules.analytics import service as analytics_service
 from app.modules.catalog import sheet as catalog_sheet, vk_market
 from app.modules.marking import packing, pool as marking_pool
@@ -81,6 +82,26 @@ async def _authorized(request: Request, body: str | None = None) -> bool:
         # Starlette тело кэширует, так что повторное чтение безопасно.
         body = (await request.body()).decode("utf-8", errors="replace")
     return bool(body) and expected in body
+
+
+async def _carrier_check() -> dict:
+    from app.modules.delivery import acts
+
+    return await acts.check()
+
+
+async def _daily(name: str, job, *, after_hour_msk: int = 10) -> dict:
+    """Задача раз в день после часа по Москве; отметка — в heartbeats (видна в отчёте Ops)."""
+    now = datetime.now(timezone.utc)
+    local = worktime.to_msk(now)
+    if local.hour < after_hour_msk:
+        return {"skipped": "рано"}
+    last = await heartbeat.last_run(name)
+    if last is not None and worktime.to_msk(last).date() == local.date():
+        return {"skipped": "сегодня уже"}
+    result = await job()
+    await heartbeat.note(name)
+    return result
 
 
 async def _retention_summary() -> dict:
@@ -169,12 +190,43 @@ async def _run_scheduled() -> dict:
     # Повторные касания после вручения: оценка, «Повторить», второй шанс,
     # реактивация — общим фильтром и по одному на клиента.
     result["retention"] = await _run_task("Повторные касания", _retention_summary())
+    # Брошенный черновик или счёт — касание через ~20 ч; посылка в пункте — напоминания (C3, C4).
+    from app.modules.orders import abandoned, pickup_reminders
+
+    result["abandoned"] = await _run_task("Брошенные заказы: касание", abandoned.check())
+    result["pickup"] = await _run_task("Посылка в пункте: напоминания", pickup_reminders.check())
+    # Награда пригласившему (если включена) — после вручения заказа друга и срока возврата.
+    from app.modules.referral import service as referral
+
+    result["referral_rewards"] = await _run_task("Рефералка: награды", referral.grant_rewards())
 
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.
     result["catalog_sheet"] = await _run_task("Каталог из таблицы", catalog_sheet.refresh())
+    # Правки каталога в базе: цена, продажа, архив — в Ops-чат.
+    from app.modules.catalog import store as catalog_store
+
+    result["catalog_changes"] = await _run_task("Каталог: правки в Ops", catalog_store.notify_changes())
     # Справочники (себестоимость, настройки) — та же таблица, раз в 15 минут.
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
+    # Счёт Anthropic по дням — раз в час, админ-ключом.
+    result["anthropic_costs"] = await _run_task("Счёт Anthropic", anthropic_costs.sync())
+    # Реестр ЮKassa и сверка выплат с выпиской — раз в день после выписки 07:00.
+    from app.modules.payment import registry as yk_registry
+
+    result["yk_registry"] = await _run_task("Реестр ЮKassa", yk_registry.sync())
+    # Регламенты: критичные контроли — сразу, сводка и утренний список — в 10:00,
+    # реклама за вчера — в 11:00, закрытие месяца — 1-го (повтор 3-го), налоги — за 7 дней и за день.
+    from app.modules.ops import controls
+
+    result["controls"] = await _run_task("Контроли", controls.check_controls())
+    result["morning"] = await _run_task("Утренний список", controls.morning_list())
+    result["month_close"] = await _run_task("Закрытие месяца", controls.month_close())
+    result["taxes"] = await _run_task("Налоговый календарь", controls.tax_reminders())
+    # Факт доставки против котировки (акты и API) — раз в день, после реестра.
+    result["carrier_check"] = await _run_task("Сверка доставки с актами", _daily("сверка доставки", _carrier_check))
+    # Сверка учёта бота со счётом за прошлый месяц — с третьего числа, раз в месяц.
+    result["anthropic_reconcile"] = await _run_task("Сверка Claude со счётом", anthropic_costs.reconcile_month())
 
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
@@ -324,6 +376,65 @@ async def pii_migrate(request: Request):
     from app.privacy import migrate
 
     return await migrate.run(apply=request.query_params.get("apply") in ("1", "true", "да"))
+
+
+@router.post("/internal/consents/{vk_user_id}")
+async def consents_journal(vk_user_id: int, request: Request):
+    """Журнал согласий покупателя — по его запросу или для проверки.
+
+        scripts/api.sh consents/123456
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.consent import service as consent
+
+    return {
+        "vk_user_id": vk_user_id,
+        "действует": {"pd_processing": await consent.has_pd(vk_user_id),
+                      "marketing": await consent.marketing_allowed(vk_user_id)},
+        "редакция": settings.pd_consent_version,
+        "журнал": await consent.journal(vk_user_id),
+    }
+
+
+@router.post("/internal/consents/{vk_user_id}/revoke")
+async def consents_revoke(vk_user_id: int, request: Request):
+    """Отзыв, пришедший не через бота: письмом или менеджеру.
+
+        scripts/api.sh 'consents/123456/revoke?source=email'     (или source=manager)
+        scripts/api.sh 'consents/123456/revoke?source=email&only=marketing'   только рассылка
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.messages import marketing
+    from app.modules.consent import service as consent
+    from app.modules.orders import state
+
+    source = request.query_params.get("source") or consent.REVOKE_MANAGER
+    if source not in (consent.REVOKE_EMAIL, consent.REVOKE_MANAGER):
+        return Response(content="source — email или manager", media_type="text/plain", status_code=400)
+    only_marketing = request.query_params.get("only") == "marketing"
+    kinds = (consent.MARKETING,) if only_marketing else (consent.PD, consent.MARKETING)
+    await consent.revoke(vk_user_id, kinds, source=source, method="manual")
+    await marketing.opt_out(vk_user_id, record_consent=False)
+    if not only_marketing:
+        await state.clear_draft(vk_user_id)
+    return {"отозвано": list(kinds), "источник": source, "журнал": await consent.journal(vk_user_id)}
+
+
+@router.post("/internal/clients/{vk_user_id}/anonymize")
+async def clients_anonymize(vk_user_id: int, request: Request):
+    """Обезличить покупателя после отзыва согласия. Без apply — пробный прогон.
+
+        scripts/api.sh 'clients/123456/anonymize'            что изменится
+        scripts/api.sh 'clients/123456/anonymize?apply=1'    применить
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.consent import erase
+
+    flag = lambda name: request.query_params.get(name) in ("1", "true", "да")  # noqa: E731
+    return await erase.anonymize(vk_user_id, apply=flag("apply"), force=flag("force"))
 
 
 @router.post("/internal/retention/check")
@@ -578,6 +689,20 @@ async def probe_vk_market(request: Request):
     return result
 
 
+@router.post("/internal/anthropic/costs")
+async def anthropic_costs_sync(request: Request):
+    """Прочитать счёт Anthropic сейчас, не дожидаясь часа.
+
+        scripts/api.sh anthropic/costs
+
+    Отвечает, за какие дни прочитано, сколько строк и итог в долларах — или
+    почему не прочитано. Ключ в ответ не попадает.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    return await anthropic_costs.sync(force=True)
+
+
 @router.post("/internal/references/sync")
 async def references_sync(request: Request):
     """Прочитать справочники из таблицы сейчас, не дожидаясь 15 минут.
@@ -590,6 +715,22 @@ async def references_sync(request: Request):
     if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
     return await analytics_references.sync(force=True)
+
+
+@router.post("/internal/catalog/import-from-sheet")
+async def catalog_import_from_sheet(request: Request):
+    """Перенести каталог из Google Таблицы в базу — разово.
+
+        scripts/api.sh catalog/import-from-sheet            # только отчёт
+        scripts/api.sh 'catalog/import-from-sheet?apply=1'  # записать новые артикулы
+
+    Таблица только читается. Уже заведённые в базе артикулы не трогаются.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.catalog import sheet_import
+
+    return await sheet_import.run(apply=request.query_params.get("apply") in ("1", "true", "да"))
 
 
 @router.post("/internal/catalog/sheet")
@@ -940,3 +1081,203 @@ async def ops_emulate(request: Request):
     else:
         return {"error": f"нужен latency=секунды или api=одно из {', '.join(ops_journal.APIS)}"}
     return {"emulated": count, "pulse": await ops_pulse.run()}
+
+
+@router.post("/internal/flags")
+async def feature_flags(request: Request):
+    """Фича-флаги: список или переключение — то же, что /flag в чате Ops.
+
+        scripts/api.sh flags
+        scripts/api.sh 'flags?name=<флаг>&mode=allowlist'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.core import flags
+
+    name, mode = request.query_params.get("name"), request.query_params.get("mode")
+    if name and mode:
+        try:
+            previous = await flags.set_mode(name, mode.casefold(), by="api")
+        except ValueError as error:
+            return {"error": str(error)}
+        return {"флаг": name, "было": previous, "стало": mode.casefold()}
+    return {"флаги": await flags.describe()}
+
+
+@router.post("/internal/clients/{peer_id}/own")
+async def mark_own_client(peer_id: int, request: Request):
+    """Метка «свои» — то же, что /own в чате Ops. `?off=1` — снять."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.dialog import sessions
+
+    off = request.query_params.get("off") == "1"
+    found = await sessions.mark_own(peer_id, by="api", own=not off)
+    return {"peer_id": peer_id, "найден": found, "свои": found and not off}
+
+
+@router.post("/internal/smoke/dialog")
+async def smoke_dialog(request: Request):
+    """Проверка в бою: сессии, события воронки и расход Claude тестового аккаунта.
+
+        scripts/api.sh 'smoke/dialog?peer_id=<тестовый VK ID>'
+
+    Только для TEST_VK_IDS и без текстов: источники, отметки, коды событий, суммы.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    try:
+        peer_id = int(request.query_params.get("peer_id") or 0)
+    except ValueError:
+        return {"error": "peer_id — число"}
+    if peer_id not in await analytics_service.test_peer_ids():
+        return {"error": "только для тестовых аккаунтов (TEST_VK_IDS)"}
+    from sqlalchemy import text as sql
+
+    from app.core.client_key import client_key
+    from app.core.database import get_session_factory
+
+    async with get_session_factory()() as session:
+        def rows(result):
+            return [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in r._mapping.items()} for r in result]
+
+        client = rows(await session.execute(sql(
+            "select first_source, ref, own_at is not null as own, is_test from clients where peer_id = :p"), {"p": peer_id}))
+        dialogs = rows(await session.execute(sql(
+            "select id, started_at, last_message_at, source, close_reason, consult_started_at, consult_qualified_at "
+            "from dialog_sessions where peer_id = :p order by id desc limit 5"), {"p": peer_id}))
+        events = rows(await session.execute(sql(
+            "select created_at, event, dialog_id, order_id, source from funnel_events where peer_id = :p "
+            "order by id desc limit 30"), {"p": peer_id}))
+        usage = rows(await session.execute(sql(
+            "select at, operation, dialog_id, order_id, stage, purpose, cost_usd from llm_usage "
+            "where client_key = :k order by id desc limit 15"), {"k": client_key(peer_id)}))
+    return {"клиент": client, "сессии": dialogs, "события": events, "claude": usage}
+
+
+@router.post("/internal/yookassa/registry")
+async def yookassa_registry(request: Request):
+    """Реестр ЮKassa сейчас: платежи и возвраты (только GET) и сверка выплат с выпиской.
+
+        scripts/api.sh yookassa/registry          за последние 14 дней (первый раз — 120)
+        scripts/api.sh 'yookassa/registry?days=60'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.payment import registry as yk_registry
+
+    try:
+        days = int(request.query_params["days"]) if request.query_params.get("days") else None
+    except ValueError:
+        return {"error": "days — число"}
+    try:
+        return await yk_registry.sync(force=True, days=days)
+    except Exception as error:
+        logger.exception("Реестр ЮKassa руками не собрался")
+        return {"error": f"{type(error).__name__}: {error}"[:300]}
+
+
+@router.post("/internal/kudir")
+async def kudir_export(request: Request):
+    """КУДиР за период строками (для проверки; файл — /kudir в чате Ops).
+
+        scripts/api.sh 'kudir?period=2026-10'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.core import worktime
+    from app.modules.payment import kudir
+
+    try:
+        start, end = kudir.parse_period((request.query_params.get("period") or "").split(),
+                                        worktime.to_msk(datetime.now(timezone.utc)).date())
+    except ValueError as error:
+        return {"error": str(error)}
+    records = await kudir.rows(start, end)
+    return {"период": f"{start} — {end}", "правило": kudir.RULES[kudir.rule()], "записей": len(records),
+            "итого": str(sum((r["income"] for r in records), 0)),
+            "записи": [{**r, "income": str(r["income"])} for r in records[:200]]}
+
+
+@router.post("/internal/ops/controls")
+async def ops_controls_now(request: Request):
+    """Регламенты руками (сообщения уходят сразу, отметки «сегодня уже» не ставятся).
+
+        scripts/api.sh ops/controls            контроли + сводка в Ops
+        scripts/api.sh 'ops/controls?what=morning'   утренний список менеджеру
+        scripts/api.sh 'ops/controls?what=close'     закрытие прошлого месяца в Ops
+        scripts/api.sh 'ops/controls?what=ads'       напоминание о рекламе за вчера
+        scripts/api.sh 'ops/controls?what=taxes'     напоминания налогового календаря
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.ops import controls
+
+    what = request.query_params.get("what") or "controls"
+    jobs = {
+        "controls": lambda: controls.check_controls(force_summary=True),
+        "morning": lambda: controls.morning_list(force=True),
+        "close": lambda: controls.month_close(force=True),
+        "ads": lambda: controls.ads_reminder(force=True),
+        "taxes": lambda: controls.tax_reminders(),
+    }
+    if what not in jobs:
+        return {"error": f"what — одно из: {', '.join(jobs)}"}
+    try:
+        return await jobs[what]()
+    except Exception as error:
+        logger.exception("Регламент %s руками не выполнился", what)
+        return {"error": _hide_token(f"{type(error).__name__}: {error}")[:300]}
+
+
+@router.post("/internal/vk/token-permissions")
+async def vk_token_permissions(request: Request):
+    """Права токена сообщества (groups.getTokenPermissions) — только чтение.
+
+        scripts/api.sh vk/token-permissions
+
+    Нужно для отзывов (C7): есть право wall — бот может публиковать отзыв на стене
+    после кнопки менеджера (REVIEW_PUBLISH_MODE=wall), нет — только вручную.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.dialog import vk_client
+
+    try:
+        permissions = await vk_client.token_permissions()
+    except Exception as error:
+        return {"error": f"{type(error).__name__}: {str(error)[:200]}"}
+    return {"права": permissions, "стена (wall)": "wall" in permissions,
+            "режим публикации отзывов": settings.review_publish_mode}
+
+
+@router.post("/internal/orders/{order_id}/ozon-approve")
+async def ozon_approve_now(order_id: int, request: Request):
+    """Автоподтверждение Ozon по заказу (C8) — как после сборки. В allowlist — dry-run."""
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.delivery import ozon_approve
+
+    return {"заказ": order_id, **(await ozon_approve.after_packed(order_id))}
+
+
+@router.post("/internal/referral/code")
+async def referral_code(request: Request):
+    """Код для друзей тестового аккаунта (проверка пакета D в бою).
+
+        scripts/api.sh 'referral/code?peer_id=<тестовый VK ID>'
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.referral import service as referral
+
+    try:
+        peer_id = int(request.query_params.get("peer_id") or 0)
+    except ValueError:
+        return {"error": "peer_id — число"}
+    if peer_id not in await analytics_service.test_peer_ids():
+        return {"error": "только для тестовых аккаунтов (TEST_VK_IDS)"}
+    row = await referral.code_for(peer_id)
+    if row is None:
+        return {"код": None}
+    return {"код": row.code, "ссылка": referral.link(row.code), "id": row.id}

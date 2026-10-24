@@ -117,10 +117,11 @@ async def send_message(
     if keyboard:
         # Inline-клавиатура JSON-строкой; её собирает app/messages/keyboard.py.
         params["keyboard"] = keyboard
-    if settings.conditions_url and settings.conditions_url in text:
-        # Ссылку на условия ВК разворачивал в карточку статьи во весь экран, и
-        # сводка со счётом становилась вдвое длиннее. Ссылка остаётся
-        # ссылкой, карточки нет — только в сообщениях с условиями.
+    if any(url and url in text for url in (settings.conditions_url, settings.pd_consent_url)):
+        # Ссылки на условия и на согласие ВК разворачивал в карточку статьи во
+        # весь экран: сводка со счётом становилась вдвое длиннее, а просьба о
+        # согласии терялась за картинкой. Ссылка остаётся ссылкой, карточки
+        # нет — только в сообщениях с этими ссылками.
         params["dont_parse_links"] = 1
     started = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
@@ -134,3 +135,34 @@ async def send_message(
     from app.modules.ops import journal
 
     journal.note_call("vk", "отправка сообщения", time.monotonic() - started)
+
+
+async def call(method: str, **params) -> dict:
+    """Метод ВК API токеном сообщества. Ошибка ВК — VkApiError."""
+    data = {"access_token": settings.vk_access_token, "v": settings.vk_api_version, **params}
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(f"{VK_API_URL}/{method}", data=data)
+        response.raise_for_status()
+        body = response.json()
+    if "error" in body:
+        raise VkApiError(body["error"])
+    return body.get("response")
+
+
+async def token_permissions() -> list[str]:
+    """Права токена сообщества (groups.getTokenPermissions) — только чтение."""
+    result = await call("groups.getTokenPermissions") or {}
+    return [str(p.get("name")) for p in result.get("permissions") or []]
+
+
+async def wall_post(message: str) -> int:
+    """Запись на стене сообщества от его имени. Только по кнопке менеджера (отзывы)."""
+    group = "".join(ch for ch in (settings.vk_group_id or "") if ch.isdigit())
+    result = await call("wall.post", owner_id=f"-{group}", from_group=1, message=message)
+    return int((result or {}).get("post_id") or 0)
+
+
+async def first_name(user_id: int) -> str:
+    """Имя пользователя ВК — для подписи отзыва «с именем из ВК» (только при публикации)."""
+    result = await call("users.get", user_ids=str(user_id)) or []
+    return str(result[0].get("first_name") or "") if result else ""

@@ -1,6 +1,8 @@
 """Дашборд «Сводка» в Metabase (вкладки: Обзор, Деньги, Воронка, Заказы, Удержание, Ассортимент,
-Себестоимость и маржа). Повторный запуск архивирует прежнюю коллекцию
-«Дашборды» и собирает заново. Все вопросы — SQL к витринам analytics и finance (без ПДн)."""
+Себестоимость и маржа). Повторный запуск собирает вопросы заново в новой коллекции
+«Дашборды», а сам дашборд обновляет на месте — ссылка на него не меняется; прежняя
+коллекция с прежними вопросами уходит в архив. Все вопросы — SQL к витринам analytics
+и finance (без ПДн)."""
 import time
 import uuid
 from mbapi import call, BASE
@@ -47,9 +49,18 @@ def sync_fields(wanted):
 F.update(sync_fields({
     "margin.paid_date_msk": ("v_order_margin", "paid_date_msk"),
     "items_margin.paid_date_msk": ("v_order_item_margin", "paid_date_msk"),
+    "llm.date_msk": ("v_llm_usage", "date_msk"),
+    "bill.day": ("v_anthropic_costs", "day"),
+    "steps.started_date_msk": ("v_funnel_dialog_steps", "started_date_msk"),
+    "inv.first_invoice_date_msk": ("v_invoice_timing", "first_invoice_date_msk"),
+    "dlg.started_date_msk": ("v_dialogs", "started_date_msk"),
 }))
 
 RUB = {"suffix": " ₽", "decimals": 0}
+# Все строки графика, без «Other»: по умолчанию Metabase сворачивает хвост списка в
+# одну строку — сорта и статусы за десятым пропадали из виду. Строки, не влезшие по
+# высоте карточки, он всё равно сворачивает: карточке со списком нужна высота.
+ALL_ROWS = {"graph.max_categories_enabled": False}
 # Плавная кривая вместо ломаной у дневных графиков.
 SMOOTH = {"line.interpolate": "cardinal"}
 
@@ -110,11 +121,20 @@ def mbql(key, coll, name, table, aggregation, date_field, fmt=None, filter_=None
     return cid
 
 
+# С 21.10.2026 «Сводку» заменили «Пульс» и «Служебное» (dash_build.py) в той же коллекции
+# «Дашборды». Пересборка ниже архивирует всю коллекцию — вместе с ними, — поэтому стоп.
+if any(d.get("name") in ("Пульс", "Служебное") for d in call("GET", "/dashboard/")):
+    raise SystemExit("«Сводка» заменена «Пульсом» и «Служебным» — собирайте их: dash_build.py. "
+                     "build.py архивировал бы коллекцию «Дашборды» вместе с ними.")
+
 # --- коллекция -----------------------------------------------------------------------------
-for c in call("GET", "/collection"):
-    if c.get("name") == COLLECTION and not c.get("archived") and c.get("id") != "root":
-        call("PUT", f"/collection/{c['id']}", {"archived": True})
-        print("старая коллекция в архиве:", c["id"])
+# Прежнюю коллекцию — в архив в самом конце, когда дашборд уже переехал в новую: так
+# дашборд остаётся тем же (та же ссылка), а архивируются только прежние вопросы.
+OLD_COLLECTIONS = [c["id"] for c in call("GET", "/collection")
+                   if c.get("name") == COLLECTION and not c.get("archived") and c.get("id") != "root"]
+OLD_DASHBOARD = next((item["id"] for cid in OLD_COLLECTIONS
+                      for item in call("GET", f"/collection/{cid}/items?models=dashboard").get("data", [])
+                      if item.get("name") == "Сводка"), None)
 coll = call("POST", "/collection", {"name": COLLECTION, "description": "Собрано Claude через API. Источник — схемы analytics и finance."})["id"]
 
 # --- Деньги --------------------------------------------------------------------------------
@@ -195,13 +215,15 @@ card("check", coll, "Сходимость с банком",
 INVOICE = "event like 'invoice\\_%' and event not in ('invoice_expired', 'invoice_canceled')"
 card("funnel", coll, "Воронка: от диалога до вручения",
      "with e as (\n"
-     "  select client_key, case when event = 'dialog_start' then 1 when event = 'draft_created' then 2\n"
-     "    when event = 'delivery_quoted' then 3 when event = 'recipient_set' then 4\n"
-     f"    when {INVOICE} then 5 when event = 'payment_succeeded' then 6 when event = 'delivered' then 7 end as step\n"
+     "  select client_key, case when event = 'dialog_start' then 1 when event = 'consult_started' then 2\n"
+     "    when event = 'consult_qualified' then 3 when event = 'draft_created' then 4\n"
+     "    when event = 'delivery_quoted' then 5 when event = 'recipient_set' then 6\n"
+     f"    when {INVOICE} then 7 when event = 'payment_succeeded' then 8 when event = 'delivered' then 9 end as step\n"
      "  from analytics.v_funnel_events where client_key is not null [[and {{dates}}]])\n"
-     "select case step when 1 then '1. Начали диалог' when 2 then '2. Черновик заказа' when 3 then '3. Посчитана доставка'\n"
-     "  when 4 then '4. Указан получатель' when 5 then '5. Выставлен счёт' when 6 then '6. Оплатили'\n"
-     "  else '7. Вручено' end as \"Шаг\", count(distinct client_key) as \"Клиентов\"\n"
+     "select case step when 1 then '1. Начали диалог' when 2 then '2. Консультация' when 3 then '3. Назван товар'\n"
+     "  when 4 then '4. Черновик заказа' when 5 then '5. Посчитана доставка'\n"
+     "  when 6 then '6. Указан получатель' when 7 then '7. Выставлен счёт' when 8 then '8. Оплатили'\n"
+     "  else '9. Вручено' end as \"Шаг\", count(distinct client_key) as \"Клиентов\"\n"
      "from e where step is not null group by step order by step",
      "funnel", {"funnel.dimension": "Шаг", "funnel.metric": "Клиентов"}, "funnel.created_date_msk",
      description="Сколько разных клиентов дошли до каждого шага за выбранные даты.")
@@ -229,6 +251,50 @@ card("escal", coll, "Вопросы менеджеру по дням",
      "from analytics.v_funnel_events where event like 'escalation\\_%' [[and {{dates}}]] group by 1 order by 1",
      "bar", {"graph.dimensions": ["День"], "graph.metrics": ["Открыто", "Менеджер ответил"]}, "funnel.created_date_msk")
 
+card("steps", coll, "Шаги воронки: дошли, отвалились, время до следующего",
+     "select step_no || '. ' || step_label as \"Шаг\", count(*) filter (where reached) as \"Дошли\",\n"
+     "  count(*) filter (where dropped) as \"Отвалились\",\n"
+     "  round(100.0 * count(*) filter (where dropped) / nullif(count(*) filter (where reached), 0), 1) as \"Отвал, %\",\n"
+     "  round((percentile_cont(0.5) within group (order by minutes_to_next))::numeric, 0) as \"Медиана, мин\",\n"
+     "  round((percentile_cont(0.9) within group (order by minutes_to_next))::numeric, 0) as \"90 %, мин\"\n"
+     "from analytics.v_funnel_dialog_steps where true [[and {{dates}}]] group by step_no, step_label order by step_no",
+     "table", colfmt(**{"Отвал, %": {"suffix": " %"}}), "steps.started_date_msk",
+     description="По сессиям диалога: сколько дошли до шага, сколько на нём остановились и сколько минут "
+                 "до следующего шага. Даты — начало сессии.")
+card("by_source", coll, "Диалог → оплата по источнику",
+     "select case session_source_kind when 'ad' then 'Реклама' when 'referral' then 'Друг' when 'own' then 'Свои'\n"
+     "  else 'Органика' end as \"Источник\", count(*) as \"Диалогов\",\n"
+     "  count(*) filter (where consult_started) as \"Консультаций\", count(*) filter (where is_paid) as \"Оплат\",\n"
+     "  round(100.0 * count(*) filter (where is_paid) / nullif(count(*), 0), 1) as \"Конверсия, %\"\n"
+     "from analytics.v_dialogs where true [[and {{dates}}]] group by 1 order by 2 desc",
+     "table", colfmt(**{"Конверсия, %": {"suffix": " %"}}), "dlg.started_date_msk")
+card("draft_inv", coll, "Черновик → счёт, медиана минут",
+     "select round((percentile_cont(0.5) within group (order by minutes_draft_to_invoice))::numeric, 0) as \"Минут\"\n"
+     "from analytics.v_invoice_timing where minutes_draft_to_invoice is not null [[and {{dates}}]]",
+     "scalar", colfmt(**{"Минут": {"suffix": " мин"}}), "inv.first_invoice_date_msk")
+card("expired_share", coll, "Доля заказов с истёкшим счётом",
+     "select round(100.0 * avg(case when had_expired then 1 else 0 end), 1) as \"Доля, %\"\n"
+     "from analytics.v_invoice_timing where true [[and {{dates}}]] having count(*) > 0",
+     "scalar", colfmt(**{"Доля, %": {"suffix": " %"}}), "inv.first_invoice_date_msk")
+card("llm_dialog", coll, "Claude на диалог, оплату и нового покупателя, ₽",
+     "select to_char(started_date_msk, 'YYYY-MM') as \"Месяц\", count(*) as \"Диалогов\",\n"
+     "  round(sum(llm_cost_rub) / nullif(count(*), 0), 1) as \"₽ на диалог\",\n"
+     "  round(sum(llm_cost_rub) / nullif(count(*) filter (where is_paid), 0), 0) as \"₽ на оплату\",\n"
+     "  round(sum(llm_cost_rub) / nullif(count(*) filter (where is_first_purchase), 0), 0) as \"₽ на нового покупателя\"\n"
+     "from analytics.v_dialogs where true [[and {{dates}}]] group by 1 order by 1 desc",
+     "table", {}, "dlg.started_date_msk",
+     description="Весь расход Claude за месяц делится на оплаты: диалоги без покупки входят в цену покупки. "
+                 "Курс — вводная usd_rub; пусто — курса нет.")
+
+# Ворота пилота — из финмодели (fin.v_pilot_gates), та же карточка, что на «Финансах».
+card("gates", coll, "Ворота пилота",
+     "select gate as \"Ворота\", check_name as \"Проверка\",\n"
+     "  case when unit = '%' then fin.fmt_pct(value) else fin.fmt_rub(value) end as \"Сейчас\",\n"
+     "  case when unit = '%' then fin.fmt_pct(threshold) else fin.fmt_rub(threshold) end as \"Порог\",\n"
+     "  case status when 'зелёный' then '🟢 зелёный' when 'красный' then '🔴 красный' else '⚪ нет данных' end as \"Статус\",\n"
+     "  period_end as \"Срок\" from fin.v_pilot_gates order by sort",
+     "table", {}, description="Неделя 2, неделя 6 и М3 пилота. Пороги — вводные gate_* на «Финансах».")
+
 # --- Продажи: Заказы ---------------------------------------------------------------------------
 PAID = "from analytics.v_orders where is_paid and not is_refunded [[and {{dates}}]]"
 PAID_MBQL = ["and", ["=", ["field", ORDERS_IS_PAID, None], True], ["=", ["field", ORDERS_IS_REFUNDED, None], False]]
@@ -252,7 +318,7 @@ card("carriers", coll, "Перевозчики",
 card("statuses", coll, "Статусы заказов",
      "select status_label as \"Статус\", count(*) as \"Заказов\" from analytics.v_orders where true [[and {{dates}}]] "
      "group by 1 order by 2 desc",
-     "row", {"graph.dimensions": ["Статус"], "graph.metrics": ["Заказов"]}, "orders.created_date_msk",
+     "row", {"graph.dimensions": ["Статус"], "graph.metrics": ["Заказов"], **ALL_ROWS}, "orders.created_date_msk",
      description="Все заказы с выставленным счётом, по дате создания.")
 card("orders_tbl", coll, "Заказы",
      "select order_id as \"№\", created_date_msk as \"Создан\", paid_date_msk as \"Оплачен\", status_label as \"Статус\",\n"
@@ -292,7 +358,7 @@ card("ratings", coll, "Оценки заказов",
 ITEMS = "from analytics.v_order_items join analytics.v_orders o using (order_id) where o.is_paid and not o.is_refunded [[and {{dates}}]]"
 card("by_product", coll, "Выручка по сортам",
      f"select v_order_items.product as \"Сорт\", sum(v_order_items.amount) as \"Выручка\" {ITEMS} group by 1 order by 2 desc limit 20",
-     "row", {"graph.dimensions": ["Сорт"], "graph.metrics": ["Выручка"]}, "items.created_date_msk")
+     "row", {"graph.dimensions": ["Сорт"], "graph.metrics": ["Выручка"], **ALL_ROWS}, "items.created_date_msk")
 card("by_pack", coll, "Пачки по фасовкам",
      f"select coalesce(v_order_items.pack, 'без фасовки') as \"Фасовка\", sum(v_order_items.quantity) as \"Пачек\" {ITEMS} group by 1 order by 2 desc",
      "pie", {"pie.dimension": "Фасовка", "pie.metric": "Пачек"}, "items.created_date_msk")
@@ -376,7 +442,7 @@ card("ref_products", coll, "Справочник: себестоимость и 
 card("ref_margin_chart", coll, "Маржа на единицу по рознице",
      'select name as "Товар", unit_margin as "Маржа, ₽" from analytics.v_ref_products\n'
      "where active and unit_margin is not null order by 2 desc",
-     "row", {"graph.dimensions": ["Товар"], "graph.metrics": ["Маржа, ₽"], **colfmt(**{"Маржа, ₽": RUB})},
+     "row", {"graph.dimensions": ["Товар"], "graph.metrics": ["Маржа, ₽"], **ALL_ROWS, **colfmt(**{"Маржа, ₽": RUB})},
      description="Розничная цена справочника минус себестоимость единицы.")
 card("ref_settings", coll, "Настройки, действующие сегодня",
      'select name as "Параметр", case when unit = \'доля\' then round(value * 100, 2)::text || \' %\'\n'
@@ -394,6 +460,59 @@ card("ref_stock", coll, "Приходы и инвентаризация",
      '  amount as "Сумма", document as "Документ", comment as "Комментарий"\n'
      "from analytics.v_ref_stock_moves order by move_date desc, name",
      "table", colfmt(**{"Сумма": RUB2}))
+
+# --- Claude API: расход в долларах (llm_usage) ---------------------------------------------
+USD = {"prefix": "$", "decimals": 2}
+for days in (7, 14, 30):
+    card(f"api_{days}d", coll, f"Claude API за {days} дней, $",
+         f'select coalesce(round(sum(cost_usd), 2), 0) as "Расход, $" from analytics.v_llm_usage '
+         f"where at >= now() - interval '{days} days'",
+         "scalar", colfmt(**{"Расход, $": USD}),
+         description=f"Расход на Claude API за последние {days} дней, по ценам Anthropic: все запросы бота, "
+                     "ассистента Ops и пересказов, включая тестовые диалоги. Фильтр «Даты» здесь не действует.")
+card("api_daily", coll, "Claude API по дням, $",
+     'select date_msk as "День", operation as "На что", round(sum(cost_usd), 4) as "Расход, $"\n'
+     "from analytics.v_llm_usage where true [[and {{dates}}]] group by 1, 2 order by 1",
+     "bar", {"graph.dimensions": ["День", "На что"], "graph.metrics": ["Расход, $"],
+             "stackable.stack_type": "stacked", **colfmt(**{"Расход, $": USD})}, "llm.date_msk")
+card("api_tbl", coll, "Claude API: на что ушло за 30 дней",
+     'select operation as "На что", model as "Модель", count(*) as "Запросов",\n'
+     '  round(sum(cost_usd), 2) as "Расход, $", round(avg(cost_usd), 4) as "За запрос, $",\n'
+     '  sum(input_tokens) as "Вход", sum(output_tokens) as "Выход", sum(cache_read_tokens) as "Из кэша",\n'
+     '  sum(cache_write_tokens) as "В кэш",\n'
+     '  round(100.0 * sum(cache_read_tokens) / nullif(sum(input_tokens + cache_read_tokens + cache_write_tokens), 0), 1)\n'
+     '    as "Вход из кэша, %"\n'
+     "from analytics.v_llm_usage where at >= now() - interval '30 days' group by 1, 2 order by 4 desc nulls last",
+     "table", colfmt(**{"Расход, $": USD, "За запрос, $": {"prefix": "$", "decimals": 4}}),
+     description="Вход из кэша — доля входных токенов, прочитанных из кэша промпта: он в 10 раз дешевле.")
+
+# --- Счёт Anthropic (Admin API cost_report) — то, что выставят к оплате ------------------------
+for days in (7, 14, 30):
+    card(f"bill_{days}d", coll, f"Счёт Anthropic за {days} дней, $",
+         f'select coalesce(round(sum(amount_usd), 2), 0) as "Счёт, $" from analytics.v_anthropic_costs '
+         f"where day >= current_date - {days - 1}",
+         "scalar", colfmt(**{"Счёт, $": USD}),
+         description=f"Сколько Anthropic выставит к оплате за последние {days} дней — по всей организации "
+                     "(бот, ассистент Ops, консоль). Обновляется раз в час, сегодняшний день — с задержкой.")
+card("bill_daily", coll, "Счёт Anthropic по дням, $",
+     'select day as "День", case token_type when \'output_tokens\' then \'выход\'\n'
+     "  when 'uncached_input_tokens' then 'вход' when 'cache_read_input_tokens' then 'чтение из кэша'\n"
+     "  when 'cache_creation.ephemeral_5m_input_tokens' then 'запись в кэш'\n"
+     "  when 'cache_creation.ephemeral_1h_input_tokens' then 'запись в кэш (1 ч)'\n"
+     "  else coalesce(cost_type, 'прочее') end as \"Статья\", round(sum(amount_usd), 4) as \"Счёт, $\"\n"
+     "from analytics.v_anthropic_costs where true [[and {{dates}}]] group by 1, 2 order by 1",
+     "bar", {"graph.dimensions": ["День", "Статья"], "graph.metrics": ["Счёт, $"],
+             "stackable.stack_type": "stacked", **colfmt(**{"Счёт, $": USD})}, "bill.day")
+card("bill_vs", coll, "Счёт Anthropic и учёт бота по дням",
+     "with bill as (select day, sum(amount_usd) as usd from analytics.v_anthropic_costs group by 1),\n"
+     "bot as (select (at at time zone 'UTC')::date as day, sum(cost_usd) as usd from analytics.v_llm_usage group by 1)\n"
+     'select coalesce(bill.day, bot.day) as "День (UTC)", round(bill.usd, 2) as "Счёт Anthropic, $",\n'
+     '  round(bot.usd, 2) as "Учёт бота, $", round(coalesce(bill.usd, 0) - coalesce(bot.usd, 0), 2) as "Разница, $"\n'
+     "from bill full join bot on bot.day = bill.day\n"
+     "where coalesce(bill.day, bot.day) >= current_date - 29 order by 1 desc",
+     "table", colfmt(**{"Счёт Anthropic, $": USD, "Учёт бота, $": USD, "Разница, $": USD}),
+     description="Разница — расходы не бота (консоль, другие ключи организации) или запросы, которые бот не "
+                 "записал. До 18.10.2026 учёта бота нет — там разница равна счёту.")
 
 # --- проверка: каждый вопрос выполняется без ошибки --------------------------------------------
 bad = 0
@@ -428,13 +547,19 @@ def dc(key, row, col, w, h, tab=None, params=("dates", "period")):
     return d
 
 
-def make(name, desc, parameters, dashcards, tabs=None):
-    did = call("POST", "/dashboard", {"name": name, "description": desc, "collection_id": coll})["id"]
+def make(name, desc, parameters, dashcards, tabs=None, existing=None):
+    """Собрать дашборд. `existing` — id прежнего: он переезжает в новую коллекцию и
+    получает новые карточки и вкладки, id и ссылка не меняются."""
+    if existing:
+        did = existing
+        call("PUT", f"/dashboard/{did}", {"name": name, "description": desc, "collection_id": coll})
+    else:
+        did = call("POST", "/dashboard", {"name": name, "description": desc, "collection_id": coll})["id"]
     body = {"parameters": parameters, "dashcards": dashcards}
     if tabs:
         body["tabs"] = tabs
     call("PUT", f"/dashboard/{did}", body)
-    print(f"{name}: {SITE}/dashboard/{did}")
+    print(f"{name}: {SITE}/dashboard/{did}" + (" (тот же дашборд, обновлён)" if existing else " (новый)"))
 
 
 # Один дашборд «Сводка»: вкладка «Обзор» — главное на одном экране (те же вопросы, что
@@ -450,6 +575,7 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     dc("daily_bal", 3, 0, 24, 6, T["Обзор"]),
     dc("fcf_chart", 9, 0, 12, 6, T["Обзор"]), dc("rev_daily", 9, 12, 12, 6, T["Обзор"]),
     dc("funnel", 15, 0, 12, 7, T["Обзор"]), dc("costs", 15, 12, 12, 7, T["Обзор"]),
+    dc("gates", 22, 0, 24, 5, T["Обзор"]),
     # Деньги
     dc("bal", 0, 0, 6, 3, T["Деньги"]), dc("fcf", 0, 6, 6, 3, T["Деньги"]), dc("cfo", 0, 12, 6, 3, T["Деньги"]),
     dc("runway", 0, 18, 6, 3, T["Деньги"]),
@@ -463,6 +589,9 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     dc("funnel", 0, 0, 12, 8, T["Воронка"]), dc("conv", 0, 12, 6, 3, T["Воронка"]),
     dc("losses", 3, 12, 12, 5, T["Воронка"]), dc("daily", 8, 0, 24, 6, T["Воронка"]),
     dc("escal", 14, 0, 24, 5, T["Воронка"]),
+    dc("steps", 19, 0, 16, 7, T["Воронка"]), dc("draft_inv", 19, 16, 8, 3, T["Воронка"]),
+    dc("expired_share", 22, 16, 8, 4, T["Воронка"]),
+    dc("by_source", 26, 0, 12, 5, T["Воронка"]), dc("llm_dialog", 26, 12, 12, 5, T["Воронка"]),
     # Заказы
     dc("rev", 0, 0, 6, 3, T["Заказы"]), dc("ord_cnt", 0, 6, 6, 3, T["Заказы"]), dc("avg", 0, 12, 6, 3, T["Заказы"]),
     dc("subsidy", 0, 18, 6, 3, T["Заказы"]), dc("rev_daily", 3, 0, 24, 6, T["Заказы"]),
@@ -475,13 +604,23 @@ make("Сводка", "Деньги и продажи на одном дашбо�
     # Ассортимент
     dc("by_product", 0, 0, 12, 8, T["Ассортимент"]), dc("by_pack", 0, 12, 6, 6, T["Ассортимент"]),
     dc("upsell", 0, 18, 6, 3, T["Ассортимент"]), dc("assort_tbl", 8, 0, 24, 8, T["Ассортимент"]),
-    # Себестоимость и маржа
+    # Себестоимость и маржа. График маржи на единицу — высокий: строки, не влезшие по
+    # высоте, Metabase сворачивает в «Other», а товаров в справочнике 16.
     dc("m_margin", 0, 0, 6, 3, MT), dc("m_pct", 0, 6, 6, 3, MT), dc("m_cogs", 0, 12, 6, 3, MT),
     dc("m_avg", 0, 18, 6, 3, MT),
-    dc("m_waterfall", 3, 0, 12, 7, MT), dc("ref_margin_chart", 3, 12, 12, 7, MT),
-    dc("ref_products", 10, 0, 24, 8, MT),
-    dc("m_by_product", 18, 0, 14, 6, MT), dc("m_missing", 18, 14, 10, 6, MT),
-    dc("m_orders", 24, 0, 24, 8, MT),
-    dc("ref_settings", 32, 0, 14, 9, MT), dc("ref_costs", 32, 14, 10, 9, MT),
-    dc("ref_stock", 41, 0, 24, 6, MT),
-], tabs=[{"id": v, "name": k} for k, v in T.items()])
+    dc("api_7d", 3, 0, 8, 3, MT), dc("api_14d", 3, 8, 8, 3, MT), dc("api_30d", 3, 16, 8, 3, MT),
+    dc("bill_7d", 6, 0, 8, 3, MT), dc("bill_14d", 6, 8, 8, 3, MT), dc("bill_30d", 6, 16, 8, 3, MT),
+    dc("api_daily", 9, 0, 12, 6, MT), dc("bill_daily", 9, 12, 12, 6, MT),
+    dc("api_tbl", 15, 0, 12, 6, MT), dc("bill_vs", 15, 12, 12, 6, MT),
+    dc("m_waterfall", 21, 0, 12, 12, MT), dc("ref_margin_chart", 21, 12, 12, 12, MT),
+    dc("ref_products", 33, 0, 24, 8, MT),
+    dc("m_by_product", 41, 0, 14, 6, MT), dc("m_missing", 41, 14, 10, 6, MT),
+    dc("m_orders", 47, 0, 24, 8, MT),
+    dc("ref_settings", 55, 0, 14, 9, MT), dc("ref_costs", 55, 14, 10, 9, MT),
+    dc("ref_stock", 64, 0, 24, 6, MT),
+], tabs=[{"id": v, "name": k} for k, v in T.items()], existing=OLD_DASHBOARD)
+
+# Прежние вопросы — в архив. Дашборд уже в новой коллекции, его это не задевает.
+for cid in OLD_COLLECTIONS:
+    call("PUT", f"/collection/{cid}", {"archived": True})
+    print("прежняя коллекция с вопросами в архиве:", cid)

@@ -358,7 +358,11 @@ async def remind_storage_ending(now: datetime | None = None) -> int:
         ).scalars().all()
 
     told = 0
+    from app.core import flags
+
     for order in orders:
+        if await flags.enabled_for(flags.PICKUP_REMINDERS, order.peer_id):
+            continue  # напоминания о посылке ведёт orders/pickup_reminders.py (C4)
         if await client_messages.send(
             peer_id=order.peer_id,
             ref=client_messages.order_ref(order.id),

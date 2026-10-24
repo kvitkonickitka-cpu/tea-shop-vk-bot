@@ -43,9 +43,27 @@ CARRIER_FAILED = "carrier_failed"
 STOREFRONT_ORDER = "storefront_order"
 CLIENT_UNREACHABLE = "client_unreachable"
 CATALOG_SHEET = "catalog_sheet"
+# Каталог в базе: цена изменена, артикул снят с продажи или включён — в Ops.
+CATALOG_CHANGES = "catalog_changes"
+# Склад по партиям: сырья на заказ не хватило — в Ops.
+STOCK = "stock"
 # Справочники из таблицы (себестоимость, настройки): строки не применены — в Ops-чат.
 REFERENCES = "references"
+# Счёт Anthropic не читается (админ-ключ) — в Ops-чат.
+ANTHROPIC_COSTS = "anthropic_costs"
 FEEDBACK = "feedback"
+# Покупатель отозвал согласие на ПДн — задача удалить данные в срок.
+PD_DELETE = "pd_delete"
+# Реестр ЮKassa: выплата не сходится с выпиской или платежи долго не выплачены — в Ops.
+YK_REGISTRY = "yk_registry"
+# Доставка: факт перевозчика отличается от котировки больше допустимого — в Ops.
+CARRIER_CHECK = "carrier_check"
+# Регламенты (app/modules/ops/controls.py): контроли и закрытие месяца — в Ops,
+# утренний список — менеджеру.
+OPS_CONTROLS = "ops_controls"
+MORNING_LIST = "morning_list"
+# Рефералка: лимит кода, сигналы злоупотребления.
+REFERRAL = "referral"
 
 
 def _backoff(attempts: int) -> timedelta:

@@ -239,9 +239,13 @@ def _ask_builder(order: Order):
     from app.modules.orders import retention, take
 
     async def build():
+        from app.modules.orders import reviews
+
         names = {item.get("name") for item in order.items or [] if item.get("name")}
         single = take.display_name(next(iter(names))) if len(names) == 1 else ""
-        return retention.Message(templates.feedback_ask(order, single), rate_keyboard(order.id))
+        # Отзывы (C7): оценка 1–5 вместо трёх слов.
+        keyboard = reviews.star_keyboard(order.id) if await reviews.enabled(order.peer_id) else rate_keyboard(order.id)
+        return retention.Message(templates.feedback_ask(order, single), keyboard)
     return build
 
 
@@ -301,6 +305,15 @@ async def save(peer_id: int, tool_input: dict, now: datetime | None = None) -> s
         await funnel.record(peer_id, "review_saved", order_id=order.id, consent=consent)
 
     if consent == "unknown":
+        from app.modules.orders import reviews
+
+        if await reviews.enabled(peer_id):
+            # Согласие — кнопками (C7): три варианта, решает клиент, а не модель.
+            from app.modules.orders import buttons
+
+            buttons.stash(peer_id, reviews.consent_keyboard(order.id))
+            return ("Отзыв записан. Поблагодари коротко и одной фразой спроси, можно ли опубликовать отзыв "
+                    "в сообществе — варианты код покажет кнопками под твоим ответом, сама их не перечисляй.")
         return (
             "Отзыв записан. Если он хороший — один раз спроси, можно ли "
             "опубликовать его в сообществе, и передай ответ в save_feedback."

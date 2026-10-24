@@ -190,6 +190,13 @@ async def handle_message_reply(message: dict[str, Any]) -> None:
     was_open = await escalation_state.is_open(peer_id)
     await escalation_state.mark_resolved(peer_id)
     await escalation_log.resolve_latest(peer_id, admin_author_id)
+    # Менеджер ответил — жалоба из оценки закрыта (C7), касания снова можно.
+    from app.modules.orders import reviews
+
+    try:
+        await reviews.close_complaints(peer_id)
+    except Exception:
+        logger.exception("Не закрыли жалобу из оценки peer_id=%s", peer_id)
     if was_open:
         from app.messages import funnel
 
@@ -210,4 +217,4 @@ async def send_press_reply(peer_id: int, label: str, reply: str, keyboard: dict 
     if to_model:
         await dialog_history.append_message(peer_id, "assistant", reply, author=dialog_history.AUTHOR_BOT)
     else:
-        await dialog_history.append_exchange(peer_id, label, reply)
+        await dialog_history.append_exchange(peer_id, label, reply, button=True)

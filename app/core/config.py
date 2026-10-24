@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     # Прокси перед api.anthropic.com — нужен, когда хостинг физически в РФ
     # и Anthropic блокирует прямые запросы оттуда. Пусто = обращаться напрямую.
     anthropic_base_url: str = ""
+    # Админ-ключ организации Anthropic (`sk-ant-admin…`) — только для отчёта о
+    # расходах (`ops/anthropic_costs.py`): сколько выставлено в счёт по дням.
+    # Пусто — отчёт не читается, расход виден только по учёту бота (llm_usage).
+    # Секрет с правами на всю организацию: не логировать, нигде не выводить.
+    anthropic_admin_key: str = ""
 
     # Личный id администратора в ВК — резервный канал для критичных
     # сигналов. Блок «не доставлено менеджеру» уходит в телеграм, и если
@@ -363,6 +368,16 @@ class Settings(BaseSettings):
     message_debounce_seconds_collecting: float = 5
     message_debounce_max_seconds: float = 12
 
+    # Откуда бот берёт ассортимент: `sheet` — Google Таблица (как раньше),
+    # `db` — таблицы shop.catalog и shop.bundle_items, которые правят в
+    # Metabase. В режиме db бот в Google не ходит вовсе, а пустой или
+    # нечитаемый каталог — пауза для покупателя и тревога в Ops, не откат
+    # на таблицу или catalog.json.
+    catalog_source: str = "sheet"
+    # Пачку не собираем, если до конца её срока годности (меньшее из «упаковка +
+    # срок артикула» и «годен до» партии) меньше стольких дней: такую не продать.
+    min_shelf_life_days: int = 90
+
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.
     catalog_sheet_csv_url: str = ""
@@ -381,6 +396,22 @@ class Settings(BaseSettings):
     # переводов строки). Секрет: не логировать, не коммитить.
     google_sa_json: str = ""
     google_sa_json_b64: str = ""
+    # Справочники себестоимости из той же таблицы (ref_* → analytics.v_ref_*).
+    # С 20.10.2026 выключено: маржа считается одна — финмоделью (fin.v_unit_cost),
+    # а у справочников была своя, без налога и эквайринга. Таблицы ref_* в базе
+    # остаются как есть, включить обратно — REFERENCES_SYNC_ENABLED=true.
+    references_sync_enabled: bool = False
+
+    # Согласие на обработку персональных данных (152-ФЗ, отдельный документ с
+    # 01.09.2025): ссылка на опубликованный текст и его редакция. Сменилась
+    # редакция — каждый покупатель при следующем заказе соглашается заново.
+    pd_consent_url: str = "https://vk.com/@teapotwice-soglasie-na-obrabotku-personalnyh-dannyh"
+    pd_consent_version: str = "1"
+    # Согласие на рекламные сообщения — спрашивается один раз после оплаты.
+    # Сколько сообщений в месяц обещаем: «не чаще N раз в месяц».
+    marketing_max_per_month: int = 2
+    # Срок исполнения заявки на удаление данных, рабочих дней (152-ФЗ ст. 21).
+    pd_delete_working_days: int = 10
 
     # Почта России отключена до отдельного распоряжения: расчёт у неё плоский
     # и выдуманный, а настоящего подключения пока нет. Включать — сюда, бот
@@ -485,6 +516,49 @@ class Settings(BaseSettings):
     ops_slow_min_turns: int = 3
     ops_disk_warn_percent: int = 80
     ops_disk_alarm_percent: int = 90
+    # Кому можно команды в чате Ops (/flag, /own…): Telegram ID через запятую.
+    # Пусто — те же, кому отвечает ассистент (ops_assistant_allowed_tg_ids).
+    ops_admin_tg_ids: str = ""
+    # Сверка расхода Claude по учёту бота со счётом Anthropic за прошлый
+    # месяц: расхождение больше этой доли — ⚠️ в Ops (app/modules/ops/anthropic_costs.py).
+    anthropic_reconcile_tolerance: float = 0.05
+    # КУДиР (app/modules/payment/kudir.py): дата дохода по платежу ЮKassa —
+    # captured_at (покупатель оплатил) или payout_date (ЮKassa выплатила на
+    # счёт). Правило подтверждает бухгалтер; витрина пересоздаётся при старте.
+    kudir_income_date: str = "captured_at"
+    # Способы оплаты, которые бот называет клиенту (C2): через запятую, как в
+    # ЮKassa (bank_card, sbp, sberbank, tinkoff_bank…). Пусто — из GET /v3/me.
+    enabled_payment_methods: str = ""
+    # Ссылка на реквизиты ИП в сообществе ВК — строкой под счётом (C2). Пусто — без строки.
+    requisites_url: str = ""
+    # C3: касание по брошенному черновику или счёту — через столько часов после
+    # последнего действия, и не позже, чем через max (дальше — уже рассылка).
+    abandoned_touch_after_hours: int = 20
+    abandoned_touch_max_age_hours: int = 72
+    # C4: сколько дней посылка хранится в пункте, если перевозчик не отдал дату.
+    # Сверить с договорами: у Ozon и СДЭКа сроки зависят от пункта и тарифа.
+    pickup_storage_days_ozon: int = 7
+    pickup_storage_days_cdek: int = 7
+    # C8: настоящий /v1/posting/approve — только при флаге ozon_auto_approve = on
+    # И этой настройке. Иначе — dry-run (запрос в лог). Включать осознанно, на ВМ.
+    ozon_approve_live: bool = False
+    # C7: как публиковать отзыв после «Опубликовать» менеджера: manual — менеджер
+    # сам (кнопка «Опубликовал вручную»), wall — бот на стену сообщества
+    # (wall.post; нужен право wall у токена — scripts/api.sh vk/token-permissions).
+    review_publish_mode: str = "manual"
+    # Рефералка (пакет D, app/modules/referral): скидка другу на первый заказ —
+    # процент от товаров, потолок в рублях, минимальная сумма товаров (цена
+    # «Точки входа»); лимиты кода; всплеск применений за сутки — сигнал менеджеру.
+    referral_discount_percent: int = 10
+    referral_discount_cap: float = 500
+    referral_min_items_total: float = 1490
+    referral_limit_month: int = 5
+    referral_limit_total: int = 20
+    referral_spike_per_day: int = 3
+    # Награда пригласившему: off или percent:N — скидка N % на его следующий
+    # заказ после вручения заказа друга и срока возврата (дней) без возврата.
+    referrer_reward: str = "off"
+    referral_return_days: int = 14
 
 
 settings = Settings()

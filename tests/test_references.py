@@ -171,6 +171,7 @@ class FakeSheets:
 
 @pytest.fixture
 def world(monkeypatch):
+    monkeypatch.setattr(settings, "references_sync_enabled", True)
     monkeypatch.setattr(settings, "sheets_auth_mode", "service_account")
     monkeypatch.setattr(settings, "catalog_sheet_id", "sheet-id-for-tests")
     monkeypatch.setattr(settings, "telegram_ops_chat_id", "-100")
@@ -306,3 +307,11 @@ async def test_unlinked_item_is_flagged(clean, world):
         await session.commit()
     [order] = await view(clean, "v_order_margin", "order_id")
     assert order["lines_without_cost"] == 1 and order["cogs"] == Decimal("0.00")
+
+
+async def test_sync_is_off_by_default(clean, world, monkeypatch):
+    # Маржа одна — финмодели; справочники из таблицы не читаются, пока их не включат.
+    monkeypatch.setattr(settings, "references_sync_enabled", False)
+    world["serve"](sheet())
+    assert "выключена" in (await refs.sync(force=True))["skipped"]
+    assert world["client"].calls == 0

@@ -369,7 +369,7 @@ def _catalog_item(name: str, price: float, quantity: int) -> dict:
     for variant in variants:
         found = catalog_service.find_item(" ".join(variant.split()))
         if found is not None:
-            return {"name": found["name"], "quantity": quantity, "price": price}
+            return {"name": found["name"], "quantity": quantity, "price": price, **catalog_service.sku_ref(found)}
     return {"name": name, "quantity": quantity, "price": price}
 
 
@@ -398,12 +398,76 @@ async def start_order(
             logger.info("Заказ витрины %s уже заведён, источник %s не нужен", order_id, source)
         return
 
+    from app.modules.consent import service as consent
+
+    items = [_catalog_item(item["name"], item["price"], item["quantity"]) for item in items]
+    items_total = round(sum(item["price"] * item["quantity"] for item in items), 2)
+    if not await consent.has_pd(peer_id):
+        await _wait_for_consent(peer_id, order_id, items, items_total, source, vk_delivery)
+        return
+    await _proceed(peer_id, order_id, items, items_total, address, recipient, vk_delivery)
+
+
+async def _wait_for_consent(
+    peer_id: int, order_id: int, items: list[dict], items_total: float, source: str, vk_delivery: str,
+) -> None:
+    """Согласия на ПДн нет: заказ — только составом, адрес и получателя из ВК не берём.
+
+    После «Согласен» `resume_after_consent` перечитает заказ из ВК и пойдёт
+    обычным путём — с пунктами и расчётом доставки.
+    """
+    from app.messages import funnel
+    from app.modules.analytics import service as analytics
+    from app.modules.consent import service as consent
+    from app.modules.dialog import history as dialog_history
+
+    draft = OrderDraft(items=items, items_total=items_total, stage="awaiting_delivery")
+    draft.details.update({"vk_order_id": order_id, "origin": "storefront",
+                          "consent_wait": {"vk_delivery": vk_delivery, "source": source}})
+    await state.set_draft(peer_id, draft)
+    await analytics.ensure_client(peer_id)
+    await funnel.record(peer_id, "draft_created", source_=funnel.STOREFRONT, origin="storefront",
+                        vk_order_id=order_id)
+    listed = ", ".join(f"{item['name']} × {item['quantity']}" for item in items)
+    await dialog_history.append_message(
+        peer_id, "assistant",
+        f"Клиент оформил заказ №{order_id} в разделе «Товары» сообщества: {listed} — "
+        f"{templates.amount(items_total)} ₽. Ждём согласия на обработку персональных данных.",
+        author=dialog_history.AUTHOR_VK,
+    )
+    await consent.send_pd_prompt(
+        peer_id, intro=templates.storefront_consent_intro(order_id, listed, items_total),
+    )
+    await _tell_manager(order_id, peer_id, f"{listed} — {templates.amount(items_total)} ₽. "
+                        "Ждём согласия покупателя на обработку данных — потом бот предложит доставку.")
+
+
+async def resume_after_consent(peer_id: int) -> bool:
+    """Заказ из «Товаров» ждал согласия — дальше обычным путём. False — ждать было нечего."""
+    draft = await state.get_draft(peer_id)
+    details = (draft.details if draft is not None else {}) or {}
+    wait = details.get("consent_wait")
+    order_id = details.get("vk_order_id")
+    if draft is None or not wait or not order_id:
+        return False
+    order: dict = {}
+    try:
+        order = await vk_orders_client.get_order(order_id, user_id=peer_id) or {}
+    except Exception:
+        logger.exception("Заказ витрины %s: после согласия не прочитали адрес из ВК", order_id)
+    await _proceed(peer_id, int(order_id), draft.items, draft.items_total, _address_of(order) if order else "",
+                   _recipient_of(order) if order else None, wait.get("vk_delivery") or "", resumed=True)
+    return True
+
+
+async def _proceed(
+    peer_id: int, order_id: int, items: list[dict], items_total: float, address: str,
+    recipient: tuple[str, str] | None, vk_delivery: str, *, resumed: bool = False,
+) -> None:
     from app.messages import funnel
     from app.modules.analytics import service as analytics
     from app.modules.dialog import history as dialog_history
 
-    items = [_catalog_item(item["name"], item["price"], item["quantity"]) for item in items]
-    items_total = round(sum(item["price"] * item["quantity"] for item in items), 2)
     parsed = address_parser.city_and_street(address) if address else None
     city, street = parsed if parsed else ("", "")
 
@@ -426,8 +490,9 @@ async def start_order(
         draft.details["storefront_recipient"] = {"name": recipient[0], "phone": recipient[1]}
     await state.set_draft(peer_id, draft)
     await analytics.ensure_client(peer_id)
-    await funnel.record(peer_id, "draft_created", source_=funnel.STOREFRONT, origin="storefront",
-                        vk_order_id=order_id)
+    if not resumed:
+        await funnel.record(peer_id, "draft_created", source_=funnel.STOREFRONT, origin="storefront",
+                            vk_order_id=order_id)
     if vk_delivery:
         # Что клиент выбрал в «Товарах» — кодом, без города и адреса.
         await funnel.record(peer_id, "storefront_vk_delivery", source_=funnel.STOREFRONT,
@@ -486,6 +551,11 @@ async def _complete_with_address(
     """
     draft = await state.get_draft(peer_id)
     details = (draft.details if draft is not None else {}) or {}
+    if details.get("consent_wait"):
+        # Ждём согласия: адрес из второго источника не берём, после согласия
+        # заказ перечитается из ВК целиком.
+        logger.info("Заказ витрины %s ждёт согласия — адрес из %s не берём", order_id, source)
+        return
     if (draft is None or details.get("vk_order_id") != order_id or draft.delivery_method
             or details.get("storefront_city")):
         logger.info("Заказ витрины %s уже заведён, источник %s не нужен", order_id, source)

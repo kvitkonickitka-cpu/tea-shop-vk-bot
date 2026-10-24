@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -141,7 +142,61 @@ async def get_me() -> dict:
 
 async def get_updates(offset: int | None, *, wait_seconds: int) -> list[dict]:
     """Длинный опрос: Telegram держит запрос до wait_seconds, пока нет нового."""
-    payload: dict = {"timeout": wait_seconds, "allowed_updates": ["message"]}
+    # callback_query — кнопки под карточками (публикация отзыва, C7).
+    payload: dict = {"timeout": wait_seconds, "allowed_updates": ["message", "callback_query"]}
     if offset is not None:
         payload["offset"] = offset
     return await call("getUpdates", payload, timeout=wait_seconds + 15)
+
+
+async def send_document(filename: str, content: bytes, *, chat_id: str, caption: str = "",
+                        reply_to: int | None = None) -> None:
+    """Файл в чат (выгрузка КУДиР и подобное) — тем же путём через прокси.
+
+    multipart, а не JSON: файл идёт телом запроса. Ошибки — без адреса (в нём токен).
+    """
+    base_url = settings.telegram_api_base_url or TELEGRAM_API_URL
+    url = f"{base_url}/bot{settings.telegram_bot_token}/sendDocument"
+    headers = (
+        {"X-Proxy-Secret": settings.telegram_proxy_secret}
+        if settings.telegram_api_base_url and settings.telegram_proxy_secret
+        else {}
+    )
+    data = {"chat_id": chat_id, "parse_mode": "HTML"}
+    if caption:
+        data["caption"] = caption[:1000]
+    if reply_to:
+        data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            response = await client.post(url, data=data, files={"document": (filename, content)}, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise RuntimeError(
+                f"Telegram ответил {error.response.status_code}: {error.response.text[:300]}"
+            ) from None
+        except httpx.RequestError as error:
+            raise TelegramUnavailable(f"Telegram недоступен: {type(error).__name__}") from None
+
+
+async def download_file(file_id: str, *, limit_bytes: int = 2_000_000) -> bytes:
+    """Файл из сообщения (документ в чате Ops) — getFile и скачивание тем же путём через прокси."""
+    info = await call("getFile", {"file_id": file_id})
+    if int(info.get("file_size") or 0) > limit_bytes:
+        raise ValueError("файл больше 2 МБ")
+    base_url = settings.telegram_api_base_url or TELEGRAM_API_URL
+    url = f"{base_url}/file/bot{settings.telegram_bot_token}/{info['file_path']}"
+    headers = (
+        {"X-Proxy-Secret": settings.telegram_proxy_secret}
+        if settings.telegram_api_base_url and settings.telegram_proxy_secret
+        else {}
+    )
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise RuntimeError(f"Telegram ответил {error.response.status_code} на скачивание файла") from None
+        except httpx.RequestError as error:
+            raise TelegramUnavailable(f"Telegram недоступен: {type(error).__name__}") from None
+    return response.content

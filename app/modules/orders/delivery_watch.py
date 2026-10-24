@@ -112,6 +112,9 @@ class Observation:
     # Какие поля ответа похожи на срок хранения — для лога, без данных
     # клиента.
     storage_fields: str = ""
+    # Фактическая стоимость доставки у перевозчика (СДЭК: delivery_detail.total_sum —
+    # с НДС, после пересчёта по весу). Ozon факт не отдаёт: только «estimated».
+    carrier_cost: float | None = None
 
 
 def _parse_time(raw) -> datetime | None:
@@ -192,7 +195,17 @@ def read_cdek(data: dict) -> Observation:
         not_delivered=bool(codes & _CDEK_NOT_DELIVERED),
         trouble=latest_code in _CDEK_TROUBLE,
         cdek_number=str(entity.get("cdek_number") or ""),
+        carrier_cost=_cdek_cost(entity),
     )
+
+
+def _cdek_cost(entity: dict) -> float | None:
+    detail = entity.get("delivery_detail") or {}
+    try:
+        value = float(detail.get("total_sum"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def read_ozon(info: dict, *, handed_over: bool) -> Observation:
@@ -287,6 +300,11 @@ async def _save(order: Order, observation: Observation | None, now: datetime) ->
                 row.storage_until = observation.storage_until
             if observation.postamat and not (row.details or {}).get("postamat"):
                 row.details = {**(row.details or {}), "postamat": True}
+            if observation.carrier_cost and (row.details or {}).get("carrier_actual_cost") != observation.carrier_cost:
+                # Факт для сверки с котировкой (fin.v_carrier_check): сколько
+                # перевозчик выставит за эту посылку.
+                row.details = {**(row.details or {}), "carrier_actual_cost": observation.carrier_cost,
+                               "carrier_actual_source": "cdek_api"}
         await session.commit()
 
 
