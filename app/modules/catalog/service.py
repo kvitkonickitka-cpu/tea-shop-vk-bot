@@ -2,13 +2,29 @@ import json
 import logging
 from pathlib import Path
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 CATALOG_PATH = Path(__file__).parent / "catalog.json"
 
 
+def from_db() -> bool:
+    """Каталог ведётся в базе (`CATALOG_SOURCE=db`), а не в Google Таблице."""
+    return settings.catalog_source.strip().lower() == "db"
+
+
 def load_items() -> list[dict]:
-    """Ассортимент: из Google Таблицы, если она подключена и прочитана, иначе из образа."""
+    """Ассортимент: из базы, из Google Таблицы или из образа.
+
+    В режиме базы пустой список — пауза (`paused`), а не повод взять
+    таблицу или `catalog.json`.
+    """
+    if from_db():
+        from app.modules.catalog import store
+
+        return store.current_items()
+
     from app.modules.catalog import sheet
 
     from_sheet = sheet.current_items()
@@ -16,6 +32,27 @@ def load_items() -> list[dict]:
         return from_sheet
     with CATALOG_PATH.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+async def ensure_fresh() -> None:
+    """Подтянуть в память контейнера текущую версию каталога. Не бросает."""
+    if from_db():
+        from app.modules.catalog import store
+
+        await store.ensure_fresh()
+        return
+    from app.modules.catalog import sheet
+
+    await sheet.ensure_fresh()
+
+
+def paused() -> bool:
+    """Продавать нечего: каталог в базе пуст или не читается."""
+    if not from_db():
+        return False
+    from app.modules.catalog import store
+
+    return store.unavailable()
 
 
 def find_item(name: str, items: list[dict] | None = None) -> dict | None:

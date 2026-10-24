@@ -203,6 +203,10 @@ async def _run_scheduled() -> dict:
     # Ассортимент из Google Таблицы — до каталога Ozon: один запрос, а
     # каталог Ozon забирает весь остаток бюджета.
     result["catalog_sheet"] = await _run_task("Каталог из таблицы", catalog_sheet.refresh())
+    # Правки каталога в базе: цена, продажа, архив — в Ops-чат.
+    from app.modules.catalog import store as catalog_store
+
+    result["catalog_changes"] = await _run_task("Каталог: правки в Ops", catalog_store.notify_changes())
     # Справочники (себестоимость, настройки) — та же таблица, раз в 15 минут.
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
     # Счёт Anthropic по дням — раз в час, админ-ключом.
@@ -693,6 +697,22 @@ async def references_sync(request: Request):
     if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
     return await analytics_references.sync(force=True)
+
+
+@router.post("/internal/catalog/import-from-sheet")
+async def catalog_import_from_sheet(request: Request):
+    """Перенести каталог из Google Таблицы в базу — разово.
+
+        scripts/api.sh catalog/import-from-sheet            # только отчёт
+        scripts/api.sh 'catalog/import-from-sheet?apply=1'  # записать новые артикулы
+
+    Таблица только читается. Уже заведённые в базе артикулы не трогаются.
+    """
+    if not await _authorized(request):
+        return Response(content="forbidden", media_type="text/plain", status_code=403)
+    from app.modules.catalog import sheet_import
+
+    return await sheet_import.run(apply=request.query_params.get("apply") in ("1", "true", "да"))
 
 
 @router.post("/internal/catalog/sheet")

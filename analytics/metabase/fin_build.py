@@ -49,10 +49,19 @@ def find(items, **match):
 
 FORM_TABLES = ("expenses", "capital", "cash_snapshots", "purchase_lots", "packing_runs", "ad_spend", "inputs",
                "carrier_acts", "supply_lead_times", "tax_calendar", "code_batches", "code_writeoffs")
+# Каталог бота (схема shop): правят формы «Служебное» → «Каталог». В словаре
+# таблиц — с именем схемы, чтобы не спутать с таблицами fin.
+SHOP_TABLES = ("shop.catalog", "shop.bundle_items")
+
+
+def form_tables(db):
+    """Таблицы подключения форм: fin — по имени, shop — «shop.имя»."""
+    return {(t["name"] if t.get("schema") == "fin" else f"{t['schema']}.{t['name']}"): t["id"]
+            for t in call("GET", f"/database/{db}/metadata")["tables"] if t.get("schema") in ("fin", "shop")}
 
 
 def fin_database():
-    """Подключение metabase_fin к той же базе, что metabase_ro, но только к схеме fin."""
+    """Подключение metabase_fin к той же базе, что metabase_ro, но только к схемам fin и shop."""
     password = os.environ.get("MB_FIN_PW")
     if not password:
         raise SystemExit("Нет MB_FIN_PW: MB_FIN_PW=\"$(cat /etc/teashop/metabase_fin_password)\" python3 fin_build.py")
@@ -60,7 +69,7 @@ def fin_database():
     details = {k: ro[k] for k in ("host", "port", "dbname", "ssl", "ssl-mode", "ssl-use-client-auth", "tunnel-enabled")
                if k in ro}
     details.update({"user": "metabase_fin", "password": password,
-                    "schema-filters-type": "inclusion", "schema-filters-patterns": "fin"})
+                    "schema-filters-type": "inclusion", "schema-filters-patterns": "fin,shop"})
     body = {"name": FIN_DB_NAME, "engine": "postgres", "details": details,
             "settings": {"database-enable-actions": True}}
     existing = find(call("GET", "/database")["data"], name=FIN_DB_NAME)
@@ -73,14 +82,14 @@ def fin_database():
     call("PUT", f"/database/{db}", {"settings": {"database-enable-actions": True}})
     call("POST", f"/database/{db}/sync_schema", {})
     for _ in range(40):
-        tables = {t["name"]: t["id"] for t in call("GET", f"/database/{db}/metadata")["tables"] if t.get("schema") == "fin"}
+        tables = form_tables(db)
         # Ждём все таблицы форм: после новой миграции Metabase видит их не сразу,
         # и сборка падала на KeyError посреди работы (21.10.2026, supply_lead_times).
-        if set(FORM_TABLES) <= set(tables):
+        if set(FORM_TABLES) | set(SHOP_TABLES) <= set(tables):
             return db, tables
         time.sleep(3)
-    raise SystemExit("Metabase не видит таблиц fin через metabase_fin: схема применена (analytics/fin/apply.sh)? "
-                     "Права выданы (grants.sql)?")
+    raise SystemExit("Metabase не видит таблиц fin и shop через metabase_fin: схема fin применена (analytics/fin/apply.sh)? "
+                     "Права выданы (grants.sql)? Бот с каталогом в базе задеплоен (схема shop)?")
 
 
 # --- коллекции ------------------------------------------------------------------------

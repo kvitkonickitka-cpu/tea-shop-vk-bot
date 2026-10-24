@@ -246,6 +246,15 @@ async def _connect() -> bool:
             await yk_registry.ensure_tables(conn)
     except Exception:
         logger.exception("Не создали таблицы реестра ЮKassa в схеме finance")
+    # Каталог в схеме shop — тоже отдельно: при CATALOG_SOURCE=sheet бот без
+    # неё работает, а при db без неё бот сам скажет о паузе (`catalog.store`).
+    from app.modules.catalog import schema as catalog_schema
+
+    try:
+        async with engine.begin() as conn:
+            await catalog_schema.ensure(conn)
+    except Exception:
+        logger.exception("Не создали схему каталога shop")
     return True
 
 

@@ -413,6 +413,9 @@ async def _read_service_account() -> tuple[Parsed, str] | dict:
 
 async def refresh(*, force: bool = False) -> dict:
     """Прочитать таблицу, проверить и, если она в порядке, сделать её каталогом."""
+    if settings.catalog_source.strip().lower() == "db":
+        # Каталог ведётся в базе: таблица — архив, в Google не ходим вовсе.
+        return {"skipped": "CATALOG_SOURCE=db — каталог в базе, таблица не читается"}
     mode = _mode()
     if mode == PUBLIC:
         if not settings.catalog_sheet_csv_url:
