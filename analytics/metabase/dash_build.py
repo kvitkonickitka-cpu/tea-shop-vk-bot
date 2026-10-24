@@ -322,7 +322,9 @@ from {flows} order by period""", "table",
     card("m_fcf_cum", q, "Накопленный FCF против вкладов партнёров", f"""
 select period as "Период", round(cum_fcf) as "Накопленный FCF", round(cum_contributions) as "Вклады партнёров"
 from {flows} order by period""", "line",
+         # Одна ось: иначе Metabase уводит вклады на вторую шкалу, и линии не сравнить.
          {"graph.dimensions": ["Период"], "graph.metrics": ["Накопленный FCF", "Вклады партнёров"],
+          "graph.y_axis.auto_split": False,
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "₽",
           **colfmt(**{"Накопленный FCF": RUB, "Вклады партнёров": RUB})},
          "Сколько бизнес потратил (FCF накопленный, ниже нуля) против того, сколько партнёры вложили.", tags=grain)
