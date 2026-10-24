@@ -867,14 +867,15 @@ if __name__ == "__main__":
     # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
     # когда капитал внесён.
     put(pulse, ptabs, parameters=[GRAIN_PARAM], dashcards=[
-        # «Денег хватит до» — вдвое шире: «на весь прогноз (до 31.03.2027)» в узкой плитке обрезалось.
-        dc("t_free", T, 0, 0, 6, 4), dc("t_runway", T, 0, 6, 12, 4), dc("t_capital", T, 0, 18, 6, 4),
-        dc("t_pilot", T, 4, 0, 6, 4, hide_empty=True),
-        dc("t_loss", T, 4, 6, 6, 4, hide_empty=True),
-        dc("t_nocap", T, 8, 0, 24, 2, hide_empty=True),
-        dc("t_attention", T, 10, 0, 24, att_h),
-        dc("t_balance", T, 10 + att_h, 0, 24, 7),
-        dc("t_soon", T, 17 + att_h, 0, 24, 2, hide_empty=True),
+        dc("t_free", T, 0, 0, 6, 4), dc("t_capital", T, 0, 6, 6, 4),
+        dc("t_pilot", T, 0, 12, 6, 4, hide_empty=True), dc("t_loss", T, 0, 18, 6, 4, hide_empty=True),
+        # «Денег хватит до» — строкой во всю ширину, как прогноз без вкладов под ним: текст
+        # «на весь прогноз (до 31.03.2027)» в плитке обрезался — шрифт растёт вместе с ней.
+        dc("t_runway", T, 4, 0, 24, 2),
+        dc("t_nocap", T, 6, 0, 24, 2, hide_empty=True),
+        dc("t_attention", T, 8, 0, 24, att_h),
+        dc("t_balance", T, 8 + att_h, 0, 24, 7),
+        dc("t_soon", T, 15 + att_h, 0, 24, 2, hide_empty=True),
         # Деньги
         dc("m_spend", M, 0, 0, 12, 8),
         dc("m_partners", M, 0, 12, 12, rows_height("select * from fin.v_partner_capital", extra=2.5)),
