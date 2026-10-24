@@ -49,7 +49,7 @@ def find(items, **match):
 
 FORM_TABLES = ("expenses", "capital", "cash_snapshots", "purchase_lots", "packing_runs", "ad_spend", "inputs",
                "carrier_acts", "supply_lead_times", "tax_calendar", "code_batches", "code_writeoffs")
-# Каталог бота (схема shop): правят формы «Служебное» → «Каталог». В словаре
+# Каталог бота (схема shop): правят формы «Пульс» → «Каталог». В словаре
 # таблиц — с именем схемы, чтобы не спутать с таблицами fin.
 SHOP_TABLES = ("shop.catalog", "shop.bundle_items")
 

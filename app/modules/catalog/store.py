@@ -165,7 +165,7 @@ async def alert_unavailable() -> None:
         await telegram_client.send_message(
             "🚨 <b>Каталог в базе пуст или не читается</b>\n"
             "Бот не продаёт: покупателям отвечает, что приём заказов на паузе. "
-            "Проверьте shop.catalog (Metabase → «Служебное» → «Каталог») и подключение к базе.",
+            "Проверьте shop.catalog (Metabase → «Пульс» → «Каталог») и подключение к базе.",
             chat_id=settings.telegram_ops_chat_id,
         )
     except Exception:

@@ -1,4 +1,5 @@
-"""Дашборды «Пульс» (каждый день) и «Служебное» (раз в неделю, в конце месяца) в коллекции «Дашборды».
+"""Дашборд «Пульс» в коллекции «Дашборды»: каждый день — «Сегодня», «Деньги», «Продажи», «Товар»;
+раз в неделю и в конце месяца — «Ввод данных», «Сверки», «Отчёты», «Вводные», «Каталог».
 
     MB_FIN_PW="$(cat /etc/teashop/metabase_fin_password)" python3 dash_build.py
 
@@ -11,9 +12,11 @@
   текстом «08.09.2026» (у Metabase нет формата дня с ведущим нулём), на осях — «8 сен»;
 - вопросы, модели и формы — заново в подколлекции «Пульс и Служебное — вопросы»
   (прежняя уходит в архив в конце, когда дашборды уже на новых вопросах);
-- дашборды «Пульс» и «Служебное» обновляются на месте: ссылки не меняются;
-- «Пульс» — главная страница Metabase, оба дашборда закреплены в «Дашбордах»;
-- «Сводка» и «Финансы» со своими вопросами — в архив (ничего не удаляется).
+- «Пульс» обновляется на месте: ссылка не меняется. До 24.10.2026 служебные вкладки
+  были отдельным дашбордом «Служебное» — владелец попросил один экран, теперь они идут
+  после «Товара», а «Служебное» уходит в архив;
+- «Пульс» — главная страница Metabase и закреплён в «Дашбордах»;
+- «Сводка», «Финансы» и «Служебное» со своими вопросами — в архив (ничего не удаляется).
 
 Цвет — только у статуса, и только условным форматированием Metabase: эмодзи в данных
 нет. Пороги датчика «Свободно» и цели прогресс-баров берутся из базы при сборке —
@@ -26,10 +29,10 @@ SITE = BASE[:-4]
 RO_DB = fb.RO_DB
 ROOT = "Дашборды"
 QUESTIONS = "Пульс и Служебное — вопросы"
-PULSE, SERVICE = "Пульс", "Служебное"
-PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар"]
-SERVICE_TABS = ["Ввод данных", "Сверки", "Отчёты", "Вводные", "Каталог"]
-OLD_DASHBOARDS = ("Сводка", "Финансы")
+PULSE = "Пульс"
+# Служебные вкладки — после «Товара», в том же дашборде.
+PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Ввод данных", "Сверки", "Отчёты", "Вводные", "Каталог"]
+OLD_DASHBOARDS = ("Сводка", "Финансы", "Служебное")
 
 # Рубли целые, проценты с одним знаком; разделители — из глобальных настроек
 # (пробел для тысяч, запятая для дробей). Минус — знаком, а не скобками.
@@ -110,7 +113,7 @@ def collections():
     root = max(roots, key=lambda c: c["id"]) if roots else call("POST", "/collection", {"name": ROOT})
     old = [c for c in every if c.get("name") == QUESTIONS and not c.get("archived")]
     qcoll = call("POST", "/collection", {"name": QUESTIONS, "parent_id": root["id"],
-                                         "description": "Вопросы, модели и формы «Пульса» и «Служебного». Собирает dash_build.py."})
+                                         "description": "Вопросы, модели и формы «Пульса». Собирает dash_build.py."})
     return root["id"], qcoll["id"], old
 
 
@@ -252,7 +255,7 @@ group by date_trunc('month', s.day), s.budget_item, b.cash_class, b.sort order b
                  "graph.show_values": True, "graph.x_axis.title_text": "", "graph.y_axis.title_text": "Расход, ₽",
                  "series_settings": SERIES_COLORS, **colfmt(Расход=RUB)},
          "Расходы бизнеса: выписка (без переводов себе) + покупки «мимо счёта» по статьям бюджета пилота. Переводы "
-         "себе на покупки сюда не входят — их сверка на «Служебном → Сверки». Вложения — оборудование.")
+         "себе на покупки сюда не входят — их сверка на вкладке «Сверки». Вложения — оборудование.")
     card("m_partners", q, "Кто сколько вложил", """
 select partner as "Партнёр", plan as "План", contributed as "Внесено",
        greatest(coalesce(plan, 0) - contributed, 0) as "Осталось",
@@ -779,12 +782,10 @@ if __name__ == "__main__":
         raise SystemExit("Metabase не видит fin.bank_marks: миграции 009–010 применены (analytics/fin/apply.sh)?")
     root, qcoll, old = collections()
     pulse, ptabs = ensure_dashboard(root, PULSE, "Каждый день: всё ли в порядке, куда уходят деньги, работают ли реклама "
-                                    "и бот, на чём зарабатываем. Выписка — 07:00 и 21:00 МСК, заказы — сразу.", PULSE_TABS)
-    service, stabs = ensure_dashboard(root, SERVICE, "Раз в неделю и в конце месяца: ввод данных, сверки, отчёты, вводные.",
-                                      SERVICE_TABS)
-    links = {"money": f"{SITE}/dashboard/{pulse}?tab={ptabs['Деньги']}", "sales": f"{SITE}/dashboard/{pulse}?tab={ptabs['Продажи']}",
-             "entry": f"{SITE}/dashboard/{service}?tab={stabs['Ввод данных']}",
-             "checks": f"{SITE}/dashboard/{service}?tab={stabs['Сверки']}"}
+                                    "и бот, на чём зарабатываем. Раз в неделю и в конце месяца: ввод данных, сверки, "
+                                    "отчёты, вводные, каталог. Выписка — 07:00 и 21:00 МСК, заказы — сразу.", PULSE_TABS)
+    links = {name: f"{SITE}/dashboard/{pulse}?tab={ptabs[tab]}"
+             for name, tab in (("money", "Деньги"), ("sales", "Продажи"), ("entry", "Ввод данных"), ("checks", "Сверки"))}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
         SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
@@ -803,6 +804,7 @@ if __name__ == "__main__":
 
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
     T, M, S, P = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"]
+    E, C, R, I, K = ptabs["Ввод данных"], ptabs["Сверки"], ptabs["Отчёты"], ptabs["Вводные"], ptabs["Каталог"]
     # Скрытые без данных карточки Metabase убирает из сетки, и всё ниже поднимается: «убыток
     # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
     # когда капитал внесён.
@@ -828,9 +830,6 @@ if __name__ == "__main__":
         dc("p_waterfall", P, 0, 0, 24, 7),
         dc("p_margin", P, 7, 0, 12, 11), dc("p_breakeven", P, 7, 12, 12, 4), dc("p_scenarios", P, 11, 12, 12, 4),
         dc("p_sales", P, 18, 0, 24, 6, True),
-    ])
-    E, C, R, I, K = stabs["Ввод данных"], stabs["Сверки"], stabs["Отчёты"], stabs["Вводные"], stabs["Каталог"]
-    put(service, stabs, [
         text(E, 0, 0, 24, 1, "**Каждый день**"),
         button("ads", "Реклама за день", E, 1, 0), button("expense", "Добавить расход", E, 1, 4),
         text(E, 2, 0, 24, 1, "**Редко**"),
@@ -857,12 +856,11 @@ if __name__ == "__main__":
 
     failed = verify()
     call("PUT", f"/dashboard/{pulse}", {"collection_position": 1})
-    call("PUT", f"/dashboard/{service}", {"collection_position": 2})
     call("PUT", "/setting/custom-homepage", {"value": True})
     call("PUT", "/setting/custom-homepage-dashboard", {"value": pulse})
     for c in old:
         call("PUT", f"/collection/{c['id']}", {"archived": True})
     if not failed:
         archive_old(root)
-    print(f"{PULSE}: {SITE}/dashboard/{pulse}\n{SERVICE}: {SITE}/dashboard/{service}")
+    print(f"{PULSE}: {SITE}/dashboard/{pulse}")
     raise SystemExit(1 if failed else 0)
