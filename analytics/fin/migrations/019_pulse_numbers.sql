@@ -279,10 +279,10 @@ select b.day as bank_date, b.balance as bank_balance, fin.inp('min_cash_reserve'
        -- 019: все платежи до старта из fin.v_payments_plan — та же сумма, что «До старта заплатить».
        (select coalesce(sum(amount), 0) from fin.v_payments_plan where day < fin.inp_date('pilot_start_date'))
            as left_before_start,
-       -- 019: коротко — помещается в плитку: «31.03.2027» или «позже 31.03.2027».
+       -- 019: коротко — помещается в плитку шириной 6 при окне 1280: «31.03.2027» или «позже 31.03.27».
        case when b.balance < fin.inp('min_cash_reserve') then 'уже ниже резерва'
             when r.runout is not null then to_char(r.runout, 'DD.MM.YYYY')
-            else 'позже ' || to_char(hz.horizon, 'DD.MM.YYYY') end as runway_text
+            else 'позже ' || to_char(hz.horizon, 'DD.MM.YY') end as runway_text
 from b cross join r cross join hz;
 
 create or replace view fin.v_balance_chart as

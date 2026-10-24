@@ -34,7 +34,8 @@ QUESTIONS = "Пульс и Служебное — вопросы"
 PULSE = "Пульс"
 PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Склад", "Коды"]
 MANAGE = "Управление"
-MANAGE_TABS = ["Ввод данных", "Каталог", "Сверки", "Отчёты", "Вводные"]
+# Кнопки действий — только здесь: «Пульс» только читают (ревизия 24.10.2026).
+MANAGE_TABS = ["Ввод данных", "Коды: ввод в оборот", "Каталог", "Сверки", "Отчёты", "Вводные"]
 OLD_DASHBOARDS = ("Сводка", "Финансы", "Служебное")
 
 # Рубли целые, проценты с одним знаком; разделители — из глобальных настроек
@@ -154,8 +155,58 @@ def archive_old(root):
 
 CARDS = {}
 
+# Значок i на «Пульсе»: одна строка — что показывает карточка и откуда цифры (ревизия
+# 24.10.2026). Подробности — в описаниях у самих вопросов «Управления» и в README.
+PULSE_DESCRIPTIONS = {
+    "t_free": "Остаток по выписке банка минус минимальный резерв (вводная). Выписка — 07:00 и 21:00 МСК.",
+    "t_runway": "Без учёта продаж: когда прогноз остатка опустится ниже резерва; «позже» — не опустится до конца прогноза.",
+    "t_nocap": "Тот же прогноз без вкладов, которые ещё не пришли; пропадает, когда капитал внесён.",
+    "t_pilot": "Дней до старта пилота — вводная «Первый месяц календарного плана».",
+    "t_capital": "Внесено партнёрами по выписке («Взнос собственника») против вводной «Стартовый капитал».",
+    "t_attention": "Что сломалось или ждёт решения — проверки fin.v_attention; «Где» ведёт на нужную вкладку.",
+    "t_balance": "Остаток по выписке и прогноз до конца пилота + 30 дней; точками — с планом продаж.",
+    "t_loss_soon": "Убыток пилота против паузы и стопа появится здесь после старта.",
+    "t_loss": "Накопленный убыток М1–М3 по P&L против вводных «Убыток для паузы» и «Максимальный убыток».",
+    "t_soon": "Пропадает с первым оплаченным заказом.",
+    "m_spend": "Расходы по месяцам и статьям бюджета: выписка без переводов себе + покупки «мимо счёта».",
+    "m_partners": "План вкладов — вводные; внесено — выписка, разметка «Чей вклад».",
+    "m_forecast": "Прогноз без продаж по неделям с понедельника: вклады и выплаты ЮKassa против всех платежей.",
+    "m_budget": "Статьи бюджета пилота: план из вводных, потрачено по выписке и с карты, запланировано формой.",
+    "m_ahead_total": "Все платежи до старта — та же сумма, что в «Требует внимания» и «Платежах впереди».",
+    "m_ahead": "Все платежи на 8 недель: остатки статей, планы формы, налоги, сервисы, банк.",
+    "m_fcf": "Операционный поток + вложения = FCF; финансирование — отдельно. Источник — выписка и покупки с карты.",
+    "m_fcf_cum": "Накопленный FCF против накопленных вкладов партнёров, по выписке.",
+    "m_fcf_order": "Операционный поток с начала пилота на один оплаченный заказ.",
+    "s_soon": "Пропадает с первым оплаченным заказом.",
+    "s_funnel": "Клиенты по шагам: диалог, черновик, счёт, оплата, вручение — журнал воронки бота.",
+    "s_daily": "Оплаченные заказы по дням против нужного для безубыточности.",
+    "s_cac": "Платный CAC по неделям: реклама своими / новые клиенты из рекламы.",
+    "s_check": "Средний чек оплаченных заказов без возвратов по неделям.",
+    "p_waterfall": "Цена lead-продукта → налог и комиссия → чай → упаковка → доставка → Claude = маржа до рекламы.",
+    "p_margin": "Маржа до рекламы по товарам каталога; красным — ниже порога (вводная «Порог низкой маржи»).",
+    "p_breakeven": "Сколько заказов lead-продукта в месяц покрывает постоянные расходы и рекламу по плану.",
+    "p_scenarios": "Сколько заказов в месяц нужно при другой рекламе — вводная «Сценарии рекламы».",
+    "p_sales": "Продано по товарам каталога, оплаченные заказы без возвратов.",
+    "w_lots": "Партии сырья: остаток, резерв под оплаченные заказы, свободно, срок — склад бота (shop.lots).",
+    "w_reorder": "Сырьё, которого хватит меньше чем на срок поставки с запасом, — пора заказывать.",
+    "w_expiring": "Партии, у которых скоро истекает срок годности.",
+    "w_no_stock": "Артикулы в продаже, на которые нет свободного сырья, — бот их не продаёт.",
+    "w_diff": "Инвентаризация и потери фасовки против учёта — журнал движений склада.",
+    "c_bought": "Куплено кодов «Честного знака» в СУЗ: штук и рублей.",
+    "c_spoiled": "Испорчено кодов (этикетка, брак) — в продажу не пойдут.",
+    "c_status": "Коды по статусам на каждый артикул — журнал кодов бота.",
+    "c_unsellable": "Наклеены и не введены в оборот дольше рабочего дня — такие пачки продавать нельзя.",
+    "c_stuck": "Введены в оборот и не проданы дольше 3 дней — пачка потеряна или не отправлена.",
+    "c_runway": "На сколько дней хватит свободных кодов при продажах последних 14 дней.",
+    "c_batches": "Выгрузки для ввода в оборот и их статус в ЛК ЧЗ.",
+    "c_export": "Файл для ЛК ЧЗ по открытым выгрузкам: КИ, GTIN, декларация, дата упаковки.",
+    "c_by_lot": "Сколько пачек партии собрано, введено, продано и у покупателей — фильтр «Партия».",
+    "c_lot_codes": "Коды партии для отзыва — фильтр «Партия», скачать CSV.",
+}
+
 
 def card(key, coll, name, sql, display, viz=None, description=None, tags=None):
+    description = PULSE_DESCRIPTIONS.get(key, description)
     body = {"name": name, "display": display, "collection_id": coll, "description": description,
             "visualization_settings": merge(FULL, viz or {}),
             "dataset_query": {"type": "native", "database": RO_DB,
@@ -188,7 +239,8 @@ select free_cash as "Свободно" from fin.v_money_now""",
          "осталось потратить до старта по бюджету пилота; зелёное — хватает. Границы шкалы — на момент сборки "
          "дашборда. Выписка обновляется в 07:00 и 21:00 МСК.", fmt={"Свободно": RUB})
     # runway_text с 019 короткий — «31.03.2027» или «позже 31.03.2027», помещается в плитку.
-    number("t_runway", q, "Денег хватит до (без учёта продаж)", """
+    # Названия плиток — до 30 знаков: длиннее Metabase обрезает при окне 1280.
+    number("t_runway", q, "Хватит до (без учёта продаж)", """
 select runway_text as "Хватит до" from fin.v_money_now""",
            "Без учёта продаж: первый день, когда прогноз остатка опускается ниже резерва; «позже» — не опускается "
            "до конца прогноза (конец пилота + 30 дней). В прогнозе — ожидаемые вклады, выплаты ЮKassa в пути и "
@@ -215,9 +267,9 @@ select pilot_loss as "Убыток" from fin.v_pilot_status where started and pi
     number("t_loss_soon", q, f"Убыток пилота: пауза {rub(loss[0])}, стоп {rub(loss[1])}", """
 select 'Пилот не начат — старт ' || to_char(start_date, 'DD.MM') as "Убыток" from fin.v_pilot_status where not started""",
            "Накопленный убыток М1–М3 по P&L против паузы и стопа появится здесь после старта.")
-    number("t_nocap", q, "Без новых вкладов денег хватит до", f"""
+    number("t_nocap", q, "Без новых вкладов хватит до", f"""
 select case when runout_no_capital <= bank_date then 'уже ниже резерва'
-            else coalesce({d('runout_no_capital')}, 'позже ' || {d('horizon')}) end as "Хватит до"
+            else coalesce({d('runout_no_capital')}, 'позже ' || to_char(horizon, 'DD.MM.YY')) end as "Хватит до"
 from fin.v_money_now where capital_remaining > 0""",
            "Тот же прогноз, но без вкладов, которые ещё не пришли. Карточка пропадает, когда весь стартовый капитал внесён.")
     card("t_attention", q, "Требует внимания", f"""
@@ -230,7 +282,8 @@ select level as "Уровень", text as "Что", case place when 'money' then
             when 'catalog' then '{links["catalog"]}' end as "Ссылка"
 from fin.v_attention order by case level when 'Срочно' then 0 when 'Важно' then 1 else 2 end, sort""", "table",
          merge({"table.columns": [{"name": c, "enabled": c != "Ссылка"} for c in ("Уровень", "Что", "Где", "Ссылка")]},
-               colfmt(Где={"view_as": "link", "link_text": "{{Где}}", "link_url": "{{Ссылка}}"}),
+               colfmt(Где={"view_as": "link", "link_text": "{{Где}}", "link_url": "{{Ссылка}}"},
+                      Что={"text_wrapping": True}),
                color_rules("Уровень", {"Срочно": RED, "Важно": YELLOW, "Всё в порядке": GREEN})),
          "Проверки: деньги на траты до старта, покупки с карты без записи «мимо счёта», переводы себе без разметки, "
          "операции без статьи бюджета, вклад без партнёра, партия чая, «Не разобрано», сверка остатка, Claude, "
@@ -264,7 +317,8 @@ from fin.v_spend s join fin.budget_articles b on b.item = s.budget_item
 group by date_trunc('month', s.day), s.budget_item, b.cash_class, b.sort order by date_trunc('month', s.day), b.sort""",
          "bar", {"graph.dimensions": ["Месяц", "Статья"], "graph.metrics": ["Расход"], "stackable.stack_type": "stacked",
                  "graph.show_values": True, "graph.x_axis.title_text": "", "graph.y_axis.title_text": "Расход, ₽",
-                 "series_settings": SERIES_COLORS, **colfmt(Расход=RUB)},
+                 "series_settings": SERIES_COLORS, "graph.series_order_dimension": "Статья",
+                 "graph.series_order": SERIES_ORDER, **colfmt(Расход=RUB)},
          "Расходы бизнеса: выписка (без переводов себе) + покупки «мимо счёта» по статьям бюджета пилота. Переводы "
          "себе на покупки сюда не входят — их сверка на вкладке «Сверки». Вложения — оборудование.")
     card("m_partners", q, "Кто сколько вложил", """
@@ -314,8 +368,9 @@ where day < fin.inp_date('pilot_start_date')""",
            "пополнение ВК), без даты — накануне старта; плановые расходы формы, не закрытые фактом; налоги, "
            "сервисы, банк. Та же сумма — в «Требует внимания» и в «Платежи впереди» до старта.")
     card("m_ahead", q, "Платежи впереди: 8 недель", f"""
-select {d("day")} as "Когда", what as "Что", amount as "Сумма", coalesce(budget_item, source) as "Статья",
-       case when closed then 'закрыт' when overdue then 'просрочен' else 'ждёт' end as "Статус"
+select {d("day")} as "Когда", amount as "Сумма",
+       case when closed then 'закрыт' when overdue then 'просрочен' else 'ждёт' end as "Статус",
+       coalesce(budget_item, source) as "Статья", what as "Что"
 from fin.v_payments_ahead order by day, what""", "table",
          merge(colfmt(Сумма=RUB), color_rules("Статус", {"закрыт": GREEN, "просрочен": RED, "ждёт": GREY})),
          "Все платежи на 8 недель: остатки статей бюджета на даты вводных, плановые расходы формы, налоги, сервисы, "
@@ -340,11 +395,13 @@ select fin.fmt_rub(sum(operating) / sum(paid_orders)) as "На заказ" from 
 where paid_orders > 0 and period >= date_trunc('month', fin.inp_date('pilot_start_date'))
 having sum(paid_orders) > 0""", "Операционный поток с начала пилота на один оплаченный заказ. До первых заказов карточки нет.")
     card("m_fcf_cum", q, "Накопленный FCF против вкладов партнёров", f"""
-select period as "Период", round(cum_fcf) as "Накопленный FCF", round(cum_contributions) as "Вклады партнёров"
+select to_char(period, 'DD.MM.YY') as "Период", round(cum_fcf) as "Накопленный FCF",
+       round(cum_contributions) as "Вклады партнёров"
 from {flows} order by period""", "line",
-         # Одна ось: иначе Metabase уводит вклады на вторую шкалу, и линии не сравнить.
+         # Одна ось: иначе Metabase уводит вклады на вторую шкалу, и линии не сравнить. Подпись
+         # периода текстом и порядковая ось: по датам Metabase сам склеивал недели в месяцы.
          {"graph.dimensions": ["Период"], "graph.metrics": ["Накопленный FCF", "Вклады партнёров"],
-          "graph.y_axis.auto_split": False,
+          "graph.x_axis.scale": "ordinal", "graph.y_axis.auto_split": False,
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
           **colfmt(**{"Накопленный FCF": RUB, "Вклады партнёров": RUB})},
          "Сколько бизнес потратил (FCF накопленный, ниже нуля) против того, сколько партнёры вложили.", tags=grain)
@@ -1075,7 +1132,8 @@ def rows_height(sql, *, per_row=0.5, extra=1.5, low=2, high=12):
 
 # Фильтр дашборда «Период»: FCF по месяцам или по неделям.
 GRAIN_PARAM = {"id": "grain", "name": "Период", "slug": "period", "type": "string/=", "sectionId": "string",
-               "default": ["месяц"], "required": True, "values_query_type": "list", "values_source_type": "static-list",
+               "default": ["месяц"], "required": True, "isMultiSelect": False,
+               "values_query_type": "list", "values_source_type": "static-list",
                "values_source_config": {"values": ["месяц", "неделя"]}}
 GRAIN_CARDS = ("m_fcf", "m_fcf_cum")
 
@@ -1104,6 +1162,8 @@ def verify():
 
 
 SERIES_COLORS = {}
+# Порядок слоёв стопки «Куда ушли деньги» — как статьи в бюджете; «Без статьи» — серым, последней.
+SERIES_ORDER = []
 
 
 if __name__ == "__main__":
@@ -1125,10 +1185,13 @@ if __name__ == "__main__":
              for name, did, tabs, tab in (("money", pulse, ptabs, "Деньги"), ("sales", pulse, ptabs, "Продажи"),
                                           ("stock", pulse, ptabs, "Склад"), ("codes", pulse, ptabs, "Коды"),
                                           ("entry", manage, mtabs, "Ввод данных"), ("checks", manage, mtabs, "Сверки"),
-                                          ("catalog", manage, mtabs, "Каталог"))}
+                                          ("catalog", manage, mtabs, "Каталог"),
+                                          ("codes_entry", manage, mtabs, "Коды: ввод в оборот"))}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
-            "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
-        SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
+            "query": "select item, color, cash_class from fin.budget_articles order by sort, item"}})["data"]["rows"]:
+        name = SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")
+        SERIES_COLORS[name] = {"color": color}
+        SERIES_ORDER.append({"key": name, "name": name, "color": color, "enabled": True})
 
     models = build_forms(qcoll, fin_db, tables)
     catalog_forms(qcoll, fin_db, tables, models)
@@ -1153,7 +1216,7 @@ if __name__ == "__main__":
     lots_h = rows_height("select 1 from shop.v_lot_balance where active and on_hand > 0", extra=2.5, low=3, high=12)
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
     T, M, S, P, W, Q = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"], ptabs["Склад"], ptabs["Коды"]
-    E, K, C, R, I = (mtabs[t] for t in MANAGE_TABS)
+    E, CE, K, C, R, I = (mtabs[t] for t in MANAGE_TABS)
     # «Сегодня» — как владелец разложил вручную 24.10: четыре цифры в ряд, под ними вклады,
     # проверки, график; убыток пилота — после старта. Скрытые без данных карточки Metabase
     # убирает из сетки, и всё ниже поднимается.
@@ -1173,25 +1236,25 @@ if __name__ == "__main__":
         dc("m_budget", M, 10, 0, 24, budget_h),
         # Платежи впереди и FCF — под бюджетом.
         dc("m_ahead_total", M, 10 + budget_h, 0, 6, 3), dc("m_ahead", M, 10 + budget_h, 6, 18, ahead_h),
-        dc("m_fcf", M, 10 + budget_h + ahead_h, 0, 14, fcf_h), dc("m_fcf_cum", M, 10 + budget_h + ahead_h, 14, 10, fcf_h),
+        # FCF — во всю ширину: в 14 колонках заголовки столбцов обрезались.
+        dc("m_fcf", M, 10 + budget_h + ahead_h, 0, 24, fcf_h),
         dc("m_fcf_order", M, 10 + budget_h + ahead_h + fcf_h, 0, 6, 2, hide_empty=True),
+        dc("m_fcf_cum", M, 12 + budget_h + ahead_h + fcf_h, 0, 24, 7),
         # Продажи: до первой оплаты — одна строка, что здесь будет.
         dc("s_soon", S, 0, 0, 24, 2, hide_empty=True),
         dc("s_funnel", S, 2, 0, 12, 7, True), dc("s_daily", S, 2, 12, 12, 7, True),
         dc("s_cac", S, 9, 0, 12, 6, True), dc("s_check", S, 9, 12, 12, 6, True),
         # Товар
         dc("p_waterfall", P, 0, 0, 24, 7),
-        dc("p_margin", P, 7, 0, 12, 11), dc("p_breakeven", P, 7, 12, 12, 4), dc("p_scenarios", P, 11, 12, 12, 4),
+        dc("p_margin", P, 7, 0, 12, 11), dc("p_breakeven", P, 7, 12, 12, 5), dc("p_scenarios", P, 12, 12, 12, 6),
         dc("p_sales", P, 18, 0, 24, 6, True),
         # Склад
-        button("lot", "Партия закупки", W, 0, 0, 6), button("inventory", "Инвентаризация", W, 0, 6, 6),
-        button("spoil", "Списать сырьё", W, 0, 12, 6),
+        text(W, 0, 0, 24, 1, f"Партия, инвентаризация, списание — [Внести → Управление]({links['entry']})"),
         dc("w_lots", W, 1, 0, 24, lots_h),
         dc("w_reorder", W, 1 + lots_h, 0, 12, 5), dc("w_expiring", W, 1 + lots_h, 12, 12, 5),
         dc("w_no_stock", W, 6 + lots_h, 0, 12, 5), dc("w_diff", W, 6 + lots_h, 12, 12, 5),
         # Коды
-        button("c_new", "Сформировать выгрузку", Q, 0, 0, 8), button("c_done", "Введено", Q, 0, 8, 8),
-        button("c_cancel", "Отменить выгрузку", Q, 0, 16, 8),
+        text(Q, 0, 0, 24, 1, f"Выгрузка, «Введено», отмена выгрузки — [Внести → Управление]({links['codes_entry']})"),
         dc("c_bought", Q, 1, 0, 12, 2), dc("c_spoiled", Q, 1, 12, 12, 2),
         dc("c_status", Q, 3, 0, 24, 4),
         dc("c_unsellable", Q, 7, 0, 12, 6), dc("c_stuck", Q, 7, 12, 12, 6),
@@ -1207,7 +1270,12 @@ if __name__ == "__main__":
         button("lot", "Партия закупки", E, 3, 8), button("inventory", "Инвентаризация", E, 3, 12),
         button("input", "Изменить вводную", E, 3, 16), button("mark", "Разметить операцию", E, 3, 20),
         button("act", "Акт перевозчика", E, 4, 0), button("lead", "Срок поставки", E, 4, 4),
+        button("spoil", "Списать сырьё", E, 4, 8),
         dc("e_recent", E, 5, 0, 24, 8),
+        # Ввод кодов в оборот: кнопки и то, по чему их нажимают, — выгрузки и файл для ЛК ЧЗ.
+        button("c_new", "Сформировать выгрузку", CE, 0, 0, 8), button("c_done", "Введено", CE, 0, 8, 8),
+        button("c_cancel", "Отменить выгрузку", CE, 0, 16, 8),
+        dc("c_batches", CE, 1, 0, 24, 6), dc("c_export", CE, 7, 0, 24, 6),
         dc("c_snapshot", C, 0, 0, 12, 3), dc("c_card", C, 0, 12, 12, 3),
         dc("c_ops", C, 3, 0, 24, 8), dc("c_claude", C, 11, 0, 24, 7), dc("c_yk", C, 18, 0, 24, 5, True),
         dc("c_uncl", C, 23, 0, 12, 5, True), dc("c_holds", C, 23, 12, 12, 5, True),
