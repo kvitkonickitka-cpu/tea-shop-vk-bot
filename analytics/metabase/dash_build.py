@@ -690,6 +690,8 @@ def catalog_forms(qcoll, fin_db, tables, models):
             for column in table["fields"]:
                 if column["name"] == "sku_id" and column.get("semantic_type") == "type/PK":
                     call("PUT", f"/field/{column['id']}", {"semantic_type": None})
+                if column["name"] in ("description", "brew_guide") and column.get("semantic_type") != "type/Description":
+                    call("PUT", f"/field/{column['id']}", {"semantic_type": "type/Description"})
     for table, title in (("shop.catalog", "Каталог"), ("shop.bundle_items", "Состав наборов")):
         body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
                 "type": "model", "dataset_query": {"type": "query", "database": fin_db,
@@ -734,6 +736,24 @@ values (upper({{{{sku_id}}}}), {{{{kind}}}}, {{{{name}}}}, {fb.OPT % 'weight'}::
                fb.field("category", "Раздел", "text", required=False),
                fb.NOTE, fb.AUTHOR],
               "Артикул добавлен, пока не в продаже: заполните GTIN и включите кнопкой «Снять с продажи / вернуть».")
+    # «Обновить» в карточке строки даёт только однострочные поля, а описание и
+    # заварка — абзацы. Пустое поле — оставить как есть, «-» — очистить.
+    # Всё поле — внутри [[…]]: пустое Metabase вырезает целиком, остаётся прежнее.
+    keep = "coalesce([[case when {0} = '-' then '' else nullif({0}, '') end, ]] {1})"
+    fb.action("k_texts", models["shop.catalog"], fin_db, "Тексты и ссылки", f"""
+update shop.catalog set
+    description = {keep.format("{{description}}", "description")},
+    brew_guide = {keep.format("{{brew}}", "brew_guide")},
+    vk_market_url = nullif({keep.format("{{vk}}", "vk_market_url")}, ''),
+    video_url = nullif({keep.format("{{video}}", "video_url")}, ''),
+    change_note = {fb.OPT % 'note'}, updated_by = {{{{entered_by}}}}
+where sku_id = {sku % 'sku'}
+""", [fb.field("sku", "Артикул", "select", options=every),
+      fb.field("description", "Описание (пусто — не менять, «-» — очистить)", "textarea", required=False),
+      fb.field("brew", "Как заваривать (пусто — не менять, «-» — очистить)", "textarea", required=False),
+      fb.field("vk", "Ссылка на Маркет ВК (https://vk.ru/market/…)", "text", required=False),
+      fb.field("video", "Ссылка на видео (https://…)", "text", required=False),
+      fb.NOTE, fb.AUTHOR], "Записано — бот покажет новые тексты через несколько секунд.")
     fb.action("k_sale", models["shop.catalog"], fin_db, "Снять с продажи / вернуть", f"""
 update shop.catalog set on_sale = ({{{{state}}}} = 'в продаже'), change_note = {fb.OPT % 'note'},
        updated_by = {{{{entered_by}}}}
@@ -1060,8 +1080,9 @@ if __name__ == "__main__":
         dc("r_stock_soon", R, 32, 0, 24, 2, True), dc("r_stock", R, 34, 0, 14, 8, True),
         dc("r_codes", R, 34, 14, 10, 8, True),
         dc("i_inputs", I, 0, 0, 24, 16), dc("i_history", I, 16, 0, 24, 6),
-        button("k_price", "Изменить цену", K, 0, 0, 6), button("k_add", "Добавить артикул", K, 0, 6, 6),
-        button("k_sale", "Снять с продажи / вернуть", K, 0, 12, 6), button("k_bundle", "Состав сета/набора", K, 0, 18, 6),
+        button("k_price", "Изменить цену", K, 0, 0, 5), button("k_texts", "Тексты и ссылки", K, 0, 5, 5),
+        button("k_add", "Добавить артикул", K, 0, 10, 5), button("k_sale", "Снять с продажи / вернуть", K, 0, 15, 5),
+        button("k_bundle", "Состав сета/набора", K, 0, 20, 4),
         dc("k_catalog", K, 1, 0, 24, rows_height("select 1 from shop.catalog where active", extra=2.5, high=14)),
         dc("k_changes", K, 15, 0, 14, 9), dc("k_bundles", K, 15, 14, 10, 9),
     ])

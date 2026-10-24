@@ -92,18 +92,20 @@ async def run_as_form(conn, sql):
 def test_catalog_models_can_be_edited_but_not_deleted(forms):
     created, models = forms
     # sku_id больше не ключ для Metabase: с двумя PK карточка строки ломается.
-    assert created["fields"] == [{"semantic_type": None}]
+    assert created["fields"] == [{"semantic_type": None}]  # и описание с заваркой — «длинный текст»
     implicit = [a for a in created["actions"] if a.get("type") == "implicit"]
     assert {a["kind"] for a in implicit} == {"row/update"}
     assert {a["model_id"] for a in implicit} == {models["shop.catalog"], models["shop.bundle_items"]}
     queries = [a for a in created["actions"] if a.get("type") == "query"]
-    assert {a["name"] for a in queries} == {"Изменить цену", "Добавить артикул", "Снять с продажи / вернуть",
-                                            "Состав сета/набора"}
+    assert {a["name"] for a in queries} == {"Изменить цену", "Тексты и ссылки", "Добавить артикул",
+                                            "Снять с продажи / вернуть", "Состав сета/набора"}
     for action in queries:
         assert "delete" not in action["dataset_query"]["native"]["query"].lower()
     # Длинные поля — многострочные.
     add_form = by_name(created, "Добавить артикул")["visualization_settings"]["fields"]
     assert add_form["description"]["inputType"] == "text" and add_form["brew"]["inputType"] == "text"
+    texts_form = by_name(created, "Тексты и ссылки")["visualization_settings"]["fields"]
+    assert texts_form["description"]["inputType"] == "text" and texts_form["brew"]["inputType"] == "text"
 
 
 async def test_price_form(shop, forms):
@@ -154,3 +156,19 @@ async def test_add_sale_and_bundle_forms(shop, forms):
     part = await shop.fetchrow("select quantity, active from shop.bundle_items")
     assert (part["quantity"], part["active"]) == (1, False)
     assert await shop.fetchval("select count(*) from shop.catalog_changes where entity = 'состав'") == 2
+
+
+async def test_texts_form_changes_only_what_is_filled(shop, forms):
+    created, _ = forms
+    await add(shop, description="Старое описание", brew_guide="85 °C", vk_market_url="https://vk.ru/market/product/x",
+              video_url="https://youtu.be/x")
+    sql = by_name(created, "Тексты и ссылки")["dataset_query"]["native"]["query"]
+    await run_as_form(shop, render(sql, {"sku": "P-TGI-ECO-100 · Те Гуань Инь",
+                                         "brew": "Вода 85–90 °C.\nПроливы 5–8 г на 150 мл.", "video": "-",
+                                         "entered_by": "Никита"}))
+    row = await shop.fetchrow("select * from shop.catalog")
+    assert (row["description"], row["brew_guide"], row["vk_market_url"], row["video_url"]) == (
+        "Старое описание", "Вода 85–90 °C.\nПроливы 5–8 г на 150 мл.", "https://vk.ru/market/product/x", None)
+    with pytest.raises(asyncpg.RaiseError, match="Маркет ВК"):
+        await run_as_form(shop, render(sql, {"sku": "P-TGI-ECO-100 · Те Гуань Инь", "vk": "https://ozon.ru/x",
+                                             "entered_by": "Никита"}))
