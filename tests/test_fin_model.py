@@ -47,6 +47,29 @@ insert into finance.v_pending_summary values ('4673', now(), false, 2, 15995, 0,
 """
 
 
+# С миграции 012 цена, GTIN и название товара — из каталога бота (shop.catalog).
+CATALOG_MIGRATION = "012_catalog_prices.sql"
+CLEAR_SHOP = """do $$ begin
+    if to_regclass('shop.catalog') is not null then
+        truncate shop.bundle_items, shop.catalog, shop.catalog_changes restart identity cascade;
+    end if;
+end $$"""
+# Каталог, каким его кладёт импорт: пачка и блин — на сырьё fin.sku с его
+# фасовкой, сет и набор — под своим названием; цены — финмодели.
+CATALOG_FROM_SEED = """
+insert into shop.catalog (sku_id, kind, name, net_weight_g, raw_material, price, updated_by)
+select 'P-T' || row_number() over (order by sku_name),
+       case when supplier_unit ilike 'пресс%' then 'блин' else 'пачка' end,
+       coalesce(bot_name, sku_name), sale_pack_g, sku_name, retail_price::int, 'тест'
+from fin.sku where retail_price is not null;
+insert into shop.catalog (sku_id, kind, name, price, updated_by)
+select 'S-T' || row_number() over (order by bundle),
+       case when pouch_type = '35g' then 'набор' else 'сет' end,
+       coalesce(bot_name, bundle), retail_price::int, 'тест'
+from fin.bundles where retail_price is not null;
+"""
+
+
 def _dsn() -> str:
     return settings.database_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
 
@@ -66,11 +89,19 @@ async def fin(db, clean):
                 f"do $$ begin if not exists (select from pg_roles where rolname = '{name}') "
                 f"then create role {name}; end if; end $$"
             )
+        await conn.execute(CLEAR_SHOP)
+        seeded = False
         for migration in sorted((FIN / "migrations").glob("*.sql")):
+            if not seeded and migration.name >= CATALOG_MIGRATION:
+                seeded = True
+                # Как на бою: до миграции 012 каталог импортирован из таблицы
+                # с ценами финмодели — здесь его заменяет копия seed.
+                await conn.execute(CATALOG_FROM_SEED)
             await conn.execute(migration.read_text(encoding="utf-8"))
         await conn.execute((FIN / "grants.sql").read_text(encoding="utf-8"))
         yield conn
     finally:
+        await conn.execute(CLEAR_SHOP)
         await conn.execute("drop schema if exists fin cascade")
         if created_finance:
             await conn.execute(f"drop table if exists {', '.join(FINANCE_STUB_TABLES)} cascade")
@@ -265,7 +296,8 @@ async def test_metabase_fin_writes_only_fin(fin):
     denied = [
         "update fin.inputs set value = 1 where key = 'code_price'",
         "delete from fin.inputs",
-        "update fin.sku set retail_price = 1",
+        "update fin.sku set price_per_unit_base = 1",
+        "update shop.catalog_changes set new_value = '1'",
         "select count(*) from public.orders",
         "select count(*) from public.pii_vault",
         "insert into public.heartbeats (name, last_run_at, runs) values ('x', now(), 1)",

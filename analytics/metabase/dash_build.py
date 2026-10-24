@@ -28,7 +28,7 @@ ROOT = "Дашборды"
 QUESTIONS = "Пульс и Служебное — вопросы"
 PULSE, SERVICE = "Пульс", "Служебное"
 PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар"]
-SERVICE_TABS = ["Ввод данных", "Сверки", "Отчёты", "Вводные"]
+SERVICE_TABS = ["Ввод данных", "Сверки", "Отчёты", "Вводные", "Каталог"]
 OLD_DASHBOARDS = ("Сводка", "Финансы")
 
 # Рубли целые, проценты с одним знаком; разделители — из глобальных настроек
@@ -562,6 +562,121 @@ order by coalesce(label, key), valid_from desc, created_at desc""", "table", Non
          "Вводные, которые меняли: все значения с датой, с которой они действуют.")
 
 
+# Поля каталога в журнале — словами, как их видит владелец в форме.
+CATALOG_FIELDS = {"price": "Цена", "on_sale": "В продаже", "active": "Действует", "name": "Название",
+                  "description": "Описание", "brew_guide": "Как заваривать", "gtin": "GTIN",
+                  "vk_market_url": "Маркет ВК", "recommend_with": "С чем советуем", "is_new": "Новинка",
+                  "net_weight_g": "Фасовка, г", "raw_material": "Сырьё", "video_url": "Видео",
+                  "synonyms": "Синонимы", "sort_order": "Порядок", "category": "Раздел", "kind": "Тип",
+                  "label_name": "Этикетка: название", "label_kind": "Этикетка: вид продукции",
+                  "storage": "Этикетка: хранение", "shelf_life_months": "Срок годности, мес",
+                  "qr_url": "Этикетка: QR"}
+
+
+def cards_catalog(q, models):
+    field_names = " ".join(f"when '{k}' then '{v}'" for k, v in CATALOG_FIELDS.items())
+    card("k_catalog", q, "Каталог", """
+select c.sku_id as "Артикул", c.name as "Название", c.kind as "Тип", c.price as "Цена",
+       case when c.on_sale then 'да' else 'нет' end as "В наличии",
+       -- Хватает ли сырья, посчитает склад по партиям (следующий блок); до него — прочерк.
+       '—' as "Хватает сырья",
+       coalesce(c.gtin, '—') as "GTIN",
+       case when c.is_new then 'да' else '' end as "Новинка",
+       case when c.vk_market_url is null then 'нет' else 'есть' end as "Маркет ВК"
+from shop.catalog c where c.active
+order by c.on_sale desc, c.sort_order, c.name""", "table",
+         merge(colfmt(Цена=RUB), color_rules("В наличии", {"да": GREEN, "нет": GREY}),
+               {"column_settings": {'["name","Артикул"]': {
+                   "click_behavior": {"type": "link", "linkType": "url",
+                                      "linkTemplate": f"/model/{models['shop.catalog']}/{{{{Артикул}}}}"}}}}),
+         "Что продаёт бот. Клик по артикулу — карточка со всеми полями и кнопкой «Исправить». "
+         "Правка видна боту через несколько секунд; цена в заказах, уже оформленных, не меняется.")
+    card("k_changes", q, "Последние изменения каталога", f"""
+select to_char(h.changed_at at time zone 'Europe/Moscow', 'DD.MM.YYYY HH24:MI') as "Когда",
+       h.sku_id as "Артикул",
+       case when h.entity = 'состав' then 'Состав: ' || h.field
+            when h.action = 'добавлен' then 'Добавлен'
+            else case h.field {field_names} else h.field end end as "Что",
+       left(h.old_value, 60) as "Было", left(h.new_value, 60) as "Стало",
+       h.changed_by as "Кто", h.note as "Причина"
+from shop.catalog_changes h order by h.id desc limit 20""", "table", None,
+         "Каждая правка каталога — и формой, и в обход неё. Журнал ведёт база, исправить его нельзя.")
+    card("k_bundles", q, "Состав сетов и наборов", """
+select b.bundle_sku as "Набор", s.name as "Название", b.item_sku as "Вложение", i.name as "Что внутри",
+       b.quantity as "Сколько", case when b.active then 'да' else 'убрано' end as "В составе"
+from shop.bundle_items b join shop.catalog s on s.sku_id = b.bundle_sku join shop.catalog i on i.sku_id = b.item_sku
+order by b.bundle_sku, b.active desc, b.item_sku""", "table", None,
+         "Из чего собран каждый сет и набор. Добавить или убрать вложение — кнопка «Состав сета/набора».")
+
+
+def catalog_forms(qcoll, fin_db, tables, models):
+    """Модели каталога с «Исправить» (без «Удалить») и кнопки вкладки «Каталог»."""
+    for table, title in (("shop.catalog", "Каталог"), ("shop.bundle_items", "Состав наборов")):
+        body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
+                "type": "model", "dataset_query": {"type": "query", "database": fin_db,
+                                                   "query": {"source-table": tables[table]}}}
+        models[table] = call("POST", "/card", body)["id"]
+        # Удаления нет: снять с продажи — кнопкой, убрать совсем — «Действует = нет».
+        call("POST", "/action", {"name": f"Исправить: {title.lower()}", "type": "implicit", "kind": "row/update",
+                                 "model_id": models[table]})
+    rows = call("POST", "/dataset", {"database": fin_db, "type": "native", "native": {"query": """
+select sku_id || ' · ' || name, kind from shop.catalog where active order by sort_order, name"""}})["data"]["rows"]
+    every = [r[0] for r in rows]
+    bundles = [r[0] for r in rows if r[1] in ("сет", "набор")]
+    packs = [r[0] for r in rows if r[1] in ("пачка", "блин")]
+    # Артикул в списке — «код · название»; в SQL — код до точки.
+    sku = "split_part({{%s}}, ' · ', 1)"
+    fb.action("k_price", models["shop.catalog"], fin_db, "Изменить цену", f"""
+update shop.catalog set price = {{{{price}}}}, change_note = {{{{reason}}}}, updated_by = {{{{entered_by}}}},
+       price_confirmed = coalesce([[{{{{confirm}}}} = 'да' or ]] false)
+where sku_id = {sku % 'sku'}
+""", [fb.field("sku", "Артикул", "select", options=every), fb.field("price", "Новая цена, ₽", "number"),
+      fb.field("reason", "Причина", "text"),
+      fb.field("confirm", "Цена меняется больше чем на 30 % — «Да, цена верная»", "select", required=False,
+               options=["да"]),
+      fb.AUTHOR], "Цена записана — бот назовёт её через несколько секунд, в Ops ушло сообщение.")
+    fb.action("k_add", models["shop.catalog"], fin_db, "Добавить артикул", f"""
+insert into shop.catalog (sku_id, kind, name, net_weight_g, raw_material, price, description, brew_guide,
+                          gtin, vk_market_url, category, updated_by, change_note)
+values (upper({{{{sku_id}}}}), {{{{kind}}}}, {{{{name}}}}, {fb.OPT % 'weight'}::numeric, {fb.OPT % 'raw'},
+        {fb.OPT % 'price'}::int, coalesce({fb.OPT % 'description'}, ''), coalesce({fb.OPT % 'brew'}, ''),
+        {fb.OPT % 'gtin'}, {fb.OPT % 'vk'}, {fb.OPT % 'category'}, {{{{entered_by}}}}, {fb.OPT % 'note'})
+""",
+              [fb.field("sku_id", "Артикул (латиница, цифры, дефис: P-TGI-ECO-100)", "text"),
+               fb.field("kind", "Тип", "select", options=["пачка", "блин", "сет", "набор"]),
+               fb.field("name", "Название в боте (до 80 символов)", "text"),
+               fb.field("weight", "Фасовка, г (у сета и набора — пусто)", "text", required=False),
+               fb.field("raw", "Сырьё (у пачки и блина)", "select", required=False, options=fb.SKUS),
+               fb.field("price", "Цена, ₽ (пусто — не продаётся отдельно)", "text", required=False),
+               fb.field("description", "Описание", "textarea", required=False),
+               fb.field("brew", "Как заваривать", "textarea", required=False),
+               fb.field("gtin", "GTIN", "text", required=False),
+               fb.field("vk", "Ссылка на Маркет ВК", "text", required=False),
+               fb.field("category", "Раздел", "text", required=False),
+               fb.NOTE, fb.AUTHOR],
+              "Артикул добавлен, пока не в продаже: заполните GTIN и включите кнопкой «Снять с продажи / вернуть».")
+    fb.action("k_sale", models["shop.catalog"], fin_db, "Снять с продажи / вернуть", f"""
+update shop.catalog set on_sale = ({{{{state}}}} = 'в продаже'), change_note = {fb.OPT % 'note'},
+       updated_by = {{{{entered_by}}}}
+where sku_id = {sku % 'sku'}
+""", [fb.field("sku", "Артикул", "select", options=every),
+      fb.field("state", "Как теперь", "select", options=["в продаже", "снят с продажи"]),
+      fb.NOTE, fb.AUTHOR], "Записано — бот узнает через несколько секунд, в Ops ушло сообщение.")
+    fb.action("k_bundle", models["shop.bundle_items"], fin_db, "Состав сета/набора", f"""
+insert into shop.bundle_items (bundle_sku, item_sku, quantity, active, updated_by, change_note)
+values ({sku % 'bundle'}, {sku % 'item'}, coalesce([[{{{{quantity}}}}, ]] 1), {{{{op}}}} = 'добавить',
+        {{{{entered_by}}}}, {fb.OPT % 'note'})
+on conflict (bundle_sku, item_sku) do update
+   set quantity = excluded.quantity, active = excluded.active,
+       updated_by = excluded.updated_by, change_note = excluded.change_note
+""", [fb.field("bundle", "Сет или набор", "select", options=bundles),
+      fb.field("item", "Вложение (пачка или блин)", "select", options=packs),
+      fb.field("quantity", "Сколько штук", "number", required=False),
+      fb.field("op", "Что сделать", "select", options=["добавить", "убрать"]),
+      fb.NOTE, fb.AUTHOR], "Состав записан.")
+    return models
+
+
 # --- формы ------------------------------------------------------------------------------
 
 
@@ -659,7 +774,7 @@ if __name__ == "__main__":
         if "bank_marks" in tables:
             break
         fb.time.sleep(3)
-        tables = {t["name"]: t["id"] for t in call("GET", f"/database/{fin_db}/metadata")["tables"] if t.get("schema") == "fin"}
+        tables = fb.form_tables(fin_db)
     if "bank_marks" not in tables:
         raise SystemExit("Metabase не видит fin.bank_marks: миграции 009–010 применены (analytics/fin/apply.sh)?")
     root, qcoll, old = collections()
@@ -674,7 +789,8 @@ if __name__ == "__main__":
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
         SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
 
-    build_forms(qcoll, fin_db, tables)
+    models = build_forms(qcoll, fin_db, tables)
+    catalog_forms(qcoll, fin_db, tables, models)
     cards_today(qcoll, links)
     cards_money(qcoll)
     cards_sales(qcoll)
@@ -683,6 +799,7 @@ if __name__ == "__main__":
     cards_checks(qcoll)
     cards_reports(qcoll)
     cards_inputs(qcoll)
+    cards_catalog(qcoll, models)
 
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
     T, M, S, P = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"]
@@ -712,7 +829,7 @@ if __name__ == "__main__":
         dc("p_margin", P, 7, 0, 12, 11), dc("p_breakeven", P, 7, 12, 12, 4), dc("p_scenarios", P, 11, 12, 12, 4),
         dc("p_sales", P, 18, 0, 24, 6, True),
     ])
-    E, C, R, I = stabs["Ввод данных"], stabs["Сверки"], stabs["Отчёты"], stabs["Вводные"]
+    E, C, R, I, K = stabs["Ввод данных"], stabs["Сверки"], stabs["Отчёты"], stabs["Вводные"], stabs["Каталог"]
     put(service, stabs, [
         text(E, 0, 0, 24, 1, "**Каждый день**"),
         button("ads", "Реклама за день", E, 1, 0), button("expense", "Добавить расход", E, 1, 4),
@@ -732,6 +849,10 @@ if __name__ == "__main__":
         dc("r_stock_soon", R, 32, 0, 24, 2, True), dc("r_stock", R, 34, 0, 14, 8, True),
         dc("r_codes", R, 34, 14, 10, 8, True),
         dc("i_inputs", I, 0, 0, 24, 16), dc("i_history", I, 16, 0, 24, 6),
+        button("k_price", "Изменить цену", K, 0, 0, 6), button("k_add", "Добавить артикул", K, 0, 6, 6),
+        button("k_sale", "Снять с продажи / вернуть", K, 0, 12, 6), button("k_bundle", "Состав сета/набора", K, 0, 18, 6),
+        dc("k_catalog", K, 1, 0, 24, rows_height("select 1 from shop.catalog where active", extra=2.5, high=14)),
+        dc("k_changes", K, 15, 0, 14, 9), dc("k_bundles", K, 15, 14, 10, 9),
     ])
 
     failed = verify()

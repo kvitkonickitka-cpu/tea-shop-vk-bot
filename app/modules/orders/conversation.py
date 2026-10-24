@@ -2882,6 +2882,18 @@ async def _handle_turn(
         logger.info("peer_id=%s попросил не писать — напоминания отключены", peer_id)
         stop_note = _ASKED_NOT_TO_WRITE
 
+    # Фоновый обработчик очереди идёт мимо HTTP: версию каталога сверяем и здесь.
+    await catalog_service.ensure_fresh()
+    if catalog_service.paused():
+        # Каталог в базе пуст или не читается: модель без ассортимента начала
+        # бы выдумывать цены. Покупателю — пауза, в Ops — тревога.
+        from app.modules.catalog import store as catalog_store
+
+        await catalog_store.alert_unavailable()
+        reply = templates.catalog_paused()
+        await dialog_history.append_exchange(peer_id, user_text, reply)
+        return reply
+
     catalog_context = await catalog_service.build_catalog_context()
     draft = await state.get_draft(peer_id)
     pd_ok = await consent.has_pd(peer_id)

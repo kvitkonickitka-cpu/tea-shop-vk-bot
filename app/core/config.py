@@ -368,6 +368,13 @@ class Settings(BaseSettings):
     message_debounce_seconds_collecting: float = 5
     message_debounce_max_seconds: float = 12
 
+    # Откуда бот берёт ассортимент: `sheet` — Google Таблица (как раньше),
+    # `db` — таблицы shop.catalog и shop.bundle_items, которые правят в
+    # Metabase. В режиме db бот в Google не ходит вовсе, а пустой или
+    # нечитаемый каталог — пауза для покупателя и тревога в Ops, не откат
+    # на таблицу или catalog.json.
+    catalog_source: str = "sheet"
+
     # Каталог из Google Таблицы: ссылка «Опубликовать в интернете → CSV».
     # Пусто — ассортимент берётся из catalog.json в образе.
     catalog_sheet_csv_url: str = ""
