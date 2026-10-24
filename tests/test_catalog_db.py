@@ -20,6 +20,7 @@ import pytest
 
 from app.core.config import settings
 from app.modules.catalog import schema, service as catalog_service, sheet, sheet_import, store
+from app.modules.marking import schema as marking_schema
 from app.modules.stock import schema as stock_schema
 from tests.test_fin_model import fin  # noqa: F401
 
@@ -48,7 +49,7 @@ async def shop(clean, monkeypatch):
             f"do $$ begin if not exists (select from pg_roles where rolname = '{name}') "
             f"then create role {name}; end if; end $$"
         )
-    for statement in schema.DDL + stock_schema.DDL:
+    for statement in schema.DDL + stock_schema.DDL + marking_schema.DDL:
         await conn.execute(statement)
     await conn.execute(CLEAR)
     monkeypatch.setattr(settings, "catalog_source", "db")
@@ -61,8 +62,8 @@ async def shop(clean, monkeypatch):
         store.reset()
 
 
-CLEAR = ("truncate shop.stock_moves, shop.reservations, shop.lots, shop.bundle_items, shop.catalog, "
-         "shop.catalog_changes restart identity cascade")
+CLEAR = ("truncate shop.code_events, shop.code_batch_items, shop.code_batches, shop.stock_moves, shop.reservations, "
+         "shop.lots, shop.bundle_items, shop.catalog, shop.catalog_changes restart identity cascade")
 
 
 async def lot(conn, raw="Те Гуань Инь ЭКО (XFI0044)", qty=3000, unit="г", code=None, best_before=None, **fields):

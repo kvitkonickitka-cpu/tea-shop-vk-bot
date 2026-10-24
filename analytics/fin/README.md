@@ -109,6 +109,18 @@
 - `fin.v_stock` — по сырью (единицы партии), `on_hand` — пачки в работе (резерв).
 - «Требует внимания»: пора докупать, скоро истекает, включено без сырья, заказ без партии.
 
+## Коды ЧЗ по статусам (миграция 015, 24.10.2026)
+
+Журнал статусов кода, выгрузки для ввода в оборот и текущий статус ведёт бот
+(`shop.code_events`, `shop.code_batches`, `shop.v_code_status`, `shop.v_code_lots`).
+`fin.code_batches`, `fin.code_batch_items`, `fin.code_writeoffs` (ввод заранее, до
+сборки) и `fin.packing_runs` убраны, списания перенесены в журнал «испорчен».
+`fin.v_codes` и `fin.v_code_batches` — представления над журналом. Для «Пульс → Коды»:
+`fin.v_codes_by_status`, `fin.v_codes_money`, `fin.v_codes_unsellable` (наклеен и не
+введён дольше рабочего дня), `fin.v_codes_stuck` (введён и не продан > 3 дней),
+`fin.v_codes_runway` (свободные против 14 дней), `fin.v_codes_by_lot`, `fin.v_lot_codes`.
+Вводные `chz_declaration_number` и `chz_declaration_date` — наша декларация в выгрузку.
+
 Загрузка справочников `ref_*` из Google-таблицы выключена (`REFERENCES_SYNC_ENABLED`,
 по умолчанию `false`): маржа одна — `fin.v_unit_cost`. Таблицы `ref_*` в базе остались.
 

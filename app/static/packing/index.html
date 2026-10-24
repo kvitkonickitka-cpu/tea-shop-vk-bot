@@ -88,7 +88,8 @@
     <button id="cameraButton">Включить камеру</button>
   </div>
   <div class="message" id="message"></div>
-  <p class="muted" id="hint">Наведите камеру на квадратный код DataMatrix на пачке. Каждая пачка — один скан.</p>
+  <p class="muted" id="hint">Наведите камеру на квадратный код DataMatrix на пачке. Каждая пачка — один скан.
+    У сета или набора сканируется только код на коробке, пачки внутри — нет. QR «Как заваривать» сканер не читает.</p>
 </div>
 
 <div class="card">
@@ -107,7 +108,8 @@
   </details>
 </div>
 
-<div class="footer"><button id="finishButton" disabled>Собрано</button></div>
+<div class="footer"><button id="finishButton" disabled>Собрано</button>
+  <button id="shipButton" class="secondary" hidden>Отгружено</button></div>
 
 <script src="/pack/static/zxing-reader.js"></script>
 <script>
@@ -180,7 +182,8 @@
       row.className = "row";
       const name = document.createElement("span");
       name.className = "name";
-      name.textContent = position.name + " × " + position.quantity;
+      name.textContent = position.name + (position.kind === "set" ? " (сет — код на коробке)" : "") +
+        " × " + position.quantity;
       const count = document.createElement("span");
       count.className = "count" + (position.done ? " done" : "");
       count.textContent = position.scanned + " / " + position.quantity + (position.done ? " ✓" : "");
@@ -189,7 +192,7 @@
       if (!position.gtin) {
         const warn = document.createElement("p");
         warn.className = "message bad show";
-        warn.textContent = "У товара не задан GTIN в каталоге — собрать с кодами нельзя.";
+        warn.textContent = "Нет GTIN в каталоге — собрать эту позицию с кодами нельзя.";
         div.appendChild(warn);
       }
       for (const lot of position.lots || []) div.appendChild(lotBlock(position, lot));
@@ -231,6 +234,12 @@
           remove.textContent = "Убрать";
           remove.addEventListener("click", () => removeCode(code.id));
           li.appendChild(remove);
+          // Этикетку переклеили: код «испорчен», на пачку — новая этикетка и новый скан.
+          const spoiled = document.createElement("button");
+          spoiled.className = "secondary small";
+          spoiled.textContent = "Этикетка испорчена";
+          spoiled.addEventListener("click", () => spoilCode(code.id));
+          li.appendChild(spoiled);
         }
         list.appendChild(li);
       }
@@ -239,6 +248,11 @@
     }
     $("finishButton").disabled = !state.can_finish;
     $("finishButton").textContent = state.packed_at ? "Собрано ✓" : "Собрано";
+    // Отгрузка — после «Собрано» и только с введёнными в оборот кодами (ст. 15.12 КоАП).
+    $("shipButton").hidden = !state.packed_at;
+    $("shipButton").disabled = !state.can_ship || !state.introduced;
+    $("shipButton").textContent = state.handed_over_at ? "Отгружено " + state.handed_over_at
+      : state.introduced ? "Отгружено" : "Отгрузка — после ввода кодов в оборот";
   }
 
   // Фактический вес по позициям — до нажатия «Собрано»: перевес уйдёт в потери фасовки.
@@ -323,6 +337,18 @@
     show(data.message || (data.ok ? "Код убран." : "Не получилось убрать код."), data.ok ? "ok" : "bad");
   }
 
+  async function spoilCode(id) {
+    const data = await call("/spoil", { id, by: $("packer").value.trim() });
+    if (data.state) { state = data.state; render(); }
+    show(data.message || (data.ok ? "Код испорчен." : "Не получилось."), data.ok ? "ok" : "bad");
+  }
+
+  $("shipButton").addEventListener("click", async () => {
+    const data = await call("/ship", { by: $("packer").value.trim() });
+    if (data.state) { state = data.state; render(); }
+    show(data.message || "Не получилось.", data.ok ? "ok" : "bad");
+  });
+
   $("finishButton").addEventListener("click", async () => {
     const data = await call("/finish", { by: $("packer").value.trim(), weights });
     if (data.state) { state = data.state; render(); }
@@ -362,6 +388,8 @@
       context.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, side, side);
       try {
         const results = await ZXingWASM.readBarcodes(context.getImageData(0, 0, side, side), {
+          // Только DataMatrix: QR «Как заваривать» на той же этикетке, EAN и
+          // прочие форматы сканер не ищет вовсе, а не отбрасывает после чтения.
           formats: ["DataMatrix"],
           // Plain — чтобы разделители GS остались в тексте как есть.
           textMode: "Plain",
@@ -374,12 +402,9 @@
           // Один и тот же код в кадре — не повод слать его каждые 200 мс.
           if (found.text !== lastText || now - lastAt > 4000) {
             lastText = found.text; lastAt = now;
-            if (found.symbologyIdentifier && found.symbologyIdentifier !== "]d2") {
-              show("Это не код маркировки (не GS1 DataMatrix) — наведите на другой квадратный код.", "bad");
-              feedback(false);
-            } else {
-              await submit(found.text, false);
-            }
+            // Разбирает и проверяет сервер: он же восстановит потерянный GS
+            // и объяснит, если это не код маркировки.
+            await submit(found.text, false);
           }
         }
       } catch (e) {

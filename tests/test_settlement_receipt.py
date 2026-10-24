@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.modules.catalog import service as catalog_service
 from app.modules.marking import packing
 from app.modules.marking.codes import GS
-from app.modules.marking.models import SOLD, MarkingCodeRow
+from app.modules.marking.models import SOLD, OrderMarkingCode
 from app.modules.orders import delivery_events, repository as orders_repository
 from app.modules.orders.models import Order, OrderPayment
 from app.modules.payment import settlement, yookassa_client
@@ -232,7 +232,7 @@ async def test_watch_follows_the_receipt(clean, world, monkeypatch):
     assert done["succeeded"] == 1
     async with clean() as session:
         rows = (await session.execute(
-            MarkingCodeRow.__table__.select().where(MarkingCodeRow.order_id == order.id)
+            OrderMarkingCode.__table__.select().where(OrderMarkingCode.order_id == order.id)
         )).all()
     assert {row.status for row in rows} == {SOLD}
 

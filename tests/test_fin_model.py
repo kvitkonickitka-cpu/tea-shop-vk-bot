@@ -50,6 +50,9 @@ insert into finance.v_pending_summary values ('4673', now(), false, 2, 15995, 0,
 # С миграции 012 цена, GTIN и название товара — из каталога бота (shop.catalog).
 CATALOG_MIGRATION = "012_catalog_prices.sql"
 CLEAR_SHOP = """do $$ begin
+    if to_regclass('shop.code_events') is not null then
+        truncate shop.code_events, shop.code_batch_items, shop.code_batches restart identity cascade;
+    end if;
     if to_regclass('shop.lots') is not null then
         truncate shop.stock_moves, shop.reservations, shop.lots restart identity cascade;
     end if;

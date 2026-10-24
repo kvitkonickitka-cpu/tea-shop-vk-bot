@@ -1,0 +1,53 @@
+# Тесты на каждый PR и на каждый мерж в main: свежая машина GitHub, пустая
+# Postgres только для тестов, весь набор pytest. Ничего не деплоит и в
+# ЮKassa, СДЭК, Ozon, ВК не ходит — внешние API в тестах подменены, секреты
+# не нужны. Деплой — по-прежнему кнопкой «Deploy to Timeweb».
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Новый коммит в тот же PR отменяет прогон по старому.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tea_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tea_test
+      # Без базы тесты падают, а не пропускаются — иначе зелёная проверка
+      # значила бы, что половина набора не запускалась.
+      TESTS_REQUIRE_DATABASE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Как в Dockerfile.
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q -rs

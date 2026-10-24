@@ -35,6 +35,9 @@ os.environ.setdefault("PII_ENCRYPTION_KEY", "dGVzdC1waWkta2V5LXRlc3QtcGlpLWtleS1
 # Сценарии сверяют суммы с ценой, которую вернул подменённый перевозчик.
 # Надбавку на эквайринг проверяет отдельно tests/test_delivery_acquiring.py.
 os.environ.setdefault("DELIVERY_ACQUIRING_PERCENT", "0")
+# Запрет отгрузки и чека до ввода кодов в оборот проверяет tests/test_code_statuses.py;
+# остальным тестам чека и сборки он мешал бы вводить коды в каждом.
+os.environ.setdefault("REQUIRE_INTRODUCED_BEFORE_SHIP", "false")
 
 # Таблицы, которые чистит фикстура `clean` сверх основного списка: новые
 # механики дописывают сюда, не трогая общий список.
@@ -70,6 +73,17 @@ def _rebuild_engine():
     database._session_factory = async_sessionmaker(database._engine, expire_on_commit=False)
 
 
+def _no_database(reason: str) -> None:
+    """Базы нет: на своей машине тест пропускается, в CI — падает.
+
+    В CI (`TESTS_REQUIRE_DATABASE=1`) пропуск означал бы зелёную проверку,
+    в которой половина тестов не запускалась.
+    """
+    if os.environ.get("TESTS_REQUIRE_DATABASE"):
+        pytest.fail(f"тестам нужна база, а её нет: {reason}")
+    pytest.skip(reason)
+
+
 @pytest.fixture
 async def db():
     """Живая база с созданными таблицами. Нет базы — тест пропускается.
@@ -82,7 +96,7 @@ async def db():
     from app.core import database
 
     if database._engine is None:
-        pytest.skip("DATABASE_URL не задан")
+        _no_database("DATABASE_URL не задан")
 
     _rebuild_engine()
 
@@ -90,12 +104,12 @@ async def db():
         try:
             await database.init_models()
         except Exception as error:  # база недоступна — это не провал теста
-            pytest.skip(f"база недоступна: {type(error).__name__}")
+            _no_database(f"база недоступна: {type(error).__name__}")
         _initialized = True
         _rebuild_engine()
 
     if database._session_factory is None:
-        pytest.skip("база недоступна, приложение ушло в память")
+        _no_database("база недоступна, приложение ушло в память")
 
     return database.get_session_factory()
 
@@ -110,7 +124,7 @@ async def clean(db):
         "conversations",
         "escalations", "escalation_states", "client_notices",
         "manager_notifications", "processed_events", "dialog_reports",
-        "heartbeats", "marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events", "ops_events",
+        "heartbeats", "marking_codes", "order_marking_codes", "client_preferences", "order_feedback", "inbound_messages", "funnel_events", "ops_events",
         "order_ratings", "clients", "pii_vault", "catalog_snapshot",
         "ref_products", "ref_composition", "ref_costs", "ref_settings", "ref_stock_moves", "ref_sync",
         "llm_usage", "anthropic_costs", "anthropic_cost_sync", "consents",

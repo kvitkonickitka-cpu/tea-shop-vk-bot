@@ -60,7 +60,8 @@ async def test_critical_controls_alert_once_and_summary_daily(clean, sent, monke
     assert any(f"№{delivered}" in a and "закрывающего чека" in a for a in alerts)
     summary = [t for k, t in sent if t.startswith("<b>Контроли")][0]
     assert "❌ Оплачено больше 10 дней назад и не вручено: 1" in summary
-    assert "⚪ Код ЧЗ в чеке не введён в оборот" in summary
+    # Журнал статусов кодов ведёт бот — проверка всегда «знает», в чеках кодов нет.
+    assert "✅ Код ЧЗ в чеке не введён в оборот" in summary
     assert result["сводка"]
     sent.clear()
 

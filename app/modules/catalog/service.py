@@ -99,6 +99,28 @@ def gtin_for(name: str, items: list[dict] | None = None) -> str:
     return gtin if codes.gtin_is_valid(gtin) else ""
 
 
+_SET_WORDS = {"set", "сет", "набор"}
+
+
+def kind_for(name: str, items: list[dict] | None = None) -> str:
+    """Тип позиции: `set` — сет или набор в коробке со своим кодом, иначе `pack`."""
+    from app.modules.marking.models import PACK, SET
+
+    item = find_item(name, items) or {}
+    return SET if str(item.get("kind", "")).strip().casefold() in _SET_WORDS else PACK
+
+
+def item_by_gtin(gtin: str, items: list[dict] | None = None) -> dict | None:
+    """Товар каталога с этим GTIN — чтобы назвать сборщику, что он отсканировал."""
+    from app.modules.marking import codes
+
+    items = load_items() if items is None else items
+    for item in items:
+        if gtin and codes.normalize_gtin(item.get("gtin", "")) == gtin:
+            return item
+    return None
+
+
 def marking_configured(items: list[dict] | None = None) -> bool:
     """Задан ли GTIN хоть у одного товара — значит, собираем с кодами."""
     items = load_items() if items is None else items

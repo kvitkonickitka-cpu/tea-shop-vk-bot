@@ -50,19 +50,29 @@ def test_code_without_gs_is_restored():
     # «93» внутри серийника не сбивает: хвост фиксированной длины стоит последним.
     tricky = codes.parse(f"01{GTIN}21AB93CDEFGHIJK93dGVz")
     assert tricky.serial == "AB93CDEFGHIJK"
-    long = codes.parse(LONG.replace(GS, ""))
-    assert long.code == LONG and long.crypto == "91+92"
+    assert tricky.code == f"01{GTIN}21AB93CDEFGHIJK{GS}93dGVz"
+
+
+def test_only_the_93_pattern_is_restored():
+    """Без GS восстанавливаем только 01 + GTIN + 21 + серийник + 93 + 4 символа."""
+    with pytest.raises(codes.CodeError, match="Код не распознан, отсканируйте ещё раз."):
+        codes.parse(LONG.replace(GS, ""))
 
 
 @pytest.mark.parametrize(
     "raw,expected",
     [
         ("", "Пустой"),
-        ("4606203099221", "не код маркировки"),
-        (f"01{GTIN}21ABC123def456g", "криптохвоста"),
+        ("4606203099221", "штрихкод EAN"),
+        ("https://teapotwice.ru/brew/te-guan-in", "QR-код со ссылкой"),
+        ("www.teapotwice.ru/brew", "QR-код со ссылкой"),
+        ("мусор с этикетки", "не код маркировки: он должен начинаться с 01"),
+        ("21ABC123def456g93dGVz", "не код маркировки"),
+        (f"01{GTIN}21ABC123def456g", "Код не распознан, отсканируйте ещё раз."),
         (f"01{GTIN}21ABC123def456g{GS}10LOT1", "криптохвоста"),
         (f"01{GTIN[:-1]}0" + f"21ABC{GS}93dGVz", "Контрольная цифра"),
-        (f"01{GTIN}21ABC123def456gXYZWVUTSRQ", "разделителей"),
+        (f"01{GTIN}21ABC123def456gXYZWVUTSRQ", "Код не распознан"),
+        (f"01ABCDEFGHIJKLMN21ABC{GS}93dGVz", "Код не распознан"),
     ],
 )
 def test_broken_codes(raw, expected):
@@ -90,6 +100,38 @@ def test_catalog_gtin_lookup():
     assert catalog_service.gtin_for("Шу Пуэр", items) == ""
     assert catalog_service.marking_configured(items)
     assert not catalog_service.marking_configured(items[1:])
+
+
+def test_catalog_kind_lookup():
+    items = [
+        {"name": "Сет «Два улуна»", "gtin": "", "kind": "set"},
+        {"name": "Набор мини", "kind": "набор"},
+        {"name": "Те Гуань Инь", "gtin": GTIN},
+        {"name": "Шу Пуэр блин 357 г", "kind": "pack"},
+    ]
+    assert catalog_service.kind_for("Сет «Два улуна»", items) == "set"
+    assert catalog_service.kind_for("Набор мини", items) == "set"
+    assert catalog_service.kind_for("Те Гуань Инь", items) == "pack"
+    assert catalog_service.kind_for("Шу Пуэр блин 357 г", items) == "pack"
+    assert catalog_service.item_by_gtin(GTIN, items)["name"] == "Те Гуань Инь"
+    assert catalog_service.item_by_gtin("04650117240408", items) is None
+
+
+def test_sheet_reads_kind():
+    from app.modules.catalog import sheet
+
+    parsed = sheet.parse_csv(
+        "Название,Цена,GTIN,Тип\n"
+        "Те Гуань Инь,800,4606203099221,пачка\n"
+        "Сет «Два улуна»,1500,,сет\n"
+        "Набор мини,1200,,набор\n"
+        "Да Хун Пао,1100,,\n"
+        "Дянь Хун,900,,коробка\n"
+    )
+    assert parsed.errors == []
+    assert [item["kind"] for item in parsed.items] == ["pack", "set", "set", "pack", "pack"]
+    # Непонятный тип не блокирует таблицу — пачка и предупреждение.
+    assert any("«Тип» — «коробка»" in w for w in parsed.warnings)
 
 
 def test_export_parsing():

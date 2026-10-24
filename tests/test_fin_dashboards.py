@@ -220,6 +220,9 @@ async def test_attention_says_all_is_well_when_nothing_is_wrong(fin):
     await fin.execute("insert into fin.bank_marks (operation_id, partner, entered_by) values ('capital-1', 'Илья', 'Илья')")
     await fin.execute("insert into shop.lots (lot_code, raw_material, qty, price_per_unit, entered_by) "
                       "select 'L-261101-T1', sku_name, 1000, 1000, 'Никита' from fin.sku limit 1")
+    # Настоящая декларация вместо тестовой из миграции 015.
+    await fin.execute("insert into fin.inputs (key, value_text, entered_by) values "
+                      "('chz_declaration_number', 'ЕАЭС N RU Д-CN.РА01.В.12345/26', 'Никита')")
     rows = await fin.fetch("select * from fin.v_attention")
     started = await fin.fetchval("select started from fin.v_pilot_status")
     if not started:

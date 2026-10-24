@@ -226,44 +226,71 @@ async def close_command(args: list[str], sender: dict, message: dict | None = No
     return "Чек-лист закрытия месяца отправлен."
 
 
-@command("codes", "/codes — партии; /codes <GTIN> <количество> — новая партия и файл для ЛК ЧЗ")
+@command("codes", "/codes — выгрузки; /codes новая — выгрузка наклеенных кодов для ввода в оборот")
 async def codes_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     from app.modules.marking import circulation
 
     if not args:
         rows = await circulation.list_batches()
         if not rows:
-            return "Партий кодов ещё нет."
-        return "<b>Партии кодов ЧЗ</b>\n" + "\n".join(
-            f"<code>{i}</code> GTIN {g}: {n} шт. — {st}, в заказах {used}" for i, g, n, st, used in rows)
-    if len(args) != 2 or not args[1].isdigit():
-        raise ValueError("Нужны GTIN и количество кодов.")
-    batch_id, rows = await circulation.create_batch(args[0], int(args[1]), by=who(sender))
-    _attachments[id(sender)] = [(f"chz_batch_{batch_id}.csv", circulation.export_csv(rows))]
-    return (f"Партия <code>{batch_id}</code>: GTIN {html.escape(args[0])}, {len(rows)} кодов — «не подан».\n"
-            "Файл ниже — для ввода в оборот в ЛК «Честного знака». Подали — "
-            f"<code>/circulation {batch_id} подан</code>, приняли — <code>/circulation {batch_id} принят</code>.")
+            return "Выгрузок кодов ещё нет. Новая — <code>/codes новая</code>."
+        return "<b>Выгрузки для ввода в оборот</b>\n" + "\n".join(
+            f"<code>{i}</code> {when}: {n} кодов — {st}" for i, st, n, when in rows)
+    if args[0].casefold() not in ("новая", "new"):
+        raise ValueError("Новая выгрузка — /codes новая.")
+    number, day = await circulation.declaration()
+    if not number or not day:
+        raise ValueError("Нет номера и даты нашей декларации — вводные «chz_declaration_number» и "
+                         "«chz_declaration_date» («Пульс → Вводные»). Без них ЛК код не примет.")
+    batch_id, rows = await circulation.create_batch(by=who(sender))
+    test = circulation.is_test_declaration(number)
+    name = f"chz_vvod_{batch_id}{'_TEST' if test else ''}.csv"
+    _attachments[id(sender)] = [(name, circulation.export_csv(rows, number, day))]
+    warning = ("⚠️ <b>Декларация тестовая — в ЛК ЧЗ этот файл не подавать.</b> Настоящий номер и дату — "
+               "во «Вводных» (chz_declaration_number, chz_declaration_date).\n" if test else "")
+    return (f"{warning}Выгрузка <code>{batch_id}</code>: {len(rows)} кодов, декларация {html.escape(number)} от "
+            f"{html.escape(day)}.\nФайл ниже — для документа «Производство РФ» в ЛК «Честного знака». "
+            f"Подписали и документ принят — <code>/circulation {batch_id} введено</code>; не подаёте — "
+            f"<code>/circulation {batch_id} отменена</code>.")
 
 
-@command("circulation", "/circulation <партия> подан|принят")
+@command("circulation", "/circulation <выгрузка> введено|отменена [номер документа]")
 async def circulation_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     from app.modules.marking import circulation
 
-    if len(args) != 2 or not args[0].isdigit():
-        raise ValueError("Нужны номер партии и статус.")
-    if not await circulation.set_status(int(args[0]), args[1].casefold(), by=who(sender)):
-        return f"Партии {html.escape(args[0])} нет."
-    return f"Партия {args[0]}: {html.escape(args[1].casefold())}."
+    if len(args) < 2 or not args[0].isdigit():
+        raise ValueError("Нужны номер выгрузки и «введено» или «отменена».")
+    batch_id, action = int(args[0]), args[1].casefold()
+    if action in ("введено", "введена", "принят", "принята"):
+        count = await circulation.mark_introduced(batch_id, by=who(sender), document=" ".join(args[2:]))
+        return (f"Выгрузка {batch_id}: введено в оборот {count} кодов. Собранные заказы Ozon с этими кодами "
+                "подтвердятся к отгрузке на ближайшем тике, отгрузка со страницы сборки открыта.")
+    if action in ("отменена", "отмена", "отменить"):
+        if not await circulation.cancel_batch(batch_id):
+            return f"Выгрузку {batch_id} отменить нельзя: её нет или она уже введена."
+        return f"Выгрузка {batch_id} отменена — коды попадут в следующую."
+    raise ValueError("Статус — «введено» или «отменена».")
 
 
-@command("spoil", "/spoil <серийный номер или код> этикетка|брак|утеря|другое")
+@command("spoil", "/spoil <серийный номер или код> этикетка|брак|утеря|другое — до ввода в оборот")
 async def spoil_command(args: list[str], sender: dict, message: dict | None = None) -> str:
     from app.modules.marking import circulation
 
     if len(args) < 2:
         raise ValueError("Нужны код (или серийный номер) и причина.")
     done = await circulation.write_off(" ".join(args[:-1]), args[-1], by=who(sender))
-    return f"Код списан: {html.escape(done)}. В заказ он попасть не должен — контроль это проверит."
+    return f"Код испорчен: {html.escape(done)}. В заказ и в чек он не попадёт."
+
+
+@command("withdraw", "/withdraw <код> брак|просрочка|отзыв|другое — вывод из оборота после ввода")
+async def withdraw_command(args: list[str], sender: dict, message: dict | None = None) -> str:
+    from app.modules.marking import circulation
+
+    if len(args) < 2:
+        raise ValueError("Нужны код (или серийный номер) и причина.")
+    done = await circulation.withdraw(" ".join(args[:-1]), args[-1], by=who(sender))
+    return (f"Код выведен из оборота: {html.escape(done)}. Документ вывода из оборота оформите в ЛК "
+            "«Честного знака».")
 
 
 async def handle(message: dict, me: dict) -> bool:

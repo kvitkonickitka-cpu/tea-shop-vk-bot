@@ -22,18 +22,16 @@ alter default privileges in schema fin grant select on tables to metabase_fin, m
 -- Запись — только формы.
 grant insert on fin.inputs to metabase_fin;
 -- fin.purchase_lots с 014 — представление над shop.lots (права на партии выдаёт бот
--- при старте); fin.packing_runs — без формы, остаётся до переделки кодов ЧЗ.
+-- при старте); fin.packing_runs убрана в 015.
 grant insert, update, delete on fin.expenses, fin.capital, fin.cash_snapshots,
-      fin.packing_runs, fin.ad_spend, fin.plan to metabase_fin;
+      fin.ad_spend, fin.plan to metabase_fin;
 grant usage on all sequences in schema fin to metabase_fin;
 
 -- 006: акт перевозчика и сроки поставки — формы; налоговый календарь — отметка формой.
 grant insert, update, delete on fin.carrier_acts, fin.supply_lead_times to metabase_fin;
 grant update (status, paid_amount, done_on, done_by, note) on fin.tax_calendar to metabase_fin;
 
--- 008: статус партии кодов (ввод в оборот) и списание — формами.
-grant update (status, submitted_at, accepted_at, packing_run_id, note) on fin.code_batches to metabase_fin;
-grant insert, update, delete on fin.code_writeoffs to metabase_fin;
+-- 008 (до 015): партии кодов и списание — теперь журнал бота (shop.code_events), права выдаёт бот.
 
 -- 009: разметка операции выписки — формой «Разметить операцию» (история — новой строкой).
 grant insert on fin.bank_marks to metabase_fin;
