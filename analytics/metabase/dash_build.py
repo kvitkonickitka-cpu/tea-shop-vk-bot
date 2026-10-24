@@ -618,19 +618,48 @@ CATALOG_FIELDS = {"price": "Цена", "on_sale": "В продаже", "active":
 def cards_catalog(q, models):
     field_names = " ".join(f"when '{k}' then '{v}'" for k, v in CATALOG_FIELDS.items())
     card("k_catalog", q, "Каталог", """
+-- Хватает сырья — то же правило, что у бота (app/modules/stock/service.py): свободное
+-- сырьё партий, из которых выйдет пачка со сроком не меньше 90 дней, на одну единицу.
+with free as (
+    select raw_material, unit, sum(free) as free from shop.v_lot_balance
+    where active and free > 0 and (best_before is null or best_before >= current_date + 90)
+    group by raw_material, unit
+),
+need as (
+    select c.sku_id, c.raw_material, case when c.kind = 'блин' then 'шт' else 'г' end as unit,
+           case when c.kind = 'блин' then 1 else c.net_weight_g end as qty
+    from shop.catalog c where c.active and c.kind in ('пачка', 'блин')
+    union all
+    select b.bundle_sku, i.raw_material, case when i.kind = 'блин' then 'шт' else 'г' end,
+           sum(b.quantity * case when i.kind = 'блин' then 1 else i.net_weight_g end)
+    from shop.bundle_items b join shop.catalog i on i.sku_id = b.item_sku
+    where b.active group by b.bundle_sku, i.raw_material, i.kind
+),
+enough as (
+    select n.sku_id, bool_and(coalesce(f.free, 0) >= n.qty) as ok
+    from need n left join free f on f.raw_material = n.raw_material and f.unit = n.unit
+    group by n.sku_id
+)
 select c.sku_id as "Артикул", c.name as "Название", c.kind as "Тип", c.price as "Цена",
        case when c.on_sale then 'да' else 'нет' end as "В наличии",
-       -- Хватает ли сырья, посчитает склад по партиям (следующий блок); до него — прочерк.
-       '—' as "Хватает сырья",
+       case when coalesce(e.ok, false) then 'да' else 'нет' end as "Хватает сырья",
        coalesce(c.gtin, '—') as "GTIN",
        case when c.is_new then 'да' else '' end as "Новинка",
-       case when c.vk_market_url is null then 'нет' else 'есть' end as "Маркет ВК"
-from shop.catalog c where c.active
+       case when c.vk_market_url is null then 'нет' else 'есть' end as "Маркет ВК",
+       c.id
+from shop.catalog c left join enough e on e.sku_id = c.sku_id
+where c.active
 order by c.on_sale desc, c.sort_order, c.name""", "table",
-         merge(colfmt(Цена=RUB), color_rules("В наличии", {"да": GREEN, "нет": GREY}),
+         # Карточка строки модели открывается по ключу id (столбец спрятан).
+         merge(colfmt(Цена=RUB),
+               {"table.column_formatting": color_rules("В наличии", {"да": GREEN, "нет": GREY})["table.column_formatting"]
+                + color_rules("Хватает сырья", {"да": GREEN, "нет": GREY})["table.column_formatting"]},
+               {"table.columns": [{"name": c, "enabled": c != "id"} for c in (
+                   "Артикул", "Название", "Тип", "Цена", "В наличии", "Хватает сырья", "GTIN", "Новинка",
+                   "Маркет ВК", "id")]},
                {"column_settings": {'["name","Артикул"]': {
                    "click_behavior": {"type": "link", "linkType": "url",
-                                      "linkTemplate": f"/model/{models['shop.catalog']}/{{{{Артикул}}}}"}}}}),
+                                      "linkTemplate": f"/model/{models['shop.catalog']}/{{{{id}}}}"}}}}),
          "Что продаёт бот. Клик по артикулу — карточка со всеми полями и кнопкой «Исправить». "
          "Правка видна боту через несколько секунд; цена в заказах, уже оформленных, не меняется.")
     card("k_changes", q, "Последние изменения каталога", f"""

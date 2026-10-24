@@ -42,7 +42,11 @@ DDL = [
         ) = right(g, 1)::int
     $$""",
     """create table if not exists shop.catalog (
-        sku_id            text primary key,
+        -- Числовой ключ — для Metabase: форма «Обновить» в карточке строки ищет
+        -- ключ с именем id и с текстовым ключом не открывается. Артикул — sku_id,
+        -- уникальный, на него ссылаются состав наборов и заказы.
+        id                bigserial primary key,
+        sku_id            text        not null unique,
         kind              text        not null,
         name              text        not null,
         description       text        not null default '',
@@ -82,6 +86,28 @@ DDL = [
         constraint catalog_gtin check (gtin is null or shop.gtin_ok(gtin)),
         constraint catalog_sale check (not on_sale or (active and gtin is not null and price is not null))
     )""",
+    # Каталог, созданный до 24.10.2026, — с ключом sku_id: переводим на id, внешние
+    # ключи состава переставляем на уникальный sku_id.
+    "alter table shop.catalog add column if not exists id bigserial",
+    """do $$
+    begin
+        if exists (select 1 from pg_constraint c join pg_attribute a
+                     on a.attrelid = c.conrelid and a.attnum = any (c.conkey)
+                   where c.conrelid = 'shop.catalog'::regclass and c.contype = 'p' and a.attname = 'sku_id') then
+            alter table shop.catalog add constraint catalog_sku_unique unique (sku_id);
+            if to_regclass('shop.bundle_items') is not null then
+                alter table shop.bundle_items drop constraint if exists bundle_items_bundle_sku_fkey,
+                                              drop constraint if exists bundle_items_item_sku_fkey;
+            end if;
+            alter table shop.catalog drop constraint catalog_pkey;
+            alter table shop.catalog add constraint catalog_pkey primary key (id);
+            if to_regclass('shop.bundle_items') is not null then
+                alter table shop.bundle_items
+                    add constraint bundle_items_bundle_sku_fkey foreign key (bundle_sku) references shop.catalog (sku_id),
+                    add constraint bundle_items_item_sku_fkey foreign key (item_sku) references shop.catalog (sku_id);
+            end if;
+        end if;
+    end $$""",
     "create unique index if not exists catalog_gtin_unique on shop.catalog (gtin) where gtin is not null",
     # Бот находит товар по названию: среди действующих оно должно быть одно.
     "create unique index if not exists catalog_name_unique on shop.catalog (lower(name)) where active",
@@ -324,7 +350,7 @@ DDL = [
             grant select on all tables in schema shop to metabase_fin;
             revoke insert, update, delete, truncate on shop.catalog, shop.bundle_items, shop.catalog_changes from metabase_fin;
             grant insert, update on shop.catalog, shop.bundle_items to metabase_fin;
-            grant usage on sequence shop.bundle_items_id_seq to metabase_fin;
+            grant usage on sequence shop.bundle_items_id_seq, shop.catalog_id_seq to metabase_fin;
         end if;
         if exists (select 1 from pg_roles where rolname = 'metabase_ro') then
             grant usage on schema shop to metabase_ro;
