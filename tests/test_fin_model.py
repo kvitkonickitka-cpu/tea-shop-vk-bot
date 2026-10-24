@@ -87,6 +87,9 @@ select b.sku_id, c.sku_id, 1, 'тест'
 from fin.bundle_items i join fin.bundles b using (bundle)
 join shop.catalog c on c.raw_material = i.sku_name and c.net_weight_g = i.grams and c.kind in ('пачка', 'блин');
 """
+# Как на бою к миграции 017: в каталоге Габа — «Габа Эко», а не IT-162.
+GABA_MIGRATION = "017_gaba_eco.sql"
+GABA_IN_CATALOG = "update shop.catalog set raw_material = 'Габа Эко' where raw_material = 'Габа Вулканическая (IT-162)'"
 
 
 def _dsn() -> str:
@@ -109,7 +112,7 @@ async def fin(db, clean):
                 f"then create role {name}; end if; end $$"
             )
         await conn.execute(CLEAR_SHOP)
-        seeded = composed = False
+        seeded = composed = gaba = False
         for migration in sorted((FIN / "migrations").glob("*.sql")):
             if not seeded and migration.name >= CATALOG_MIGRATION:
                 seeded = True
@@ -119,6 +122,9 @@ async def fin(db, clean):
             if not composed and migration.name >= COMPOSITION_MIGRATION:
                 composed = True
                 await conn.execute(COMPOSITION_FROM_SEED)
+            if not gaba and migration.name >= GABA_MIGRATION:
+                gaba = True
+                await conn.execute(GABA_IN_CATALOG)
             await conn.execute(migration.read_text(encoding="utf-8"))
         await conn.execute((FIN / "grants.sql").read_text(encoding="utf-8"))
         yield conn
@@ -162,7 +168,9 @@ async def test_seed_matches_model(fin):
     # Лист 6, C19: известные расходы пилота — 173 174 ₽; с миграции 013 к ним добавлена
     # декларация о соответствии (33 000 ₽, в v1.5 её не было).
     budget = await fin.fetch("select * from fin.v_pilot_budget order by line_no")
-    assert round(budget[0]["known_total"]) == 173174 + 33000
+    # С 017 вместо Габы IT-162 (3750 ₽/кг) — Габа Эко (3400 ₽/кг): 1,5 кг × 350 ₽ со скидкой
+    # первой закупки — на 473 ₽ меньше.
+    assert round(budget[0]["known_total"]) == 173174 + 33000 - 473
     assert {row["item"]: row["plan_amount"] for row in budget}["Декларация о соответствии"] == 33000
     assert {row["item"]: row["plan_amount"] for row in budget}["API тестов и консультаций до продаж"] is None
 
@@ -172,6 +180,14 @@ async def test_seed_matches_model(fin):
 
     # Лист 1, строка 22: в v1.5 — 5,148 %; с 009 — (3,4 % + 1 % за чек) × 1,22 = 5,368 %.
     assert await fin.fetchval("select fin.payment_rate()") == Decimal("0.05368")
+
+
+async def test_gaba_eco_replaces_it162(fin):
+    """017: Габа в ассортименте — Габа Эко со своей ценой; IT-162 в архиве."""
+    rows = {r["sku_name"]: r for r in await fin.fetch("select * from fin.sku where sku_name like 'Габа%'")}
+    assert rows["Габа Эко"]["price_per_unit_base"] == 3400 and rows["Габа Эко"]["active"]
+    assert not rows["Габа Вулканическая (IT-162)"]["active"]
+    assert await fin.fetchval("select display_name from fin.product_names where product = 'Габа Эко'") == "Габа Эко"
 
 
 async def test_bundle_composition_comes_from_catalog(fin):
@@ -193,14 +209,14 @@ async def test_bundle_composition_comes_from_catalog(fin):
     assert await fin.fetchval("select count(*) from fin.bundle_items where bundle = 'Сет «Шу и Шен»'") == 3
 
     # Сырьё вложения не из справочника — себестоимость не «без него», а неизвестна, и это видно.
-    await fin.execute("update shop.catalog set raw_material = 'Габа Эко' where sku_id = $1", tgi)
+    await fin.execute("update shop.catalog set raw_material = 'Улун без прайса' where sku_id = $1", tgi)
     rows = await fin.fetch("select * from fin.v_unit_cost")
     assert cost(rows, "Сет «Шу и Шен»") is None and cost(rows, "Сет «Два Те Гуань Иня»") is None
     assert cost(rows, "Набор «Точка входа»") is not None
     missing = {r["sku_id"] for r in await fin.fetch("select * from fin.v_catalog_no_cost")}
     assert {sku, tgi} <= missing
     attention = [r for r in await fin.fetch("select * from fin.v_attention") if r["sort"] == 23]
-    assert len(attention) == 1 and "«Габа Эко»" in attention[0]["text"] and sku in attention[0]["text"]
+    assert len(attention) == 1 and "«Улун без прайса»" in attention[0]["text"] and sku in attention[0]["text"]
     assert attention[0]["place"] == "catalog"
 
 
@@ -333,7 +349,7 @@ async def test_stock_and_reorder_signal(fin, db):
     # Расход — 2800 г за 14 дней, 200 г в день; свободно 100 г — пора докупать.
     assert tgi["avg_daily_sales_14d"] == 200 and tgi["reorder"]
     # Сырья без партий — нули, а не пропуск: «нет на складе».
-    assert stock["Габа Вулканическая (IT-162)"]["grams_left"] == 0
+    assert stock["Габа Эко"]["grams_left"] == 0
     assert "Набор «Точка входа»" not in stock
 
 
