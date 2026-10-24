@@ -1,5 +1,9 @@
-"""Дашборд «Пульс» в коллекции «Дашборды»: каждый день — «Сегодня», «Деньги», «Продажи», «Товар»;
-раз в неделю и в конце месяца — «Ввод данных», «Сверки», «Отчёты», «Вводные», «Каталог».
+"""Дашборды «Пульс» и «Управление» в коллекции «Дашборды».
+
+«Пульс» — каждый день: «Сегодня», «Деньги», «Продажи», «Товар», «Склад», «Коды».
+«Управление» — раз в неделю и в конце месяца: «Ввод данных», «Каталог», «Сверки», «Отчёты»,
+«Вводные». До 24.10.2026 это был один «Пульс»; владелец разделил его вручную — сборка
+повторяет это деление, чтобы следующий прогон его не откатил.
 
     MB_FIN_PW="$(cat /etc/teashop/metabase_fin_password)" python3 dash_build.py
 
@@ -12,9 +16,7 @@
   текстом «08.09.2026» (у Metabase нет формата дня с ведущим нулём), на осях — «8 сен»;
 - вопросы, модели и формы — заново в подколлекции «Пульс и Служебное — вопросы»
   (прежняя уходит в архив в конце, когда дашборды уже на новых вопросах);
-- «Пульс» обновляется на месте: ссылка не меняется. До 24.10.2026 служебные вкладки
-  были отдельным дашбордом «Служебное» — владелец попросил один экран, теперь они идут
-  после «Товара», а «Служебное» уходит в архив;
+- «Пульс» и «Управление» обновляются на месте: ссылки не меняются;
 - «Пульс» — главная страница Metabase и закреплён в «Дашбордах»;
 - «Сводка», «Финансы» и «Служебное» со своими вопросами — в архив (ничего не удаляется).
 
@@ -30,9 +32,9 @@ RO_DB = fb.RO_DB
 ROOT = "Дашборды"
 QUESTIONS = "Пульс и Служебное — вопросы"
 PULSE = "Пульс"
-# Служебные вкладки — после «Товара», в том же дашборде.
-PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Склад", "Коды", "Ввод данных", "Сверки", "Отчёты", "Вводные",
-              "Каталог"]
+PULSE_TABS = ["Сегодня", "Деньги", "Продажи", "Товар", "Склад", "Коды"]
+MANAGE = "Управление"
+MANAGE_TABS = ["Ввод данных", "Каталог", "Сверки", "Отчёты", "Вводные"]
 OLD_DASHBOARDS = ("Сводка", "Финансы", "Служебное")
 
 # Рубли целые, проценты с одним знаком; разделители — из глобальных настроек
@@ -178,19 +180,16 @@ def one_row(sql):
 def cards_today(q, links):
     m = one_row("select free_cash, reserve, left_before_start, capital_remaining from fin.v_money_now")
     free, reserve, left, _capital = (float(x or 0) for x in m)
-    top = max(left * 1.5, free * 1.2, reserve)
-    low = min(0.0, free * 1.2)
-    card("t_free", q, f"Свободно сверх резерва {rub(reserve)}", """
-select free_cash as "Свободно" from fin.v_money_now""", "gauge",
-         {"gauge.segments": ([{"min": low, "max": 0, "color": RED, "label": "ниже резерва"}] if low < 0 else []) + [
-             {"min": 0, "max": left, "color": RED, "label": "меньше трат до старта"},
-             {"min": left, "max": top, "color": GREEN, "label": "хватает на траты до старта"}],
-          **colfmt(Свободно=RUB)},
+    # Число, а не спидометр: владелец 24.10 перевёл карточку вручную — шкала с границами
+    # на момент сборки врала уже на следующий день.
+    number("t_free", q, f"Свободно сверх резерва {rub(reserve)}", """
+select free_cash as "Свободно" from fin.v_money_now""",
          "Остаток по выписке банка минус минимальный резерв (вводная). Красное — свободных денег меньше, чем "
          "осталось потратить до старта по бюджету пилота; зелёное — хватает. Границы шкалы — на момент сборки "
-         "дашборда. Выписка обновляется в 07:00 и 21:00 МСК.")
-    number("t_runway", q, "Денег хватит до", """
-select runway_text from fin.v_money_now""",
+         "дашборда. Выписка обновляется в 07:00 и 21:00 МСК.", fmt={"Свободно": RUB})
+    # Длинное «на весь прогноз (до …)» в плитке шириной 6 не помещалось — короче.
+    number("t_runway", q, "Денег хватит до (без учёта продаж)", r"""
+select regexp_replace(runway_text, '^на весь прогноз \(до (.*)\)$', 'позже \1') as "Хватит до" from fin.v_money_now""",
            "Первый день, когда прогноз остатка опускается ниже резерва; если не опускается — «на весь прогноз» "
            "с датой его конца (конец пилота + 30 дней). Плановые платежи формы «Добавить расход» — на свои даты. Прогноз учитывает ожидаемые вклады (вводная «Когда ждём оставшиеся "
            "вклады»), закупку чая и пополнение ВК на их даты, остальной бюджет пилота, сервисы, банк, налоги. "
@@ -212,7 +211,7 @@ select pilot_loss as "Убыток" from fin.v_pilot_status where started and pi
          {"progress.goal": float(loss[1] or 30000), "progress.color": RED, **colfmt(Убыток=RUB)},
          "Накопленный убыток М1–М3 по P&L против вводных «Убыток для паузы» и «Максимальный убыток». До старта "
          "карточки нет.")
-    number("t_nocap", q, "Без ожидаемых вкладов денег хватит до", f"""
+    number("t_nocap", q, "Без новых вкладов денег хватит до", f"""
 select case when runout_no_capital <= bank_date then 'уже ниже резерва'
             else coalesce({d('runout_no_capital')}, 'на весь прогноз (до ' || {d('horizon')} || ')') end
 from fin.v_money_now where capital_remaining > 0""",
@@ -297,11 +296,12 @@ from fin.v_weekly_forecast order by week_no""", "table",
          "Тот же прогноз, что «Денег хватит до»: придёт — вклады и выплаты ЮKassa; уйдёт — закупка чая и пополнение "
          "ВК в свои дни, плановые платежи в свои дни, остальной бюджет пилота, сервисы, банк, подрядчик, налоги.")
     start = one_row("select to_char(fin.inp_date('pilot_start_date'), 'DD.MM') ")[0]
-    number("m_ahead_total", q, f"До старта {start} нужно заплатить", """
+    number("m_ahead_total", q, f"Запланировано формой до {start}", """
 select fin.fmt_rub(coalesce(sum(amount), 0)) from fin.v_payments_ahead
 where not closed and day < fin.inp_date('pilot_start_date')""",
-           "Открытые плановые платежи (форма «Добавить расход», «план») и налоги из календаря до даты старта.")
-    card("m_ahead", q, "Платежи впереди: 8 недель", f"""
+           "Только плановые платежи, внесённые формой «Добавить расход» (план). Весь остаток бюджета до старта — "
+           "в таблице «Бюджет пилота».")
+    card("m_ahead", q, "Платежи впереди: внесённые планом, 8 недель", f"""
 select {d("day")} as "Когда", what as "Что", amount as "Сумма", coalesce(budget_item, source) as "Статья",
        case when closed then 'закрыт' when overdue then 'просрочен' else 'ждёт' end as "Статус"
 from fin.v_payments_ahead order by day, what""", "table",
@@ -565,22 +565,6 @@ select gate as "Ворота", check_name as "Проверка",
        {d("period_end")} as "Срок" from fin.v_pilot_gates order by sort""", "table",
          color_rules("Статус", {"пройдены": GREEN, "не пройдены": RED}),
          "Неделя 2, неделя 6 и М3 пилота. Пороги — вводные «Ворота …».")
-    number("r_stock_soon", q, "Склад", """
-select 'Партия ещё не внесена — форма «Партия закупки»' where not exists (select 1 from fin.purchase_lots)""",
-           "Склад появится после первой партии закупки.")
-    card("r_stock", q, "Склад", """
-select coalesce(n.display_name, s.product) as "Товар", s.on_hand as "На руках", round(s.days_left) as "Хватит, дней",
-       case when s.order_now then 'пора заказывать' when s.reorder then 'мало' end as "Сигнал",
-       s.grams_left as "Чая осталось, г", s.packed as "Расфасовано"
-from fin.v_stock s left join fin.product_names n using (product)
-where exists (select 1 from fin.purchase_lots)
-order by s.order_now desc nulls last, s.reorder desc, s.kind, 1""", "table",
-         color_rules("Сигнал", {"пора заказывать": RED, "мало": YELLOW}),
-         "Точка заказа = (срок поставки + фасовка и маркировка + страховой запас) × продажи в день за 14 дней.")
-    card("r_codes", q, "Коды «Честного знака»", """
-select gtin as "GTIN", imported as "Из СУЗ", available as "Свободно", used_in_orders as "В заказах",
-       in_circulation as "В обороте", written_off as "Списано" from fin.v_codes order by gtin""", "table", None,
-         "Коды по GTIN: импортировано из СУЗ, свободно, в заказах, введено в оборот, списано.")
 
 
 def cards_inputs(q):
@@ -1058,7 +1042,7 @@ def rows_height(sql, *, per_row=0.5, extra=1.5, low=2, high=12):
 
 # Фильтр дашборда «Период»: FCF по месяцам или по неделям.
 GRAIN_PARAM = {"id": "grain", "name": "Период", "slug": "period", "type": "string/=", "sectionId": "string",
-               "default": ["месяц"], "values_query_type": "list", "values_source_type": "static-list",
+               "default": ["месяц"], "required": True, "values_query_type": "list", "values_source_type": "static-list",
                "values_source_config": {"values": ["месяц", "неделя"]}}
 GRAIN_CARDS = ("m_fcf", "m_fcf_cum")
 
@@ -1100,12 +1084,15 @@ if __name__ == "__main__":
     if "bank_marks" not in tables:
         raise SystemExit("Metabase не видит fin.bank_marks: миграции 009–010 применены (analytics/fin/apply.sh)?")
     root, qcoll, old = collections()
-    pulse, ptabs = ensure_dashboard(root, PULSE, "Каждый день: всё ли в порядке, куда уходят деньги, работают ли реклама "
-                                    "и бот, на чём зарабатываем. Раз в неделю и в конце месяца: ввод данных, сверки, "
-                                    "отчёты, вводные, каталог. Выписка — 07:00 и 21:00 МСК, заказы — сразу.", PULSE_TABS)
-    links = {name: f"{SITE}/dashboard/{pulse}?tab={ptabs[tab]}"
-             for name, tab in (("money", "Деньги"), ("sales", "Продажи"), ("entry", "Ввод данных"), ("checks", "Сверки"),
-                               ("stock", "Склад"), ("codes", "Коды"), ("catalog", "Каталог"))}
+    pulse, ptabs = ensure_dashboard(root, PULSE, "Каждый день: деньги, продажи, товар, склад, коды. Ввод данных, "
+                                    "каталог, сверки и отчёты — дашборд «Управление».", PULSE_TABS)
+    manage, mtabs = ensure_dashboard(root, MANAGE, "Раз в неделю и в конце месяца: ввод данных, каталог, сверки, "
+                                     "отчёты, вводные. Каждый день — дашборд «Пульс».", MANAGE_TABS)
+    links = {name: f"{SITE}/dashboard/{did}?tab={tabs[tab]}"
+             for name, did, tabs, tab in (("money", pulse, ptabs, "Деньги"), ("sales", pulse, ptabs, "Продажи"),
+                                          ("stock", pulse, ptabs, "Склад"), ("codes", pulse, ptabs, "Коды"),
+                                          ("entry", manage, mtabs, "Ввод данных"), ("checks", manage, mtabs, "Сверки"),
+                                          ("catalog", manage, mtabs, "Каталог"))}
     for item, color, cls in call("POST", "/dataset", {"database": RO_DB, "type": "native", "native": {
             "query": "select item, color, cash_class from fin.budget_articles"}})["data"]["rows"]:
         SERIES_COLORS[SHORT_ITEMS.get(item, item) + (" (влож.)" if cls == "Вложения" else "")] = {"color": color}
@@ -1132,20 +1119,18 @@ if __name__ == "__main__":
     lots_h = rows_height("select 1 from shop.v_lot_balance where active and on_hand > 0", extra=2.5, low=3, high=12)
     att_h = rows_height("select * from fin.v_attention", per_row=0.75, extra=1.5, low=3, high=8)
     T, M, S, P, W, Q = ptabs["Сегодня"], ptabs["Деньги"], ptabs["Продажи"], ptabs["Товар"], ptabs["Склад"], ptabs["Коды"]
-    E, C, R, I, K = ptabs["Ввод данных"], ptabs["Сверки"], ptabs["Отчёты"], ptabs["Вводные"], ptabs["Каталог"]
-    # Скрытые без данных карточки Metabase убирает из сетки, и всё ниже поднимается: «убыток
-    # пилота» после старта встаёт на место «дней до старта», строка «без вкладов» пропадает,
-    # когда капитал внесён.
+    E, K, C, R, I = (mtabs[t] for t in MANAGE_TABS)
+    # «Сегодня» — как владелец разложил вручную 24.10: четыре цифры в ряд, под ними вклады,
+    # проверки, график; убыток пилота — после старта. Скрытые без данных карточки Metabase
+    # убирает из сетки, и всё ниже поднимается.
     put(pulse, ptabs, parameters=[GRAIN_PARAM, LOT_PARAM], dashcards=[
-        dc("t_free", T, 0, 0, 6, 4), dc("t_capital", T, 0, 6, 6, 4),
-        dc("t_pilot", T, 0, 12, 6, 4, hide_empty=True), dc("t_loss", T, 0, 18, 6, 4, hide_empty=True),
-        # «Денег хватит до» — строкой во всю ширину, как прогноз без вкладов под ним: текст
-        # «на весь прогноз (до 31.03.2027)» в плитке обрезался — шрифт растёт вместе с ней.
-        dc("t_runway", T, 4, 0, 24, 2),
-        dc("t_nocap", T, 6, 0, 24, 2, hide_empty=True),
-        dc("t_attention", T, 8, 0, 24, att_h),
-        dc("t_balance", T, 8 + att_h, 0, 24, 7),
-        dc("t_soon", T, 15 + att_h, 0, 24, 2, hide_empty=True),
+        dc("t_free", T, 0, 0, 6, 3), dc("t_runway", T, 0, 6, 6, 3),
+        dc("t_nocap", T, 0, 12, 6, 3, hide_empty=True), dc("t_pilot", T, 0, 18, 6, 3, hide_empty=True),
+        dc("t_capital", T, 3, 0, 24, 3),
+        dc("t_attention", T, 6, 0, 24, att_h),
+        dc("t_balance", T, 6 + att_h, 0, 24, 7),
+        dc("t_loss", T, 13 + att_h, 0, 24, 3, hide_empty=True),
+        dc("t_soon", T, 16 + att_h, 0, 24, 2, hide_empty=True),
         # Деньги
         dc("m_spend", M, 0, 0, 12, 8),
         dc("m_partners", M, 0, 12, 12, rows_height("select * from fin.v_partner_capital", extra=2.5)),
@@ -1177,6 +1162,8 @@ if __name__ == "__main__":
         dc("c_runway", Q, 13, 0, 12, 6), dc("c_batches", Q, 13, 12, 12, 6),
         dc("c_export", Q, 19, 0, 24, 6),
         dc("c_by_lot", Q, 25, 0, 24, 5), dc("c_lot_codes", Q, 30, 0, 24, 8),
+    ])
+    put(manage, mtabs, dashcards=[
         text(E, 0, 0, 24, 1, "**Каждый день**"),
         button("ads", "Реклама за день", E, 1, 0), button("expense", "Добавить расход", E, 1, 4),
         text(E, 2, 0, 24, 1, "**Редко**"),
@@ -1191,8 +1178,6 @@ if __name__ == "__main__":
         dc("r_pnl", R, 0, 0, 24, 9), dc("r_ddc", R, 9, 0, 24, 6),
         dc("r_flow", R, 15, 0, 12, 7), dc("r_spent", R, 15, 12, 12, 7),
         dc("r_cac", R, 22, 0, 24, 4, True), dc("r_gates", R, 26, 0, 24, 6),
-        dc("r_stock_soon", R, 32, 0, 24, 2, True), dc("r_stock", R, 34, 0, 14, 8, True),
-        dc("r_codes", R, 34, 14, 10, 8, True),
         dc("i_inputs", I, 0, 0, 24, 16), dc("i_history", I, 16, 0, 24, 6),
         button("k_price", "Изменить цену", K, 0, 0, 5), button("k_texts", "Тексты и ссылки", K, 0, 5, 5),
         button("k_add", "Добавить артикул", K, 0, 10, 5), button("k_sale", "Снять с продажи / вернуть", K, 0, 15, 5),
@@ -1209,5 +1194,5 @@ if __name__ == "__main__":
         call("PUT", f"/collection/{c['id']}", {"archived": True})
     if not failed:
         archive_old(root)
-    print(f"{PULSE}: {SITE}/dashboard/{pulse}")
+    print(f"{PULSE}: {SITE}/dashboard/{pulse}\n{MANAGE}: {SITE}/dashboard/{manage}")
     raise SystemExit(1 if failed else 0)

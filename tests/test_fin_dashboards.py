@@ -349,3 +349,10 @@ async def test_inputs_display(fin):
     assert rows["min_cash_reserve"]["since"] in ("с импорта v1.5",) or rows["min_cash_reserve"]["since"].endswith(".2026")
     # Ставка для карт после пометки «не используется» — та же: acquiring_rate.
     assert await fin.fetchval("select fin.payment_rate_for('bank_card')") == await fin.fetchval("select fin.payment_rate()")
+
+
+async def test_investments_have_their_own_colors(fin):
+    # 018: принтер, весы и ККТ в стопке «Куда ушли деньги» больше не одного синего.
+    colors = {r["item"]: r["color"] for r in await fin.fetch(
+        "select item, color from fin.budget_articles where cash_class = 'Вложения'")}
+    assert colors == {"Термопринтер": "#1A5FB4", "Весы": "#99C1F1", "ККТ, ФН, фискализация": "#613583"}
