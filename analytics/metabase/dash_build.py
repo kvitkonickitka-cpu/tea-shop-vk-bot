@@ -682,6 +682,14 @@ order by b.bundle_sku, b.active desc, b.item_sku""", "table", None,
 
 def catalog_forms(qcoll, fin_db, tables, models):
     """Модели каталога с «Исправить» (без «Удалить») и кнопки вкладки «Каталог»."""
+    # До 24.10.2026 ключом каталога был sku_id, и Metabase после синхронизации
+    # оставляет на нём пометку PK. С двумя ключами карточка строки открывается не
+    # на той строке, а «Обновить» пропадает — ключ один, id.
+    for table in call("GET", f"/database/{fin_db}/metadata")["tables"]:
+        if table.get("schema") == "shop" and table.get("name") == "catalog":
+            for column in table["fields"]:
+                if column["name"] == "sku_id" and column.get("semantic_type") == "type/PK":
+                    call("PUT", f"/field/{column['id']}", {"semantic_type": None})
     for table, title in (("shop.catalog", "Каталог"), ("shop.bundle_items", "Состав наборов")):
         body = {"name": f"Ввод: {title}", "display": "table", "visualization_settings": {}, "collection_id": qcoll,
                 "type": "model", "dataset_query": {"type": "query", "database": fin_db,

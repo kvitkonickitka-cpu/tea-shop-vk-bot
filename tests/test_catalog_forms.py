@@ -25,12 +25,18 @@ METABASE = Path(__file__).resolve().parents[1] / "analytics" / "metabase"
 @pytest.fixture
 def forms(monkeypatch):
     """Собрать формы каталога, не ходя в Metabase: id действия → тело запроса."""
-    created = {"actions": [], "cards": []}
+    created = {"actions": [], "cards": [], "fields": []}
     lists = {"rows": []}
 
     def call(method, path, body=None):
         if path == "/dataset":
             return {"data": {"rows": lists["rows"]}}
+        if path.endswith("/metadata"):
+            return {"tables": [{"schema": "shop", "name": "catalog",
+                                "fields": [{"id": 7, "name": "sku_id", "semantic_type": "type/PK"}]}]}
+        if path == "/field/7":
+            created["fields"].append(body)
+            return {}
         if path == "/action":
             created["actions"].append(body)
             return {"id": len(created["actions"])}
@@ -85,6 +91,8 @@ async def run_as_form(conn, sql):
 
 def test_catalog_models_can_be_edited_but_not_deleted(forms):
     created, models = forms
+    # sku_id больше не ключ для Metabase: с двумя PK карточка строки ломается.
+    assert created["fields"] == [{"semantic_type": None}]
     implicit = [a for a in created["actions"] if a.get("type") == "implicit"]
     assert {a["kind"] for a in implicit} == {"row/update"}
     assert {a["model_id"] for a in implicit} == {models["shop.catalog"], models["shop.bundle_items"]}
