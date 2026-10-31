@@ -15,3 +15,8 @@ __pycache__/
 *service_account*.json
 dva-chainika-bot-*.json
 google-sa*.json
+
+# Separate analytics Telegram bot secrets and local state
+.env.analytics-bot
+*.sqlite3
+*.sqlite3.lock

@@ -1,0 +1,19 @@
+# Separate, explicit deployment. Not included in the shop's deploy workflow.
+services:
+  analytics-bot:
+    build: ../../..
+    command: ["python", "-m", "app.modules.analytics_bot"]
+    env_file: .env.analytics-bot
+    volumes:
+      - analytics_bot_state:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  analytics_bot_state: {}
