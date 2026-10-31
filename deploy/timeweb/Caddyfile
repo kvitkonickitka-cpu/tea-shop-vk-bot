@@ -8,6 +8,10 @@ bot.teapotwice.ru {
 
 # Дашборды Metabase (deploy/timeweb/metabase).
 stats.teapotwice.ru {
+	# Авторизация через сессию Metabase; VK ID выдаётся только администратору.
+	handle /secure-dialog/* {
+		reverse_proxy bot:8080
+	}
 	# Вход только через Google (с двухфакторкой аккаунта Google). Отключить
 	# пароль в бесплатном Metabase нельзя — это платная функция, — поэтому
 	# режем вход по паролю, сброс и «забыл пароль» здесь. Google идёт через

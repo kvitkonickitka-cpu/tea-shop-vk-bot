@@ -16,6 +16,9 @@ services:
     env_file: .env.bot
     environment:
       PORT: "8080"
+      DIALOG_LINKS_ENABLED: "true"
+      DIALOG_LINKS_ORIGIN: "https://stats.teapotwice.ru"
+      DIALOG_LINKS_METABASE_URL: "http://metabase:3000"
       # Очереди Yandex здесь нет — вместо неё своя в Postgres
       # (app/modules/queue/local.py): вебхук сразу отвечает ВК, ход идёт в
       # фоне, работает склейка сообщений. Откат — "false" и `up -d bot`:

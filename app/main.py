@@ -4,6 +4,7 @@ import logging
 from fastapi import FastAPI, Request
 
 from app.api.health import router as health_router
+from app.api.dialog_links import router as dialog_links_router
 from app.api.internal import router as internal_router
 from app.api.packing import router as packing_router
 from app.api.payments import router as payments_router
@@ -51,6 +52,7 @@ async def fresh_catalog(request: Request, call_next):
 
 
 app.include_router(health_router)
+app.include_router(dialog_links_router)
 app.include_router(internal_router)
 app.include_router(packing_router)
 app.include_router(payments_router)

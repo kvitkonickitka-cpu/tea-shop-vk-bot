@@ -191,6 +191,10 @@ class Settings(BaseSettings):
     # Отдельный чат для мини-отчётов по завершённым диалогам. Пусто = отчёты
     # не отправляются вовсе.
     telegram_reports_chat_id: str = ""
+    # Закрытые ссылки для команды: вход через существующий Google/Metabase.
+    dialog_links_enabled: bool = False
+    dialog_links_origin: str = "https://stats.teapotwice.ru"
+    dialog_links_metabase_url: str = "http://metabase:3000"
     # Отдельный чат под заказы: новые заказы и проблемы с их регистрацией в
     # СДЭКе. Пусто = пишем менеджеру, как раньше. Здесь, в отличие от
     # отчётов, молчать нельзя: потерянный заказ дороже сообщения не в тот чат.
