@@ -215,7 +215,7 @@ async def _run_scheduled() -> dict:
     # Справочники (себестоимость, настройки) — та же таблица, раз в 15 минут.
     result["references"] = await _run_task("Справочники из таблицы", analytics_references.sync())
     # Счёт Anthropic по дням — раз в час, админ-ключом.
-    result["anthropic_costs"] = await _run_task("Счёт Anthropic", anthropic_costs.sync())
+    result["anthropic_costs"] = {"skipped": "Anthropic отключён"}
     # Реестр ЮKassa и сверка выплат с выпиской — раз в день после выписки 07:00.
     from app.modules.payment import registry as yk_registry
 
@@ -231,7 +231,7 @@ async def _run_scheduled() -> dict:
     # Факт доставки против котировки (акты и API) — раз в день, после реестра.
     result["carrier_check"] = await _run_task("Сверка доставки с актами", _daily("сверка доставки", _carrier_check))
     # Сверка учёта бота со счётом за прошлый месяц — с третьего числа, раз в месяц.
-    result["anthropic_reconcile"] = await _run_task("Сверка Claude со счётом", anthropic_costs.reconcile_month())
+    result["anthropic_reconcile"] = {"skipped": "Anthropic отключён"}
 
     left = _TICK_BUDGET_SECONDS - (time.monotonic() - started)
     result["ozon_catalog"] = await _run_task(
@@ -705,7 +705,7 @@ async def anthropic_costs_sync(request: Request):
     """
     if not await _authorized(request):
         return Response(content="forbidden", media_type="text/plain", status_code=403)
-    return await anthropic_costs.sync(force=True)
+    return {"skipped": "Anthropic отключён; новые расходы — OpenAI"}
 
 
 @router.post("/internal/references/sync")

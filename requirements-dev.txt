@@ -3,4 +3,5 @@
 -r requirements.txt
 pytest
 pytest-asyncio
+anthropic
 pyyaml

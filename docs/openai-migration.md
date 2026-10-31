@@ -1,0 +1,55 @@
+# OpenAI для чайного бота и Ops
+
+Чайный агент и мини-отчёты используют `gpt-6-luna`, Ops — `gpt-6.1-sol`.
+Для обеих моделей reasoning effort — `low`. Вызовы идут через Responses API,
+`store=false`; инструменты и проверки заказов остаются в приложении.
+Автоматического переключения на Anthropic нет.
+
+## Настройки Timeweb
+
+В `deploy/timeweb/.env.bot` (права 600):
+
+```dotenv
+OPENAI_API_KEY=<секрет>
+OPENAI_BASE_URL=https://94-228-170-170.nip.io/openai/v1
+OPENAI_PROXY_SECRET=<отдельный секрет прокси>
+OPENAI_MODEL=gpt-6-luna
+OPENAI_EFFORT=low
+OPENAI_MAX_TOKENS=8000
+OPENAI_TIMEOUT_SECONDS=25
+OPS_ASSISTANT_MODEL=gpt-6.1-sol
+OPS_ASSISTANT_EFFORT=low
+```
+
+На Aeza Caddy снимает префикс `/openai`, проверяет `X-Tea-Proxy-Secret`,
+удаляет этот заголовок перед отправкой в `api.openai.com`. API-ключ передаётся
+только в Authorization. Telegram использует свой прежний маршрут и секрет.
+Секрет прокси лежит на Aeza в `/etc/caddy/tea-openai.secret` (600).
+Секреты нельзя коммитить или печатать в логах.
+
+Исторические названия `claude_client`, поля таблиц и цены Claude сохранены
+для совместимости и старой аналитики. Плановые запросы к счёту Anthropic
+отключены. Старые ключи удаляются из рабочего окружения после проверки
+новой версии. Их отзыв в кабинете Anthropic — отдельное действие.
+
+Локальный Codex использует вход ChatGPT по подписке. API-ключ не нужно
+экспортировать в профиль оболочки и использовать для `codex login`.
+
+## Проверки
+
+`scripts/openai_smoke.py` делает четыре коротких оплачиваемых запроса:
+обе модели вызывают синтетический каталог и отвечают по его результату.
+`RUN_OPENAI_LIVE=1 pytest tests/live_openai.py` проверяет консультацию,
+выбор пункта выдачи, мини-отчёт и Ops на синтетической базе. Любые HTTP-запросы,
+кроме OpenAI, заблокированы. Этот тест не входит в обычный запуск pytest.
+
+На 31.10.2026 полный прогон: 1124 passed, 7 failed. Те же семь тестов падают
+на неизменённом main c7cee41: catalog_db (уникальность GTIN), catalog_test_articles,
+code_statuses, feedback_ask (complaint_at), fin_dashboards, fin_model,
+fin_pulse_numbers. Живые проверки: 3 passed. Обе модели также проверены
+с Timeweb через Aeza; запрос без секрета прокси получает 403.
+
+Деплой выполняется вручную через workflow Deploy to Timeweb. Скрипт делает
+резервную копию базы и проверяет `/health` с доступностью Postgres.
+После удаления старых ключей откат на версию до миграции не восстановит LLM:
+для отката следует использовать исправленную версию с транспортом OpenAI.

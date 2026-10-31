@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     vk_access_token: str = ""
     vk_api_version: str = "5.199"
 
+    openai_api_key: str = ""
+    openai_base_url: str = ""
+    openai_proxy_secret: str = ""
+    openai_model: str = "gpt-6-luna"
+    openai_effort: str = "low"
+    openai_max_tokens: int = 8000
+    openai_timeout_seconds: float = 25.0
+    # Historical configuration retained for reading old cost records only.
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5-5"
     # Модель на повтор, если основная отказала (stop_reason "refusal"):
@@ -497,8 +505,8 @@ class Settings(BaseSettings):
     # Выключен, пока не включат явно: он держит длинный опрос Telegram.
     ops_assistant_enabled: bool = False
     # Пусто — та же модель, что у бота (anthropic_model).
-    ops_assistant_model: str = ""
-    ops_assistant_effort: str = "medium"
+    ops_assistant_model: str = "gpt-6.1-sol"
+    ops_assistant_effort: str = "low"
     ops_assistant_max_tokens: int = 6000
     # Сколько раз за вопрос модель может сходить за данными.
     ops_assistant_max_tool_calls: int = 10

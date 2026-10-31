@@ -124,7 +124,7 @@ async def test_guard_still_scrubs_a_split_prompt(monkeypatch):
         return said("ok")
 
     monkeypatch.setattr(settings, "anthropic_prompt_cache", True)
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     monkeypatch.setattr(claude_client.journal, "note_pii_redacted", lambda op, n: redacted.append(n))
     shared = "Ты продавец чая. " * 60
     personal = "\n\nКлиент оставил телефон 89001234567 и почту a.b@mail.ru."
@@ -145,7 +145,7 @@ async def test_edges_of_the_split(monkeypatch, upto):
         return said("ok")
 
     monkeypatch.setattr(settings, "anthropic_prompt_cache", True)
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     await claude_client.converse([{"role": "user", "content": "привет"}], "Промпт целиком.", [], cache_upto=upto)
     system = seen[0]["system"]
     if upto == 0:
@@ -164,7 +164,7 @@ async def test_ops_assistant_caches_prompt_and_conversation(monkeypatch):
         return said("Сбоев нет.")
 
     monkeypatch.setattr(settings, "anthropic_prompt_cache", True)
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     await claude_client.ops_assistant_turn([{"role": "user", "content": "что со сбоями?"}], service.PROMPT, tools.TOOLS)
     request = seen[0]
     assert request["system"] == [{"type": "text", "text": service.PROMPT, "cache_control": {"type": "ephemeral"}}]

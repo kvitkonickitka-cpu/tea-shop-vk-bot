@@ -468,15 +468,15 @@ TOOLS = [
     {
         "name": "service_errors",
         "description": (
-            "Сбои внешних сервисов (yookassa, cdek, ozon, claude, vk) из журнала Ops за последние N часов: "
+            "Сбои внешних сервисов (yookassa, cdek, ozon, openai, claude, vk) из журнала Ops за последние N часов: "
             "сервис, операция, вид ошибки, HTTP-код, сколько раз, первый и последний раз, номера заказов. "
-            "Плюс сколько раз последний рубеж снимал телефоны и почты в запросах к Claude."
+            "Плюс сколько раз последний рубеж снимал телефоны и почты в запросах к модели."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "hours": {"type": "integer", "description": "Окно в часах, по умолчанию 24, не больше 336."},
-                "api": {"type": "string", "description": "Только этот сервис: yookassa, cdek, ozon, claude, vk."},
+                "api": {"type": "string", "description": "Только этот сервис: yookassa, cdek, ozon, openai, claude, vk."},
             },
         },
     },
@@ -493,7 +493,7 @@ TOOLS = [
     {
         "name": "api_latency",
         "description": (
-            "Сколько мы ждём ответа внешних сервисов (удачные вызовы): yookassa, cdek, ozon, claude, vk "
+            "Сколько мы ждём ответа внешних сервисов (удачные вызовы): yookassa, cdek, ozon, openai, claude, vk "
             "(отправка сообщения) — по операциям: число вызовов, p50, p95, максимум в мс."
         ),
         "input_schema": {
@@ -513,7 +513,7 @@ TOOLS = [
     },
     {
         "name": "reply_times",
-        "description": "Время ответа бота клиентам за N часов: число ходов, p50, p95, максимум, p95 Claude, сколько дольше 8 с.",
+        "description": "Время ответа бота клиентам за N часов: число ходов, p50, p95, максимум, p95 LLM, сколько дольше 8 с.",
         "input_schema": {"type": "object", "properties": {"hours": {"type": "integer"}}},
     },
     {

@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from anthropic import AsyncAnthropic
+from app.modules.dialog import openai_transport
 
 from app.core.config import settings
 from app.modules.ops import journal
@@ -15,37 +15,12 @@ _BASE_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 _DIALOG_REPORT_PROMPT_PATH = Path(__file__).parent / "prompts" / "dialog_report_prompt.md"
 _DIALOG_REPORT_PROMPT = _DIALOG_REPORT_PROMPT_PATH.read_text(encoding="utf-8")
 
-_client = AsyncAnthropic(
-    api_key=settings.anthropic_api_key,
-    base_url=settings.anthropic_base_url or None,
-)
-
-
 async def _create(operation: str, **request):
-    """Запрос к модели с запасной на случай отказа.
-
-    Sonnet 5.5 отказывает в большем числе категорий, чем Sonnet 5: ответ —
-    обычный 200 со `stop_reason: "refusal"` и без текста. Для бота это была
-    бы «техническая заминка» у клиента посреди заказа. Поэтому один повтор
-    на запасной модели (anthropic_fallback_model) с тем же запросом: блоки
-    размышления 5.5 прежняя модель не читает, API просто их отбросит.
-    """
-    response = await _client.messages.create(**request)
+    """OpenAI only. Filename and block interface retained for callers."""
+    response = await openai_transport.create(**request)
     _log_cache(operation, response)
     journal.note_llm_usage(operation, request.get("model", ""), response)
-    if getattr(response, "stop_reason", None) != "refusal":
-        return response
-    details = getattr(response, "stop_details", None)
-    category = getattr(details, "category", None)
-    fallback = (settings.anthropic_fallback_model or "").strip()
-    logger.warning("Claude (%s): отказ модели %s, категория %s%s", operation, request.get("model"), category,
-                   f" — повторяем на {fallback}" if fallback and fallback != request.get("model") else "")
-    if not fallback or fallback == request.get("model"):
-        return response
-    retry = await _client.messages.create(**{**request, "model": fallback})
-    # Повтор оплачен отдельно — своя строка расхода.
-    journal.note_llm_usage(operation, fallback, retry)
-    return retry
+    return response
 
 
 def _system_blocks(system: str, cache_upto: int | None):
@@ -121,7 +96,7 @@ def guard(operation: str, system: str, messages: list[dict]) -> tuple[str, list[
     return system, messages
 
 
-@watch("claude", "ответ без инструментов")
+@watch("openai", "ответ без инструментов")
 async def generate_reply(user_message: str, catalog_context: str = "") -> str:
     system_prompt = _BASE_SYSTEM_PROMPT
     if catalog_context:
@@ -130,8 +105,8 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
     system_prompt, messages = guard("ответ без инструментов", system_prompt, [{"role": "user", "content": user_message}])
     response = await _create(
         "ответ без инструментов",
-        model=settings.anthropic_model,
-        max_tokens=settings.anthropic_max_tokens,
+        model=settings.openai_model,
+        max_tokens=settings.openai_max_tokens,
         system=system_prompt,
         messages=messages,
         **_effort(),
@@ -142,14 +117,14 @@ async def generate_reply(user_message: str, catalog_context: str = "") -> str:
     raise ValueError("Claude response contained no text block")
 
 
-@watch("claude", "мини-отчёт по диалогу")
+@watch("openai", "мини-отчёт по диалогу")
 async def generate_dialog_report(transcript: str) -> str:
     # Вызывается из задачи по таймеру, а не из обработки сообщения, поэтому
     # спешить некуда: восьмисекундный бюджет вебхука VK здесь ни при чём.
     system, messages = guard("мини-отчёт по диалогу", _DIALOG_REPORT_PROMPT, [{"role": "user", "content": transcript}])
     response = await _create(
         "мини-отчёт по диалогу",
-        model=settings.anthropic_model,
+        model=settings.openai_model,
         # Отчёт короткий, но размышление идёт в тот же лимит: при 400 его
         # могло не хватить даже на одну фразу.
         max_tokens=2000,
@@ -172,7 +147,7 @@ def _well_formed(messages: list[dict]) -> list[dict]:
     ]
 
 
-@watch("claude", "ход диалога")
+@watch("openai", "ход диалога")
 async def converse(messages: list[dict], system_prompt: str, tools: list[dict], *, words_only: bool = False,
                    cache_upto: int | None = 0):
     # `words_only` — модель обязана ответить словами (последний круг хода).
@@ -191,8 +166,8 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict], 
     system_prompt, messages = guard("ход диалога", _system_blocks(system_prompt, cache_upto), messages)
     response = await _create(
         "ход диалога",
-        model=settings.anthropic_model,
-        max_tokens=settings.anthropic_max_tokens,
+        model=settings.openai_model,
+        max_tokens=settings.openai_max_tokens,
         system=system_prompt,
         messages=messages,
         **_effort(),
@@ -200,11 +175,11 @@ async def converse(messages: list[dict], system_prompt: str, tools: list[dict], 
     )
     if getattr(response, "stop_reason", None) == "max_tokens":
         logger.warning("Claude: ход упёрся в max_tokens (%s, вывод %s токенов)",
-                       settings.anthropic_max_tokens, getattr(response.usage, "output_tokens", "?"))
+                       settings.openai_max_tokens, getattr(response.usage, "output_tokens", "?"))
     return response
 
 
-@watch("claude", "ассистент Ops")
+@watch("openai", "ассистент Ops")
 async def ops_assistant_turn(messages: list[dict], system_prompt: str, tools: list[dict], *, words_only: bool = False):
     """Ход ассистента в чате Ops. Тот же последний рубеж, что у бота.
 
@@ -225,7 +200,7 @@ async def ops_assistant_turn(messages: list[dict], system_prompt: str, tools: li
     system_prompt, messages = guard("ассистент Ops", _system_blocks(system_prompt, None), _well_formed(messages))
     response = await _create(
         "ассистент Ops",
-        model=settings.ops_assistant_model or settings.anthropic_model,
+        model=settings.ops_assistant_model or settings.openai_model,
         max_tokens=settings.ops_assistant_max_tokens,
         system=system_prompt,
         messages=messages,
@@ -242,7 +217,7 @@ async def ops_assistant_turn(messages: list[dict], system_prompt: str, tools: li
 
 def _effort() -> dict:
     """Глубина размышления — параметром, если задана."""
-    effort = (settings.anthropic_effort or "").strip()
+    effort = (settings.openai_effort or "").strip()
     return {"output_config": {"effort": effort}} if effort else {}
 
 

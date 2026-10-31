@@ -53,7 +53,7 @@ def wire(world, monkeypatch):
         world["manager"].append(text)
 
     monkeypatch.setattr(conversation.claude_client, "converse", REAL_CONVERSE)
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     monkeypatch.setattr(journal, "note_pii_redacted", lambda op, count: world["redacted"].append((op, count)))
     monkeypatch.setattr(manager_messages.telegram_client, "send_message", to_manager)
     return world

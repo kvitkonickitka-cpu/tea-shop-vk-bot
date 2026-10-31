@@ -17,7 +17,7 @@ async def test_guard_redacts_and_reports(clean, monkeypatch, caplog):
         sent.update(kwargs)
         return NS(stop_reason="end_turn", content=[NS(type="text", text="ок")])
 
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     monkeypatch.setattr(journal, "note_pii_redacted", lambda operation, count: noted.append((operation, count)))
     caplog.set_level(logging.WARNING)
     await claude_client.converse(
