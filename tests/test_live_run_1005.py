@@ -83,7 +83,7 @@ async def test_words_only_keeps_tools_and_forbids_calls(monkeypatch):
         sent.update(kwargs)
         return NS(stop_reason="end_turn", content=[NS(type="text", text="ок")])
 
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     tool = {"name": "x", "description": "", "input_schema": {"type": "object"}}
     await claude_client.converse(
         [{"role": "user", "content": "привет"}, {"role": "assistant", "content": "  "},

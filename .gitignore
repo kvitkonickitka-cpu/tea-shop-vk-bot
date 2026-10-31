@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv313/
 .env
 .DS_Store
 .claude/

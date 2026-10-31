@@ -59,7 +59,7 @@ def test_noting_never_raises():
     assert all(r["cost_usd"] is None for r in journal._USAGE)
 
 
-async def test_refusal_fallback_is_billed_twice(monkeypatch):
+async def test_refusal_is_billed_once_without_legacy_fallback(monkeypatch):
     calls = []
 
     async def create(**request):
@@ -68,12 +68,12 @@ async def test_refusal_fallback_is_billed_twice(monkeypatch):
             return response(model=request["model"], stop="refusal", input_tokens=900)
         return response(model=request["model"], input_tokens=900, output_tokens=120)
 
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     monkeypatch.setattr(settings, "anthropic_fallback_model", "claude-sonnet-5")
     await claude_client._create("ход диалога", model="claude-sonnet-5-5", max_tokens=10, messages=[])
-    assert calls == ["claude-sonnet-5-5", "claude-sonnet-5"]
+    assert calls == ["claude-sonnet-5-5"]
     assert [(r["model"], r["stop_reason"]) for r in journal._USAGE] == [
-        ("claude-sonnet-5-5", "refusal"), ("claude-sonnet-5", "end_turn")]
+        ("claude-sonnet-5-5", "refusal")]
 
 
 async def test_flush_writes_usage_and_the_view_shows_it(clean):

@@ -185,7 +185,7 @@ def wire(monkeypatch):
     async def typing(chat_id):
         return None
 
-    monkeypatch.setattr(claude_client._client.messages, "create", create)
+    monkeypatch.setattr(claude_client.openai_transport, "create", create)
     monkeypatch.setattr(tools, "run", run)
     monkeypatch.setattr(telegram_client, "reply", reply)
     monkeypatch.setattr(telegram_client, "typing", typing)

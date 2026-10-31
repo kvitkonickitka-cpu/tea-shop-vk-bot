@@ -26,8 +26,8 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-APIS = ("yookassa", "cdek", "ozon", "claude")
-API_NAMES = {"yookassa": "ЮKassa", "cdek": "СДЭК", "ozon": "Ozon", "claude": "Claude"}
+APIS = ("yookassa", "cdek", "ozon", "claude", "openai")
+API_NAMES = {"yookassa": "ЮKassa", "cdek": "СДЭК", "ozon": "Ozon", "claude": "Claude", "openai": "OpenAI"}
 VALIDATION = "validation"
 # Записи с такой операцией — эмуляция для проверки алертов: пульс их
 # считает (алерт должен сработать), а ежедневный отчёт — нет.
@@ -128,9 +128,9 @@ def classify(error: BaseException) -> tuple[str, int | None]:
     import httpx
 
     try:
-        import anthropic
+        import openai
     except ImportError:  # pragma: no cover — пакет есть всегда
-        anthropic = None
+        openai = None
 
     # Клиенты сервисов заворачивают сетевые ошибки в свои: смотрим и причину.
     for candidate in (error, error.__cause__):
@@ -138,11 +138,11 @@ def classify(error: BaseException) -> tuple[str, int | None]:
             continue
         if isinstance(candidate, (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError)):
             return "timeout", None
-        if anthropic is not None and isinstance(candidate, anthropic.APITimeoutError):
+        if openai is not None and isinstance(candidate, openai.APITimeoutError):
             return "timeout", None
         if isinstance(candidate, httpx.RequestError):
             return "network", None
-        if anthropic is not None and isinstance(candidate, anthropic.APIConnectionError):
+        if openai is not None and isinstance(candidate, openai.APIConnectionError):
             return "network", None
 
     status = getattr(error, "status_code", None)
@@ -180,7 +180,8 @@ def note_error(api: str, operation: str, error: BaseException, duration: float) 
     # получателя. Телефоны и почты маскирует ещё и форматтер логов.
     logger.warning(
         "Ошибка %s: %s — %s (%s)",
-        API_NAMES.get(api, api), operation, kind, str(error)[:300],
+        API_NAMES.get(api, api), operation, kind,
+        type(error).__name__ if api == "openai" else str(error)[:300],
         extra={
             "service": api, "operation": operation, "order_id": order_id,
             "http_status": status, "error_code": kind, "duration_ms": int(duration * 1000),
@@ -325,7 +326,7 @@ def watch(api: str, operation=None):
                     logger.debug("Не записали вызов %s", api, exc_info=True)
                 return result
             finally:
-                if api == "claude":
+                if api in ("claude", "openai"):
                     holder = _llm_seconds.get()
                     if holder is not None:
                         holder[0] += time.monotonic() - started
