@@ -50,5 +50,9 @@ jobs:
           cache-dependency-path: requirements*.txt
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      # На маленьких тестовых данных компиляция сложных финансовых views
+      # дороже самих запросов. Production-настройки это не меняет.
+      - name: Disable JIT in the disposable test database
+        run: docker exec ${{ job.services.postgres.id }} psql -U postgres -d tea_test -c 'ALTER DATABASE tea_test SET jit = off'
       - name: Run tests
-        run: python -m pytest -q -rs
+        run: python -m pytest -q -rs --durations=10
