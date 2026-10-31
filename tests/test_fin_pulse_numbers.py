@@ -46,6 +46,17 @@ async def test_payment_on_capital_day_without_money_needs_attention(bank):
     day = TODAY + timedelta(days=7)
     await _input(bank, "capital_expected_date", text=day.isoformat())
     await _input(bank, "tea_purchase_date", text=day.isoformat())
+    await _input(bank, "pilot_start_date", text=(day + timedelta(days=30)).isoformat())
+    await _input(bank, "vk_topup_date", text=(day + timedelta(days=14)).isoformat())
+    # Сценарий проверяет нехватку на закупку, а не на платежи до неё.
+    # Например, 1 ноября сервисы уже съедают свободные 2730,51 ₽ из bank.
+    # Покрываем все более ранние платежи, оставляя перед закупкой 1 ₽ сверх резерва.
+    earlier = await bank.fetchval(
+        "select coalesce(sum(amount), 0) from fin.v_payments_plan where day < $1", day)
+    reserve = await bank.fetchval("select fin.inp('min_cash_reserve')")
+    await bank.execute("update finance.v_daily_balance_total set balance = $1", reserve + earlier + 1)
+    assert await bank.fetchval(
+        "select count(*) from fin.v_runway_daily where day < $1 and closing_no_capital < reserve", day) == 0
     money = await bank.fetchrow("select * from fin.v_money_now")
     assert money["capital_remaining"] > 0 and money["runout_no_capital"] == day
     text = await bank.fetchval("select text from fin.v_attention where sort = 24")
