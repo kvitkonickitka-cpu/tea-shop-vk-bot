@@ -5,6 +5,7 @@ from contextvars import ContextVar
 import httpx
 
 from app.core.config import settings
+from app.privacy.dialog_links import protect_payload, protect_text
 
 TELEGRAM_API_URL = "https://api.telegram.org"
 
@@ -66,7 +67,7 @@ async def send_message(text: str, chat_id: str | None = None) -> None:
     timeout = _HURRY_TIMEOUT_SECONDS if _hurry.get() else _TIMEOUT_SECONDS
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            response = await client.post(url, json=payload, headers=headers)
+            response = await client.post(url, json=protect_payload(payload), headers=headers)
             response.raise_for_status()
         except httpx.HTTPStatusError as error:
             raise RuntimeError(
@@ -103,7 +104,7 @@ async def call(method: str, payload: dict | None = None, *, timeout: float = _TI
     )
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            response = await client.post(url, json=payload or {}, headers=headers)
+            response = await client.post(url, json=protect_payload(payload or {}), headers=headers)
             response.raise_for_status()
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 409:
@@ -164,7 +165,7 @@ async def send_document(filename: str, content: bytes, *, chat_id: str, caption:
     )
     data = {"chat_id": chat_id, "parse_mode": "HTML"}
     if caption:
-        data["caption"] = caption[:1000]
+        data["caption"] = protect_text(caption)[:1000]
     if reply_to:
         data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
     async with httpx.AsyncClient(timeout=60) as client:
