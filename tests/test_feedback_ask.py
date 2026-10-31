@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -113,6 +113,14 @@ async def test_text_review_carries_rating(clean, outbox):
 
 
 async def test_complaint_marks_order_and_stops_touches(clean, outbox, monkeypatch):
+    # Заказ создан относительно NOW: часы обработчика должны быть теми же,
+    # иначе с течением календаря он выпадает из 14-дневного окна отзывов.
+    class FeedbackClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(feedback, "datetime", FeedbackClock)
     order = await make_order(clean, delivered_days_ago=3)
     monkeypatch.setattr(conversation, "_notify_manager", lambda *a, **k: _true())
     await conversation._execute_escalate_to_manager(
