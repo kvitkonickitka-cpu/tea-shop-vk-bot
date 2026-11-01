@@ -38,7 +38,8 @@ def _for_viewer(items: list[dict]) -> list[dict]:
     if _test_viewer.get():
         if settings.investor_demo_enabled:
             return [{**item, "in_stock": bool(item.get("on_sale", item.get("in_stock", False)))}
-                    if item.get("is_test") else item for item in items]
+                    for item in items if item.get("is_test")
+                    and item.get("sku_id") == settings.investor_demo_sku_id]
         return items
     return [{**item, "in_stock": False, "hidden": True} if item.get("is_test") else item for item in items]
 
@@ -121,7 +122,7 @@ def find_item(name: str, items: list[dict] | None = None) -> dict | None:
     if not wanted:
         return None
     for item in items:
-        if item.get("name", "").strip().casefold() == wanted:
+        if any(str(n).strip().casefold() == wanted for n in [item.get("name", ""), *(item.get("synonyms") or [])]):
             return item
     for item in items:
         have = item.get("name", "").strip().casefold()
@@ -234,6 +235,13 @@ async def build_catalog_context() -> str:
         )
     if settings.investor_demo_enabled:
         lines.insert(0, "Демонстрационный режим: доступны тестовые товары из списка. "
+                     "Предлагай и оформляй только единственный товар из списка. "
+                     "Если спрашивают другие чаи, сорта, позиции, цены или наличие, "
+                     "скажи, что сейчас для заказа доступен только товар из списка, и предложи его. "
+                     "Не передавай такие вопросы менеджеру: отсутствие другой позиции здесь ожидаемо, "
+                     "это правило главнее общего требования эскалации неизвестного товара. "
+                     "Общие консультации о чае разрешены без обещания других товаров. "
+                     "Явную просьбу о человеке, жалобу или проблему оплаты/доставки передавай штатно. "
                      "Оформляй заказ обычными инструментами, соблюдай согласие на ПДн. "
                      "Текущий каталог главнее старых сообщений об отсутствии продаж. "
                      "Не повторяй старые сообщения о дате открытия. "

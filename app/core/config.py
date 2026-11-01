@@ -232,6 +232,7 @@ class Settings(BaseSettings):
     shop_opens_text: str = "1 декабря"
     # Temporary public demo; only exposes existing test SKUs, never marks real stock on sale.
     investor_demo_enabled: bool = False
+    investor_demo_sku_id: str = "P-TEST-100"
     # Что обещаем клиенту про сдачу посылки перевозчику после оплаты — текст
     # и число дней, после которого менеджеру уходит «ещё не сдан». Ставить
     # срок, который реально держите.

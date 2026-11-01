@@ -129,8 +129,9 @@ def order_flow_prompt() -> str:
     они разъедутся с теми, что возвращают инструменты, и бот начнёт слать
     две разные.
     """
+    from app.modules.orders import shop_info
     return (
-        _ORDER_FLOW_TEMPLATE
+        shop_info.prompt_note() + "\n\n" + _ORDER_FLOW_TEMPLATE
         .replace("{map_url}", CDEK_OFFICES_MAP_URL)
         .replace(
             "{payment_step}",
@@ -493,10 +494,13 @@ def _tools_for_stage(
 
 def _find_catalog_item(catalog: list[dict], wanted_name: str) -> dict | None:
     wanted_lower = wanted_name.strip().lower()
+    if not wanted_lower:
+        return None
     for item in catalog:
-        item_lower = item["name"].strip().lower()
-        if wanted_lower in item_lower or item_lower in wanted_lower:
-            return item
+        for alias in [item["name"], *(item.get("synonyms") or [])]:
+            item_lower = str(alias).strip().lower()
+            if item_lower and (wanted_lower in item_lower or item_lower in wanted_lower):
+                return item
     return None
 
 
@@ -759,6 +763,9 @@ async def _execute_propose_order(peer_id: int, tool_input: dict) -> str | ToolEx
         else:
             unresolved.append(wanted["name"])
 
+    if not resolved and settings.investor_demo_enabled:
+        available = [i["name"] for i in catalog if i.get("in_stock")]
+        return "Для заказа доступен только " + ", ".join(available) + ". Предложи его клиенту, не зови менеджера из-за других позиций."
     if not resolved:
         return f"Не нашли в ассортименте товар(ы): {', '.join(unresolved)}. Уточни у клиента точное название."
 
@@ -2373,7 +2380,44 @@ async def _for_manager(peer_id: int, text: str) -> str:
     return privacy.scrub(masked)[0]
 
 
+_demo_turn_text = contextvars.ContextVar("demo_turn_text", default="")
+
+
+def _demo_catalog_escalation(tool_input: dict) -> bool:
+    if not settings.investor_demo_enabled or tool_input.get("complaint") is True:
+        return False
+    source = (_demo_turn_text.get() or str(tool_input.get("question", ""))).casefold()
+    # Explicit requests for a person and real service problems retain escalation.
+    if re.search(r"менеджер|человек|админ|оператор|кожан|сотрудник", source):
+        return False
+    if re.search(r"оплат|плат[её]ж|достав|возврат|проблем|жалоб|брак|не приш|статус|заказ\s*[№#]?\s*\d", source):
+        return False
+    described = source + " " + str(tool_input.get("question", "")) + " " + str(tool_input.get("reason", ""))
+    return bool(re.search(r"налич|ассортимент|товар|позиц|сорт|купить|заказать|поч[её]м|цен[ауы]|сколько стоит|есть ли", described.casefold()))
+
+
+def _demo_service_information(tool_input: dict) -> bool:
+    if not settings.investor_demo_enabled or tool_input.get("complaint") is True:
+        return False
+    source = (_demo_turn_text.get() or str(tool_input.get("question", ""))).casefold()
+    if re.search(r"менеджер|человек|админ|оператор|кожан|сотрудник|не приш|не работ|проблем|списал|возврат|жалоб|отказ|ошиб|потер|брак|статус|заказ\s*[№#]?\s*\d", source):
+        return False
+    return bool(re.search(r"как.*достав|способ.*достав|доставляете|чем.*достав|как.*оплат|способ.*оплат|чем.*оплат|оплатить.*можно|налож.*плат[её]ж|цен.*достав|сколько.*достав|наличн|сбп|юкасс", source))
+
+
 async def _execute_escalate_to_manager(peer_id: int, tool_input: dict) -> ToolExecution:
+    if _demo_service_information(tool_input):
+        from app.modules.orders import shop_info
+        reply = shop_info.delivery_text() + "\n\n" + await shop_info.payment_text()
+        return ToolExecution(tool_result="Общая информация магазина: передача менеджеру не требуется.", client_reply=reply)
+    if _demo_catalog_escalation(tool_input):
+        items = catalog_service.load_items()
+        product = next((i for i in items if i.get("sku_id") == settings.investor_demo_sku_id
+                        and i.get("is_test") and i.get("in_stock")), None)
+        reply = (f"Сейчас для заказа доступен только {product['name']}. Могу помочь с ним."
+                 if product else "Сейчас доступных для заказа позиций нет. Попробуйте немного позже.")
+        return ToolExecution(tool_result="Вопрос о других позициях не передан менеджеру: ограниченный демо-каталог.",
+                             client_reply=reply)
     if await escalation_state.is_open(peer_id):
         return ToolExecution(
             tool_result=(
@@ -2820,6 +2864,7 @@ async def handle_turn(
             live_before = await orders_repository.live_invoice_order(peer_id)
         except Exception:
             logger.warning("Не проверили счёт клиента peer_id=%s", peer_id, exc_info=True)
+    demo_text_token = _demo_turn_text.set(user_text)
     try:
         with journal.llm_scope(
             peer_id=peer_id, dialog_id=session_id, purpose="sales_bot",
@@ -2835,6 +2880,7 @@ async def handle_turn(
             )
         return reply
     finally:
+        _demo_turn_text.reset(demo_text_token)
         logger.info(
             "ход peer_id=%s %s%s",
             peer_id,
@@ -2904,6 +2950,7 @@ async def _handle_turn(
         (draft is None or draft.details.get("vk_order_id"))
         and not (attached and attached.any)
         and orders_service.looks_like_order_question(user_text)
+        and not _demo_service_information({"question": user_text})
     ):
         # Шаблонный вопрос ВК после заказа в «Товарах» приходит раньше самого
         # заказа: ждём его, иначе модель ответит, не зная про заказ.
@@ -2930,6 +2977,8 @@ async def _handle_turn(
     if bought:
         system_prompt += f"\n\n{await privacy.tokenize(peer_id, bought)}"
     system_prompt += f"\n\n{order_flow_prompt()}"
+    from app.modules.orders import shop_info
+    system_prompt += "\n" + await shop_info.payment_text()
     methods_note = await payment_methods.prompt_note(peer_id)
     if methods_note:
         system_prompt += f"\n{methods_note}"
