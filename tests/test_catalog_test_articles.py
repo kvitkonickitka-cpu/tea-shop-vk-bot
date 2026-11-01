@@ -99,7 +99,7 @@ async def test_public_investor_demo_can_be_disabled(catalog, monkeypatch):
     async with catalog_service.viewer(CUSTOMER):
         items = {i["sku_id"]: i for i in catalog_service.load_items()}
         assert items["P-TEST-100"]["in_stock"]
-        assert not items["P-REAL-100"]["in_stock"]
+        assert "P-REAL-100" not in items
         assert not catalog_service.shop_closed()
         context = await catalog_service.build_catalog_context()
         assert "Демонстрационный режим" in context and "Тестовый улун" in context
@@ -138,8 +138,98 @@ async def test_demo_stock_override_only_for_on_sale_test_sku(catalog, monkeypatc
         items = {i["sku_id"]: i for i in catalog_service.load_items()}
         assert items["P-TEST-100"]["in_stock"]
         assert not items["P-TEST-100"]["stock_ok"]
-        assert not items["P-REAL-100"]["in_stock"]
+        assert "P-REAL-100" not in items
     assert all(not item["in_stock"] for item in source)
     source[0]["on_sale"] = False
     async with catalog_service.viewer(CUSTOMER):
         assert not catalog_service.load_items()[0]["in_stock"]
+
+
+async def test_demo_only_selected_product_even_if_others_available(catalog, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "investor_demo_enabled", True)
+    source = _items()
+    source[1].update(in_stock=True, on_sale=True)
+    source.append({**source[0], "sku_id":"OTHER-TEST", "name":"Другой тестовый чай"})
+    monkeypatch.setattr(store,"current_items",lambda:source)
+    async with catalog_service.viewer(CUSTOMER):
+        assert [i['sku_id'] for i in catalog_service.load_items()] == ['P-TEST-100']
+        context=await catalog_service.build_catalog_context()
+        assert 'Другой тестовый чай' not in context and 'Настоящий пуэр' not in context
+        assert 'Не передавай такие вопросы менеджеру' in context
+    monkeypatch.setattr(settings, "investor_demo_enabled", False)
+    async with catalog_service.viewer(TEST_PEER):
+        assert len(catalog_service.load_items()) == 3
+
+
+async def test_demo_catalog_escalation_has_no_side_effects(catalog, monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.core.config import settings
+    from app.modules.orders import conversation as c
+    monkeypatch.setattr(settings, "investor_demo_enabled", True)
+    opened=AsyncMock()
+    notify=AsyncMock()
+    monkeypatch.setattr(c.escalation_state,'is_open',opened)
+    monkeypatch.setattr(c,'_notify_manager',notify)
+    token=c._demo_turn_text.set('А Да Хун Пао есть?')
+    try:
+        async with catalog_service.viewer(CUSTOMER):
+            result=await c._execute_escalate_to_manager(CUSTOMER,{'question':'Есть ли Да Хун Пао?','reason':'Нет товара в ассортименте'})
+        assert 'Тестовый улун' in result.client_reply
+        opened.assert_not_awaited();notify.assert_not_awaited()
+    finally:c._demo_turn_text.reset(token)
+
+
+@pytest.mark.parametrize('source,complaint',[
+    ('Есть Да Хун Пао? Позовите менеджера',False),
+    ('Оплатил чай, но заказ не пришёл',False),
+    ('У чая неприятный запах',True),
+])
+def test_demo_preserves_human_requests_and_problems(monkeypatch,source,complaint):
+    from app.core.config import settings
+    from app.modules.orders import conversation as c
+    monkeypatch.setattr(settings,'investor_demo_enabled',True)
+    token=c._demo_turn_text.set(source)
+    try:assert not c._demo_catalog_escalation({'question':source,'reason':'Вопрос о товаре','complaint':complaint})
+    finally:c._demo_turn_text.reset(token)
+
+
+def test_renamed_catalog_aliases_resolve_old_draft_name():
+    from app.modules.orders import conversation as c
+    item={'name':'Те Гуань (тест)','sku_id':'P-TEST-100','synonyms':['TEST ITEM 100G']}
+    assert c._find_catalog_item([item],'TEST ITEM 100G') is item
+    assert catalog_service.find_item('TEST ITEM 100G',[item]) is item
+
+
+@pytest.mark.parametrize('question',['как заказ доставляете','Как оплатить заказ?','Сколько стоит доставка в Уфу?','Можно оплатить наличными?'])
+async def test_demo_general_delivery_payment_never_sends_manager(catalog,monkeypatch,question):
+    from unittest.mock import AsyncMock
+    from app.core.config import settings
+    from app.modules.orders import conversation as c
+    from app.modules.payment import methods
+    monkeypatch.setattr(settings,'investor_demo_enabled',True)
+    monkeypatch.setattr(methods,'enabled',AsyncMock(return_value=['bank_card','sbp']))
+    notify=AsyncMock();monkeypatch.setattr(c,'_notify_manager',notify)
+    token=c._demo_turn_text.set(question)
+    try:
+        result=await c._execute_escalate_to_manager(CUSTOMER,{'question':question,'reason':'Нет информации о доставке в ассортименте'})
+        assert 'Ozon' in result.client_reply and 'СДЭК' in result.client_reply and 'ЮKassa' in result.client_reply
+        notify.assert_not_awaited()
+    finally:c._demo_turn_text.reset(token)
+
+
+@pytest.mark.parametrize('question',['Как оплатить, если ссылка не работает?','Доставка потеряла заказ','Позовите менеджера, как доставляете?'])
+def test_service_problem_or_explicit_manager_still_escalates(monkeypatch,question):
+    from app.core.config import settings
+    from app.modules.orders import conversation as c
+    monkeypatch.setattr(settings,'investor_demo_enabled',True)
+    token=c._demo_turn_text.set(question)
+    try:assert not c._demo_service_information({'question':question})
+    finally:c._demo_turn_text.reset(token)
+
+
+def test_order_context_has_authoritative_delivery_and_payment():
+    from app.modules.orders import conversation as c
+    prompt=c.order_flow_prompt()
+    assert 'Условия магазина' in prompt and 'Ozon' in prompt and 'курьерская доставка СДЭК' in prompt
+    assert 'не передавай менеджеру' in prompt
