@@ -91,3 +91,55 @@ async def test_test_declaration_keeps_real_articles_off_sale(fin):
                       "('chz_declaration_number', 'ЕАЭС N RU Д-CN.РА01.В.12345/26', 'Никита')")
     await fin.execute("update shop.catalog set on_sale = true where sku_id = $1", sku)
     assert await fin.fetchval("select reasons from shop.v_catalog_readiness where sku_id = $1", sku) == []
+
+
+async def test_public_investor_demo_can_be_disabled(catalog, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "investor_demo_enabled", True)
+    async with catalog_service.viewer(CUSTOMER):
+        items = {i["sku_id"]: i for i in catalog_service.load_items()}
+        assert items["P-TEST-100"]["in_stock"]
+        assert not items["P-REAL-100"]["in_stock"]
+        assert not catalog_service.shop_closed()
+        context = await catalog_service.build_catalog_context()
+        assert "Демонстрационный режим" in context and "Тестовый улун" in context
+        assert "продажи начинаются" not in context
+    monkeypatch.setattr(settings, "investor_demo_enabled", False)
+    async with catalog_service.viewer(CUSTOMER):
+        assert catalog_service.shop_closed()
+        assert "продажи начинаются" in await catalog_service.build_catalog_context()
+
+
+async def test_demo_orders_stay_test_after_switch_off(clean, monkeypatch):
+    from app.core.config import settings
+    from app.modules.orders import repository
+    from app.modules.orders.state import OrderDraft
+    monkeypatch.setattr(settings, "investor_demo_enabled", True)
+    draft = OrderDraft(items=[{"name":"Тестовый улун","price":390,"quantity":1}],items_total=390)
+    order = await repository.save_order(CUSTOMER, draft)
+    assert order.is_test and order.details["investor_demo"] is True
+    monkeypatch.setattr(settings, "investor_demo_enabled", False)
+    saved = await repository.by_id(order.id)
+    assert saved.is_test
+    regular = await repository.save_order(CUSTOMER, draft)
+    assert not regular.is_test and "investor_demo" not in regular.details
+
+
+async def test_demo_stock_override_only_for_on_sale_test_sku(catalog, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "investor_demo_enabled", True)
+    source = _items()
+    for item in source:
+        item["in_stock"] = False
+        item["stock_ok"] = False
+        item["on_sale"] = item["is_test"]
+    monkeypatch.setattr(store, "current_items", lambda: source)
+    async with catalog_service.viewer(CUSTOMER):
+        items = {i["sku_id"]: i for i in catalog_service.load_items()}
+        assert items["P-TEST-100"]["in_stock"]
+        assert not items["P-TEST-100"]["stock_ok"]
+        assert not items["P-REAL-100"]["in_stock"]
+    assert all(not item["in_stock"] for item in source)
+    source[0]["on_sale"] = False
+    async with catalog_service.viewer(CUSTOMER):
+        assert not catalog_service.load_items()[0]["in_stock"]

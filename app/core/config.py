@@ -230,6 +230,8 @@ class Settings(BaseSettings):
     # Когда открывается магазин — словами для ответа покупателю, пока в продаже ничего
     # нет (catalog.service.shop_closed): «1 декабря», не дата из финмодели — бот её не читает.
     shop_opens_text: str = "1 декабря"
+    # Temporary public demo; only exposes existing test SKUs, never marks real stock on sale.
+    investor_demo_enabled: bool = False
     # Что обещаем клиенту про сдачу посылки перевозчику после оплаты — текст
     # и число дней, после которого менеджеру уходит «ещё не сдан». Ставить
     # срок, который реально держите.

@@ -5,6 +5,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.database import get_session_factory
+from app.core.config import settings
 from app.modules.orders.models import Order, OrderPayment
 from app.modules.orders.state import OrderDraft
 
@@ -19,6 +20,8 @@ def _details_of(draft: OrderDraft) -> dict:
     Своей колонки у заказа под неё нет, поэтому кладём в детали.
     """
     details = dict(draft.details or {})
+    if settings.investor_demo_enabled:
+        details["investor_demo"] = True
     if draft.delivery_label:
         details["delivery_label"] = draft.delivery_label
     return details
@@ -39,6 +42,7 @@ async def save_order(
     async with session_factory() as session:
         order = Order(
             peer_id=peer_id,
+            is_test=settings.investor_demo_enabled,
             items=draft.items,
             items_total=draft.items_total,
             delivery_method=draft.delivery_method,
@@ -74,6 +78,8 @@ async def reopen_for_payment(order_id: int, draft: OrderDraft, payment_id: str, 
         order = await session.get(Order, order_id)
         if order is None:
             return None
+        if settings.investor_demo_enabled:
+            order.is_test = True
         order.items = draft.items
         order.items_total = draft.items_total
         order.delivery_method = draft.delivery_method
