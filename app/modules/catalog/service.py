@@ -23,7 +23,7 @@ async def viewer(peer_id: int):
     from app.modules.dialog import test_mode
 
     try:
-        is_test = await test_mode.is_test(peer_id)
+        is_test = settings.investor_demo_enabled or await test_mode.is_test(peer_id)
     except Exception:
         logger.warning("Не проверили, тестовый ли аккаунт peer_id=%s — тестовые артикулы скрыты", peer_id, exc_info=True)
         is_test = False
@@ -36,6 +36,9 @@ async def viewer(peer_id: int):
 
 def _for_viewer(items: list[dict]) -> list[dict]:
     if _test_viewer.get():
+        if settings.investor_demo_enabled:
+            return [{**item, "in_stock": bool(item.get("on_sale", item.get("in_stock", False)))}
+                    if item.get("is_test") else item for item in items]
         return items
     return [{**item, "in_stock": False, "hidden": True} if item.get("is_test") else item for item in items]
 
@@ -229,6 +232,12 @@ async def build_catalog_context() -> str:
             "Сейчас нет в наличии (заказать нельзя; спросят — скажи, что сейчас нет, и предложи похожее "
             f"из списка выше): {', '.join(missing)}."
         )
+    if settings.investor_demo_enabled:
+        lines.insert(0, "Демонстрационный режим: доступны тестовые товары из списка. "
+                     "Оформляй заказ обычными инструментами, соблюдай согласие на ПДн. "
+                     "Текущий каталог главнее старых сообщений об отсутствии продаж. "
+                     "Не повторяй старые сообщения о дате открытия. "
+                     "Оплата и доставка работают через настоящие сервисы; не называй их имитацией.")
     return "\n".join(lines)
 
 

@@ -126,6 +126,7 @@ def build_items(rows: list[dict], set_weights: dict[str, float], stock_ok: dict[
             # строка в «Требует внимания», решать владельцу.
             "in_stock": bool(row["on_sale"]) and (stock_ok or {}).get(row["sku_id"], True),
             "stock_ok": (stock_ok or {}).get(row["sku_id"], True),
+            "on_sale": bool(row["on_sale"]),
             "gtin": row["gtin"] or "",
             "link": row["vk_market_url"] or "",
             "description": row["description"] or "",
